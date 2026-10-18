@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-version="${PLANORA_VERSION:-0.1.0}"
+version="${PLANORA_VERSION:-0.1.1}"
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 install -Dm755 "$root/target/release/planora" "$stage/usr/bin/planora"
