@@ -24,6 +24,8 @@ pub struct ChartPanelState {
     pub show_table: bool,
     pub series1_enabled: bool,
     pub series2_enabled: bool,
+    pub pointer_inside: bool,
+    pub keyboard_cursor_x: Option<f32>,
 }
 
 impl Default for ChartPanelState {
@@ -33,6 +35,8 @@ impl Default for ChartPanelState {
             show_table: false,
             series1_enabled: true,
             series2_enabled: true,
+            pointer_inside: false,
+            keyboard_cursor_x: None,
         }
     }
 }
@@ -48,6 +52,7 @@ pub fn render_chart_panel(
     p: Palette,
 ) {
     let panel_w = ui.available_width();
+    state.pointer_inside = false;
     egui::Frame::group(ui.style())
         .fill(p.surface)
         .stroke(Stroke::new(1.0, p.border))
@@ -178,6 +183,7 @@ pub fn render_chart_panel(
                     }
                 };
 
+                let mut keyboard_readout: Vec<String> = Vec::new();
                 ui.horizontal(|ui| {
                     // Y-axis labels
                     let (y_rect, _) =
@@ -196,7 +202,13 @@ pub fn render_chart_panel(
 
                     // Chart area
                     let (canvas_rect, response) =
-                        ui.allocate_exact_size(Vec2::new(canvas_w, canvas_h), egui::Sense::hover());
+                        ui.allocate_exact_size(Vec2::new(canvas_w, canvas_h), egui::Sense::click());
+                    if response.clicked() {
+                        response.request_focus();
+                        state.keyboard_cursor_x = Some(response.interact_pointer_pos()
+                            .map(|pos| ((pos.x - canvas_rect.min.x) / canvas_rect.width()).clamp(0.0, 1.0))
+                            .unwrap_or(0.5));
+                    }
                     let painter = ui.painter_at(canvas_rect);
 
                     painter.rect_filled(canvas_rect, CornerRadius::same(4), p.surface_raised);
@@ -239,8 +251,32 @@ pub fn render_chart_panel(
                         );
                     }
 
-                    // Hover crosshair detection
+                    // Click to focus; Left/Right/Home/End inspect without a mouse.
                     let mut active_crosshair_x = *shared_hover_norm_x;
+                    if response.has_focus() {
+                        let (left, right, home, end, escape) = ui.input(|i| (
+                            i.key_pressed(egui::Key::ArrowLeft),
+                            i.key_pressed(egui::Key::ArrowRight),
+                            i.key_pressed(egui::Key::Home),
+                            i.key_pressed(egui::Key::End),
+                            i.key_pressed(egui::Key::Escape),
+                        ));
+                        if escape {
+                            state.keyboard_cursor_x = None;
+                            *shared_hover_norm_x = None;
+                            active_crosshair_x = None;
+                        } else {
+                            let cursor = state.keyboard_cursor_x.unwrap_or(0.5);
+                            let next = if home { 0.0 }
+                                else if end { 1.0 }
+                                else if left { (cursor - 0.02).max(0.0) }
+                                else if right { (cursor + 0.02).min(1.0) }
+                                else { cursor };
+                            state.keyboard_cursor_x = Some(next);
+                            active_crosshair_x = Some(next);
+                            *shared_hover_norm_x = Some(next);
+                        }
+                    }
                     if let Some(hover_pos) = response.hover_pos()
                         && canvas_rect.contains(hover_pos)
                     {
@@ -248,6 +284,7 @@ pub fn render_chart_panel(
                             .clamp(0.0, 1.0);
                         *shared_hover_norm_x = Some(norm);
                         active_crosshair_x = Some(norm);
+                        state.pointer_inside = true;
                     }
 
                     // Plot each active series
@@ -350,6 +387,9 @@ pub fn render_chart_panel(
                             }
                         }
 
+                        if response.has_focus() {
+                            keyboard_readout = tooltip_lines.clone();
+                        }
                         if !tooltip_lines.is_empty() && response.hovered() {
                             response.on_hover_ui(|ui| {
                                 for line in tooltip_lines {
@@ -359,6 +399,9 @@ pub fn render_chart_panel(
                         }
                     }
                 });
+                if !keyboard_readout.is_empty() {
+                    ui.label(egui::RichText::new(keyboard_readout.join(" | ")).monospace().size(11.0).color(p.secondary));
+                }
             }
 
             // Visible Series Legend
