@@ -227,7 +227,7 @@ impl eframe::App for App {
             if self.display_pause.frozen_frame.is_none() {
                 self.display_pause.frozen_frame = frame_opt.clone();
                 self.display_pause.frozen_instant = Some(now);
-                self.display_pause.frozen_histories = Some(self.histories.clone());
+                self.display_pause.frozen_histories = Some(Arc::new(self.histories.clone()));
             }
         } else {
             self.display_pause.frozen_frame = None;
@@ -251,11 +251,9 @@ impl eframe::App for App {
         };
         // Snapshot the chart buffers as well as the table frame when paused.
         // Live collection continues in self.histories without mutating the display.
-        let render_histories = if self.display_pause.is_paused {
-            self.display_pause.frozen_histories.as_ref().unwrap_or(&self.histories)
-        } else {
-            &self.histories
-        };
+        // Clone only the Arc handle so page controls can mutably borrow pause state.
+        let frozen_histories = self.display_pause.frozen_histories.clone();
+        let render_histories = frozen_histories.as_deref().unwrap_or(&self.histories);
 
         // 1. Sidebar (208 px)
         egui::Panel::left("nav_sidebar")
