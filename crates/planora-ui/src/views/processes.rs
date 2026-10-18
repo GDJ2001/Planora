@@ -22,6 +22,8 @@ pub struct ProcessesViewState {
     pub affinity_selection: HashSet<u16>,
     pub pending_affinity_confirm: bool,
     pub show_column_chooser: bool,
+    /// Adjustable inspector width on wide desktops (logical pixels).
+    pub inspector_width: f32,
 }
 
 pub fn render_processes_view(
@@ -100,9 +102,14 @@ pub fn render_processes_view(
         .and_then(|id| frame.processes.iter().find(|p| &p.identity == id));
 
     if is_wide {
-        // Wide window: Left Table (70%), Right Inspector (30%)
-        let inspector_w = 330.0;
-        let table_w = ui.available_width() - inspector_w - 16.0;
+        // The middle grip is draggable without assuming a fixed 30% inspector.
+        let max_inspector = (ui.available_width() - 620.0).max(280.0);
+        let inspector_w = if state.inspector_width <= 0.0 {
+            330.0f32.min(max_inspector)
+        } else {
+            state.inspector_width.clamp(280.0, max_inspector)
+        };
+        let table_w = (ui.available_width() - inspector_w - 12.0).max(300.0);
 
         ui.horizontal(|ui| {
             ui.allocate_ui(Vec2::new(table_w, ui.available_height()), |ui| {
@@ -116,7 +123,19 @@ pub fn render_processes_view(
                 );
             });
 
-            ui.add_space(16.0);
+            // Native draggable split handle; keep the table usable.
+            let (grip, drag) = ui.allocate_exact_size(
+                Vec2::new(12.0, ui.available_height().max(100.0)),
+                egui::Sense::drag(),
+            );
+            ui.painter().line_segment(
+                [grip.center_top(), grip.center_bottom()],
+                Stroke::new(2.0, p.border_control),
+            );
+            if drag.dragged() {
+                state.inspector_width = (inspector_w - drag.drag_delta().x)
+                    .clamp(280.0, max_inspector);
+            }
 
             // Right Inspector Pane
             ui.allocate_ui(Vec2::new(inspector_w, ui.available_height()), |ui| {
