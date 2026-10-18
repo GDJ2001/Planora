@@ -17,9 +17,17 @@ cp "$root/assets/brand/platforms/macos/Planora.icns" "$app/Contents/Resources/Pl
 identity="${PLANORA_SIGN_IDENTITY:--}"
 codesign --force --sign "$identity" "$app/Contents/MacOS/planora-helper"
 codesign --force --sign "$identity" "$app"
-pkgbuild --root "$stage" --identifier org.planora.app --version "$version" --install-location / "$root/dist/Planora-${version}-arm64.pkg"
+pkg_args=(--root "$stage" --scripts "$root/packaging/macos/scripts" --identifier org.planora.app --version "$version" --install-location /)
+if [ -n "${PLANORA_INSTALLER_IDENTITY:-}" ]; then
+  pkg_args+=(--sign "$PLANORA_INSTALLER_IDENTITY")
+fi
+pkgbuild "${pkg_args[@]}" "$root/dist/Planora-${version}-arm64.pkg"
 ditto -c -k --sequesterRsrc --keepParent "$app" "$root/dist/Planora-${version}-arm64-app.zip"
 if [ -n "${PLANORA_NOTARY_PROFILE:-}" ]; then
+  if [ "$identity" = '-' ] || [ -z "${PLANORA_INSTALLER_IDENTITY:-}" ]; then
+    echo 'Notarization requires PLANORA_SIGN_IDENTITY and PLANORA_INSTALLER_IDENTITY.' >&2
+    exit 1
+  fi
   xcrun notarytool submit "$root/dist/Planora-${version}-arm64.pkg" --keychain-profile "$PLANORA_NOTARY_PROFILE" --wait
   xcrun stapler staple "$root/dist/Planora-${version}-arm64.pkg"
 fi

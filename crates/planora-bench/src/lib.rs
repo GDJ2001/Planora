@@ -73,6 +73,18 @@ pub fn build_cycle(working_set: usize, mode: ChaseMode) -> Result<Cycle, String>
 }
 
 pub fn run_cache_probe(mode: ChaseMode, cancel: &AtomicBool) -> Result<BenchmarkResult, String> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err("cancelled".into());
+    }
+    // Calibrate the same start/elapsed pair used around each batch. Its minimum
+    // is a lower-bound timer cost, not a correction for scheduling noise.
+    let timer_overhead_ns = (0..256)
+        .map(|_| {
+            let start = Instant::now();
+            start.elapsed().as_nanos()
+        })
+        .min()
+        .unwrap_or(0);
     let sizes = [
         8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536,
     ];
@@ -96,12 +108,18 @@ pub fn run_cache_probe(mode: ChaseMode, cancel: &AtomicBool) -> Result<Benchmark
             if cancel.load(Ordering::Relaxed) {
                 return Err("cancelled".into());
             }
+            if Instant::now() >= deadline {
+                return Err("benchmark time limit reached".into());
+            }
             let start = Instant::now();
             for _ in 0..iterations {
                 cursor = unsafe { read_volatile(&cycle.nodes[cursor].next) };
             }
             black_box(cursor);
-            samples.push(start.elapsed().as_nanos() as f64 / iterations as f64);
+            samples.push(
+                start.elapsed().as_nanos().saturating_sub(timer_overhead_ns) as f64
+                    / iterations as f64,
+            );
         }
         samples.sort_by(f64::total_cmp);
         points.push(BenchmarkPoint {
@@ -118,7 +136,9 @@ pub fn run_cache_probe(mode: ChaseMode, cancel: &AtomicBool) -> Result<Benchmark
             ChaseMode::Page => "page",
         }
         .into(),
-        methodology: "128-byte aligned nodes; Sattolo single cycle (strictly j < i); 100 monotonic-clock batches per working set; reports min, median, p95, p99 nanoseconds per dependent load; memory capped at 64 MiB, total time capped at 12 s".into(),
+        methodology: format!(
+            "128-byte aligned nodes; Sattolo single cycle (strictly j < i); 100 monotonic-clock batches per working set; minimum timer overhead {timer_overhead_ns} ns subtracted per batch; reports min, median, p95, p99 nanoseconds per dependent load; memory capped at 64 MiB, total time capped at 12 s"
+        ),
         comparable_to_x86_cycles: false,
         points,
         core_pairs: Vec::new(),
@@ -128,7 +148,7 @@ pub fn run_cache_probe(mode: ChaseMode, cancel: &AtomicBool) -> Result<Benchmark
 /// CAS ping-pong. Returns a measured transfer estimate, never a guaranteed fabric latency.
 pub fn core_pair_latency(a: usize, b: usize, cancel: Arc<AtomicBool>) -> Result<f32, String> {
     if a == b {
-        return Ok(0.0);
+        return Err("distinct logical CPUs required".into());
     }
     if !cfg!(any(target_arch = "x86_64", target_arch = "x86")) {
         return Err("exact core pinning unsupported on this architecture".into());
@@ -220,7 +240,7 @@ pub fn run_core_matrix(cpus: &[u16], cancel: Arc<AtomicBool>) -> Result<Benchmar
             if cancel.load(Ordering::Relaxed) {
                 return Err("cancelled".into());
             }
-            if Instant::now() >= deadline {
+            if Instant::now() + Duration::from_secs(3) >= deadline {
                 return Err("matrix time limit reached".into());
             }
             let ns = core_pair_latency(*a as usize, *b as usize, cancel.clone())?;

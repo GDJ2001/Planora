@@ -151,7 +151,26 @@ pub fn listener() -> io::Result<interprocess::local_socket::Listener> {
 /// Unix peer credentials are checked in addition to filesystem socket permissions.
 #[cfg(unix)]
 pub fn peer_authorized(stream: &Stream) -> bool {
-    stream.peer_creds().ok().and_then(|p| p.euid()).is_some()
+    let peer_uid = stream.peer_creds().ok().and_then(|p| p.euid());
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let path = "/Library/Application Support/Planora/authorized-uid";
+        let Ok(metadata) = std::fs::metadata(path) else {
+            return false;
+        };
+        if metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+            return false;
+        }
+        let approved_uid = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|text| text.trim().parse::<u32>().ok());
+        return peer_uid.is_some() && peer_uid == approved_uid;
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        peer_uid.is_some()
+    }
 }
 #[cfg(windows)]
 pub fn peer_authorized(stream: &Stream) -> bool {

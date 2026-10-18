@@ -28,7 +28,26 @@ struct State {
 static STOP: AtomicBool = AtomicBool::new(false);
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
+fn elevated() -> bool {
+    if unsafe { libc::geteuid() == 0 } {
+        return true;
+    }
+    // The systemd unit runs as `planora` with only these two effective caps.
+    const CAP_SYS_NICE: u64 = 1 << 23;
+    const CAP_PERFMON: u64 = 1 << 38;
+    let effective = std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| {
+            status.lines().find_map(|line| {
+                line.strip_prefix("CapEff:")
+                    .and_then(|hex| u64::from_str_radix(hex.trim(), 16).ok())
+            })
+        })
+        .unwrap_or(0);
+    effective & (CAP_SYS_NICE | CAP_PERFMON) == (CAP_SYS_NICE | CAP_PERFMON)
+}
+#[cfg(target_os = "macos")]
 fn elevated() -> bool {
     unsafe { libc::geteuid() == 0 }
 }
@@ -38,6 +57,13 @@ fn elevated() -> bool {
 }
 
 fn capabilities() -> Vec<Capability> {
+    #[cfg(target_os = "linux")]
+    let (gpu, power) = (
+        planora_telemetry::linux_amd_gpu_busy_available(),
+        planora_telemetry::linux_rapl_available(),
+    );
+    #[cfg(not(target_os = "linux"))]
+    let (gpu, power) = (false, false);
     vec![
         Capability {
             name: "CPU and process telemetry".into(),
@@ -46,13 +72,18 @@ fn capabilities() -> Vec<Capability> {
         },
         Capability {
             name: "GPU utilization".into(),
-            available: false,
-            reason: Some("GPU provider not installed".into()),
+            available: gpu,
+            reason: (!gpu).then(|| "supported GPU utilization counter unavailable".into()),
         },
         Capability {
-            name: "Package power / PMU".into(),
+            name: "Package power".into(),
+            available: power,
+            reason: (!power).then(|| "supported package energy counter unavailable".into()),
+        },
+        Capability {
+            name: "PMU counters".into(),
             available: false,
-            reason: Some("hardware counter provider not installed".into()),
+            reason: Some("PMU provider not implemented".into()),
         },
         Capability {
             name: "Process affinity editing".into(),
@@ -235,18 +266,10 @@ fn windows_handle(
             GetProcessTimes, OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_SET_INFORMATION,
         },
     };
-    if process.source.starts_with("windows process sequence") {
-        let procs = planora_telemetry::query_windows_basic_processes()
-            .map_err(|e| format!("failed to verify process sequence: NTSTATUS {e:#x}"))?;
-        let entry = procs
-            .iter()
-            .find(|p| p.pid == process.pid)
-            .ok_or_else(|| "process terminated or PID reused".to_string())?;
-        if entry.sequence_number != process.started {
-            return Err("process identity changed (PID reused)".into());
-        }
-    } else if process.source != "windows process FILETIME" {
-        return Err("process creation identity is not strong enough".into());
+    // Sequence numbers come from a separate snapshot. A PID can be reused between
+    // that snapshot and OpenProcess, so only a handle-bound creation time is actionable.
+    if process.source != "windows process FILETIME" {
+        return Err("process creation identity cannot be revalidated on the process handle".into());
     }
 
     let rights = PROCESS_QUERY_INFORMATION | if modify { PROCESS_SET_INFORMATION } else { 0 };
@@ -254,19 +277,16 @@ fn windows_handle(
     if handle.is_null() {
         return Err(io::Error::last_os_error().to_string());
     }
-    if process.source == "windows process FILETIME" {
-        let mut created = FILETIME::default();
-        let mut exit = FILETIME::default();
-        let mut kernel = FILETIME::default();
-        let mut user = FILETIME::default();
-        let ok =
-            unsafe { GetProcessTimes(handle, &mut created, &mut exit, &mut kernel, &mut user) }
-                != 0;
-        let stamp = ((created.dwHighDateTime as u64) << 32) | created.dwLowDateTime as u64;
-        if !ok || stamp != process.started {
-            unsafe { CloseHandle(handle) };
-            return Err("process identity changed (PID reused)".into());
-        }
+    let mut created = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    let ok =
+        unsafe { GetProcessTimes(handle, &mut created, &mut exit, &mut kernel, &mut user) } != 0;
+    let stamp = ((created.dwHighDateTime as u64) << 32) | created.dwLowDateTime as u64;
+    if !ok || stamp != process.started {
+        unsafe { CloseHandle(handle) };
+        return Err("process identity changed (PID reused)".into());
     }
     Ok(handle)
 }
@@ -370,19 +390,6 @@ fn set_affinity(process: &ProcessIdentity, cpus: &[u16]) -> Result<(Vec<u16>, Ve
     unsafe { CloseHandle(handle) };
     if !ok {
         return Err(io::Error::last_os_error().to_string());
-    }
-    if process.source.starts_with("windows process sequence")
-        && let Ok(procs) = planora_telemetry::query_windows_basic_processes()
-    {
-        if let Some(entry) = procs.iter().find(|p| p.pid == process.pid) {
-            if entry.sequence_number != process.started {
-                return Err(
-                    "process identity changed during affinity operation (PID reused)".into(),
-                );
-            }
-        } else {
-            return Err("process terminated during affinity operation".into());
-        }
     }
     let decode = |bits: usize| {
         (0..usize::BITS)

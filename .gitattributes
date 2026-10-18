@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+*.sh text eol=lf
+packaging/macos/scripts/* text eol=lf
+packaging/linux/authorize-user text eol=lf

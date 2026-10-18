@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+
+# A package install authorizes exactly the account at the console. The app's
+# SMAppService registration still requires the normal macOS approval flow.
+approved_uid="$(stat -f '%u' /dev/console)"
+case "$approved_uid" in
+  ''|0|*[!0-9]*) echo 'No non-root console user to authorize.' >&2; exit 1 ;;
+esac
+
+directory='/Library/Application Support/Planora'
+file="$directory/authorized-uid"
+if [ -L "$directory" ] || [ -L "$file" ]; then
+  echo 'Refusing an authorization path that is a symbolic link.' >&2
+  exit 1
+fi
+install -d -o root -g wheel -m 0755 "$directory"
+if [ "$(stat -f '%u' "$directory")" != 0 ]; then
+  echo 'Authorization directory is not owned by root.' >&2
+  exit 1
+fi
+temporary="$(mktemp "$directory/.authorized-uid.XXXXXX")"
+trap 'rm -f "$temporary"' EXIT
+printf '%s\n' "$approved_uid" > "$temporary"
+chown root:wheel "$temporary"
+chmod 0600 "$temporary"
+mv -f "$temporary" "$file"
+trap - EXIT

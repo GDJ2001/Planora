@@ -1,10 +1,69 @@
 //! Cross-platform baseline collector. Hardware-specific counters can enrich its frames.
 use planora_core::{Metric, PROTOCOL_VERSION, ProcessIdentity, ProcessRecord, TelemetryFrame};
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use sysinfo::{Disks, Networks, ProcessesToUpdate, System};
+use sysinfo::{Disks, Networks, ProcessRefreshKind, ProcessesToUpdate, System};
 
 pub const MIN_SAMPLE_INTERVAL: Duration = Duration::from_millis(50);
 pub const DEFAULT_SAMPLE_INTERVAL: Duration = Duration::from_millis(100);
+
+#[cfg(windows)]
+pub fn windows_basic_process_query_supported() -> bool {
+    use std::sync::OnceLock;
+    static SUPPORTED: OnceLock<bool> = OnceLock::new();
+    *SUPPORTED.get_or_init(|| {
+        #[repr(C)]
+        struct OsVersion {
+            size: u32,
+            major: u32,
+            minor: u32,
+            build: u32,
+            platform: u32,
+            service_pack: [u16; 128],
+        }
+        #[link(name = "ntdll")]
+        unsafe extern "system" {
+            fn RtlGetVersion(version: *mut OsVersion) -> i32;
+        }
+        let mut version = OsVersion {
+            size: std::mem::size_of::<OsVersion>() as u32,
+            major: 0,
+            minor: 0,
+            build: 0,
+            platform: 0,
+            service_pack: [0; 128],
+        };
+        if unsafe { RtlGetVersion(&mut version) } < 0 || version.major != 10 {
+            return false;
+        }
+        if version.build > 26100 {
+            return true;
+        }
+        if version.build != 26100 {
+            return false;
+        }
+        use windows_sys::Win32::System::Registry::{
+            HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RegGetValueW,
+        };
+        let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+        let path = wide("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion");
+        let key = wide("UBR");
+        let mut revision = 0u32;
+        let mut size = std::mem::size_of::<u32>() as u32;
+        let status = unsafe {
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                path.as_ptr(),
+                key.as_ptr(),
+                RRF_RT_REG_DWORD,
+                std::ptr::null_mut(),
+                (&mut revision as *mut u32).cast(),
+                &mut size,
+            )
+        };
+        status == 0 && size == 4 && revision >= 4770
+    })
+}
 
 pub fn unix_ms() -> u64 {
     SystemTime::now()
@@ -27,6 +86,96 @@ pub fn rate(delta: u64, elapsed: Duration) -> u64 {
 
 pub fn rate_from_counters(prev: u64, curr: u64, elapsed: Duration) -> u64 {
     rate(counter_delta(prev, curr), elapsed)
+}
+
+#[cfg(target_os = "linux")]
+fn rapl_delta(previous: u64, current: u64, maximum: u64) -> Option<u64> {
+    if maximum == 0 || previous >= maximum || current >= maximum {
+        return None;
+    }
+    Some(if current >= previous {
+        current - previous
+    } else {
+        maximum - previous + current
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn rapl_zones() -> Result<Vec<(String, u64, u64)>, String> {
+    let entries = std::fs::read_dir("/sys/class/powercap")
+        .map_err(|error| format!("Linux powercap is unavailable: {error}"))?;
+    let mut zones = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // Root RAPL zones describe packages; subzones would double-count energy.
+        if !name.starts_with("intel-rapl:") || name.matches(':').count() != 1 {
+            continue;
+        }
+        let read = |file: &str| -> Result<u64, String> {
+            std::fs::read_to_string(entry.path().join(file))
+                .map_err(|error| format!("{name}/{file}: {error}"))?
+                .trim()
+                .parse::<u64>()
+                .map_err(|error| format!("{name}/{file}: {error}"))
+        };
+        let energy = read("energy_uj")?;
+        let maximum = read("max_energy_range_uj")?;
+        zones.push((name, energy, maximum));
+    }
+    if zones.is_empty() {
+        Err("no Intel RAPL package zones exposed by Linux powercap".into())
+    } else {
+        zones.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(zones)
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn linux_rapl_available() -> bool {
+    rapl_zones().is_ok()
+}
+
+#[cfg(target_os = "linux")]
+fn amd_gpu_busy() -> Result<(f32, String), String> {
+    let entries = std::fs::read_dir("/sys/class/drm")
+        .map_err(|error| format!("Linux DRM is unavailable: {error}"))?;
+    let mut devices = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("card") || !name[4..].chars().all(|ch| ch.is_ascii_digit()) {
+            continue;
+        }
+        let path = entry.path().join("device/gpu_busy_percent");
+        if !path.exists() {
+            continue;
+        }
+        let value = std::fs::read_to_string(&path)
+            .map_err(|error| format!("{name} AMD busy counter: {error}"))?
+            .trim()
+            .parse::<f32>()
+            .map_err(|error| format!("{name} AMD busy counter: {error}"))?;
+        if !value.is_finite() || !(0.0..=100.0).contains(&value) {
+            return Err(format!("{name} AMD busy counter is outside 0–100%"));
+        }
+        devices.push((value, name));
+    }
+    match devices.len() {
+        1 => Ok(devices.remove(0)),
+        0 => Err("no AMD gpu_busy_percent counter exposed by Linux DRM".into()),
+        _ => Err("multiple GPU busy counters cannot be represented as one aggregate".into()),
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn linux_amd_gpu_busy_available() -> bool {
+    amd_gpu_busy().is_ok()
+}
+
+#[cfg(target_os = "linux")]
+struct RaplSample {
+    energy_uj: u64,
+    maximum_uj: u64,
+    at: Instant,
 }
 
 #[cfg(windows)]
@@ -59,6 +208,12 @@ pub struct BasicProcessInfo {
 pub fn query_windows_basic_processes() -> Result<Vec<BasicProcessInfo>, i32> {
     const SYSTEM_BASIC_PROCESS_INFORMATION_CLASS: u32 = 252;
     const STATUS_INFO_LENGTH_MISMATCH: i32 = -1073741820; // 0xC0000004 as i32
+    const STATUS_NOT_SUPPORTED: i32 = -1073741637; // 0xC00000BB
+    const MAX_BYTES: usize = 16 * 1024 * 1024;
+
+    if !windows_basic_process_query_supported() {
+        return Err(STATUS_NOT_SUPPORTED);
+    }
 
     #[link(name = "ntdll")]
     unsafe extern "system" {
@@ -84,7 +239,12 @@ pub fn query_windows_basic_processes() -> Result<Vec<BasicProcessInfo>, i32> {
             )
         };
         if status == STATUS_INFO_LENGTH_MISMATCH {
-            capacity = (return_length as usize).max(capacity * 2) + 16_384;
+            capacity = (return_length as usize)
+                .max(capacity * 2)
+                .saturating_add(16_384);
+            if capacity > MAX_BYTES {
+                return Err(STATUS_INFO_LENGTH_MISMATCH);
+            }
             buffer.resize(capacity, 0);
             continue;
         } else if status < 0 {
@@ -97,15 +257,30 @@ pub fn query_windows_basic_processes() -> Result<Vec<BasicProcessInfo>, i32> {
     let mut out = Vec::new();
     let mut offset = 0usize;
     let limit = (return_length as usize).min(buffer.len());
+    if limit < std::mem::size_of::<SYSTEM_BASICPROCESS_INFORMATION>() {
+        return Err(STATUS_INFO_LENGTH_MISMATCH);
+    }
     while offset + std::mem::size_of::<SYSTEM_BASICPROCESS_INFORMATION>() <= limit {
-        let entry =
-            unsafe { &*(buffer.as_ptr().add(offset) as *const SYSTEM_BASICPROCESS_INFORMATION) };
+        // The API buffer is byte-aligned; never form an aligned reference into it.
+        let entry = unsafe {
+            (buffer.as_ptr().add(offset) as *const SYSTEM_BASICPROCESS_INFORMATION).read_unaligned()
+        };
         let pid = entry.unique_process_id as u32;
         let mut name = String::new();
         if !entry.image_name.buffer.is_null() && entry.image_name.length > 0 {
-            let u16_len = (entry.image_name.length / 2) as usize;
-            let slice = unsafe { std::slice::from_raw_parts(entry.image_name.buffer, u16_len) };
-            name = String::from_utf16_lossy(slice);
+            let start = entry.image_name.buffer as usize;
+            let base = buffer.as_ptr() as usize;
+            let end = start.checked_add(entry.image_name.length as usize);
+            if entry.image_name.length % 2 != 0
+                || start < base
+                || end.is_none_or(|end| end > base + limit)
+            {
+                return Err(STATUS_INFO_LENGTH_MISMATCH);
+            }
+            let units = (0..entry.image_name.length as usize / 2)
+                .map(|i| unsafe { entry.image_name.buffer.add(i).read_unaligned() })
+                .collect::<Vec<_>>();
+            name = String::from_utf16_lossy(&units);
         }
         out.push(BasicProcessInfo {
             pid,
@@ -115,7 +290,13 @@ pub fn query_windows_basic_processes() -> Result<Vec<BasicProcessInfo>, i32> {
         if entry.next_entry_offset == 0 {
             break;
         }
-        offset += entry.next_entry_offset as usize;
+        let next = entry.next_entry_offset as usize;
+        if next < std::mem::size_of::<SYSTEM_BASICPROCESS_INFORMATION>()
+            || offset.checked_add(next).is_none_or(|end| end > limit)
+        {
+            return Err(STATUS_INFO_LENGTH_MISMATCH);
+        }
+        offset += next;
     }
     Ok(out)
 }
@@ -125,6 +306,11 @@ pub struct Sampler {
     disks: Disks,
     networks: Networks,
     last: Option<Instant>,
+    last_cpu: Option<Instant>,
+    system_cpu: Option<Metric<f32>>,
+    process_cpu: HashMap<ProcessIdentity, Metric<f32>>,
+    #[cfg(target_os = "linux")]
+    rapl: HashMap<String, RaplSample>,
     sequence: u64,
 }
 
@@ -141,6 +327,11 @@ impl Sampler {
             disks: Disks::new_with_refreshed_list(),
             networks: Networks::new_with_refreshed_list(),
             last: None,
+            last_cpu: None,
+            system_cpu: None,
+            process_cpu: HashMap::new(),
+            #[cfg(target_os = "linux")]
+            rapl: HashMap::new(),
             sequence: 0,
         }
     }
@@ -149,9 +340,23 @@ impl Sampler {
         let now = Instant::now();
         let stamp = unix_ms();
         let elapsed = self.last.map(|last| now.duration_since(last));
-        self.system.refresh_cpu_usage();
+        let cpu_due = self
+            .last_cpu
+            .is_some_and(|last| now.duration_since(last) >= sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+        if cpu_due {
+            self.system.refresh_cpu_usage();
+            self.last_cpu = Some(now);
+        } else if self.last_cpu.is_none() {
+            self.last_cpu = Some(now);
+        }
         self.system.refresh_memory();
-        self.system.refresh_processes(ProcessesToUpdate::All, true);
+        let kind = if cpu_due {
+            ProcessRefreshKind::everything()
+        } else {
+            ProcessRefreshKind::everything().without_cpu()
+        };
+        self.system
+            .refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
         self.networks.refresh(true);
         self.disks.refresh(true);
         self.sequence += 1;
@@ -173,21 +378,6 @@ impl Sampler {
         let mut processes = Vec::with_capacity(self.system.processes().len());
         for (pid, p) in self.system.processes() {
             let io = p.disk_usage();
-            let cpu = if first {
-                Metric::unavailable(
-                    "%",
-                    "sysinfo process time delta",
-                    stamp,
-                    "first sample has no elapsed interval",
-                )
-            } else {
-                Metric::available(
-                    (p.cpu_usage() / proc_count).clamp(0.0, 100.0),
-                    "%",
-                    "sysinfo normalized to machine capacity",
-                    stamp,
-                )
-            };
             #[cfg(windows)]
             let (read, write) = (
                 Metric::unavailable(
@@ -242,25 +432,27 @@ impl Sampler {
                 });
 
             #[cfg(windows)]
-            let identity = if let Some(&seq) = basic_map.get(&pid.as_u32()) {
-                ProcessIdentity {
+            let identity = windows_start_filetime(pid.as_u32())
+                .map(|started| ProcessIdentity {
                     pid: pid.as_u32(),
-                    started: seq,
-                    source: "windows process sequence (SystemBasicProcessInformation)".into(),
-                }
-            } else {
-                windows_start_filetime(pid.as_u32())
-                    .map(|started| ProcessIdentity {
-                        pid: pid.as_u32(),
-                        started,
-                        source: "windows process FILETIME".into(),
-                    })
-                    .unwrap_or_else(|| ProcessIdentity {
-                        pid: pid.as_u32(),
-                        started: p.start_time(),
-                        source: "sysinfo epoch seconds".into(),
-                    })
-            };
+                    started,
+                    source: "windows process FILETIME".into(),
+                })
+                .or_else(|| {
+                    basic_map
+                        .get(&pid.as_u32())
+                        .map(|&started| ProcessIdentity {
+                            pid: pid.as_u32(),
+                            started,
+                            source: "windows process sequence (SystemBasicProcessInformation)"
+                                .into(),
+                        })
+                })
+                .unwrap_or_else(|| ProcessIdentity {
+                    pid: pid.as_u32(),
+                    started: p.start_time(),
+                    source: "sysinfo epoch seconds".into(),
+                });
 
             #[cfg(not(any(target_os = "linux", windows)))]
             let identity = ProcessIdentity {
@@ -269,6 +461,25 @@ impl Sampler {
                 source: "sysinfo epoch seconds".into(),
             };
 
+            let cpu = if cpu_due {
+                let metric = Metric::available(
+                    (p.cpu_usage() / proc_count).clamp(0.0, 100.0),
+                    "%",
+                    "sysinfo normalized to machine capacity",
+                    stamp,
+                );
+                self.process_cpu.insert(identity.clone(), metric.clone());
+                metric
+            } else {
+                self.process_cpu.get(&identity).cloned().unwrap_or_else(|| {
+                    Metric::unavailable(
+                        "%",
+                        "sysinfo process time delta",
+                        stamp,
+                        "waiting for minimum CPU update interval",
+                    )
+                })
+            };
             processes.push(ProcessRecord {
                 identity,
                 name: p.name().to_string_lossy().into_owned(),
@@ -301,6 +512,9 @@ impl Sampler {
                 .unwrap_or_default()
                 .total_cmp(&a.cpu_percent.value.unwrap_or_default())
         });
+        let live: HashSet<_> = processes.iter().map(|p| &p.identity).collect();
+        self.process_cpu
+            .retain(|identity, _| live.contains(identity));
         let (read, write) = self.disks.list().iter().fold((0u64, 0u64), |(r, w), d| {
             let io = d.usage();
             (
@@ -326,26 +540,45 @@ impl Sampler {
                 Metric::available(rate(value, delta), "bytes/s", source, stamp)
             }
         };
+        if cpu_due {
+            self.system_cpu = Some(Metric::available(
+                self.system.global_cpu_usage(),
+                "%",
+                "sysinfo total CPU delta",
+                stamp,
+            ));
+        }
+        let system_cpu = self.system_cpu.clone().unwrap_or_else(|| {
+            Metric::unavailable(
+                "%",
+                "sysinfo total CPU delta",
+                stamp,
+                "waiting for minimum CPU update interval",
+            )
+        });
+        #[cfg(target_os = "linux")]
+        let gpu = match amd_gpu_busy() {
+            Ok((value, device)) => Metric::available(
+                value,
+                "%",
+                format!("Linux amdgpu {device} gpu_busy_percent"),
+                stamp,
+            ),
+            Err(reason) => Metric::unavailable("%", "Linux amdgpu sysfs", stamp, reason),
+        };
+        #[cfg(not(target_os = "linux"))]
+        let gpu = Metric::unavailable("%", "OS GPU provider", stamp, "GPU counter unavailable");
+        #[cfg(target_os = "linux")]
+        let package_power = self.sample_rapl(now, stamp);
+        #[cfg(not(target_os = "linux"))]
+        let package_power =
+            Metric::unavailable("W", "OS power provider", stamp, "power counter unavailable");
         let mut frame = TelemetryFrame {
             protocol_version: PROTOCOL_VERSION,
             sequence: self.sequence,
             sampled_at_ms: stamp,
             collection_duration_ms: 0.0,
-            cpu_percent: if first {
-                Metric::unavailable(
-                    "%",
-                    "sysinfo",
-                    stamp,
-                    "first sample has no elapsed interval",
-                )
-            } else {
-                Metric::available(
-                    self.system.global_cpu_usage(),
-                    "%",
-                    "sysinfo total CPU delta",
-                    stamp,
-                )
-            },
+            cpu_percent: system_cpu,
             memory_used_bytes: Metric::available(
                 self.system.used_memory(),
                 "bytes",
@@ -362,23 +595,65 @@ impl Sampler {
             disk_write_bytes_per_sec: measured(write, "sysinfo disk device delta"),
             network_rx_bytes_per_sec: measured(rx, "sysinfo interface delta"),
             network_tx_bytes_per_sec: measured(tx, "sysinfo interface delta"),
-            gpu_percent: Metric::unavailable(
-                "%",
-                "OS GPU provider",
-                stamp,
-                "GPU counter unavailable",
-            ),
-            package_power_watts: Metric::unavailable(
-                "W",
-                "OS power provider",
-                stamp,
-                "power counter unavailable",
-            ),
+            gpu_percent: gpu,
+            package_power_watts: package_power,
             processes,
         };
         frame.collection_duration_ms = now.elapsed().as_secs_f32() * 1000.0;
         self.last = Some(now);
         frame
+    }
+
+    #[cfg(target_os = "linux")]
+    fn sample_rapl(&mut self, now: Instant, stamp: u64) -> Metric<f32> {
+        let zones = match rapl_zones() {
+            Ok(zones) => zones,
+            Err(reason) => {
+                self.rapl.clear();
+                return Metric::unavailable("W", "Linux powercap RAPL", stamp, reason);
+            }
+        };
+        let mut watts = 0.0f64;
+        let mut ready = true;
+        let mut live = HashSet::new();
+        for (name, energy_uj, maximum_uj) in zones {
+            live.insert(name.clone());
+            let previous = self.rapl.insert(
+                name,
+                RaplSample {
+                    energy_uj,
+                    maximum_uj,
+                    at: now,
+                },
+            );
+            match previous.and_then(|previous| {
+                (previous.maximum_uj == maximum_uj)
+                    .then(|| rapl_delta(previous.energy_uj, energy_uj, maximum_uj))
+                    .flatten()
+                    .map(|delta| (delta, now.duration_since(previous.at)))
+            }) {
+                Some((delta, elapsed)) if !elapsed.is_zero() => {
+                    watts += delta as f64 / 1_000_000.0 / elapsed.as_secs_f64();
+                }
+                _ => ready = false,
+            }
+        }
+        self.rapl.retain(|name, _| live.contains(name));
+        if ready && watts.is_finite() && watts <= f32::MAX as f64 {
+            Metric::available(
+                watts as f32,
+                "W",
+                "Linux powercap Intel RAPL package energy delta",
+                stamp,
+            )
+        } else {
+            Metric::unavailable(
+                "W",
+                "Linux powercap Intel RAPL",
+                stamp,
+                "first interval or invalid energy counter",
+            )
+        }
     }
 }
 
@@ -406,15 +681,17 @@ pub fn windows_start_filetime(pid: u32) -> Option<u64> {
 #[cfg(target_os = "linux")]
 pub fn linux_start_ticks(pid: u32) -> std::io::Result<u64> {
     let text = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
-    let close = text
-        .rfind(')')
-        .ok_or_else(|| std::io::Error::other("invalid stat"))?;
+    parse_linux_start_ticks(&text).ok_or_else(|| std::io::Error::other("invalid start ticks"))
+}
+
+#[cfg(target_os = "linux")]
+fn parse_linux_start_ticks(text: &str) -> Option<u64> {
+    let close = text.rfind(')')?;
     // Field 22, with state as field 3 after the final parenthesis.
     text[close + 1..]
         .split_whitespace()
         .nth(19)
         .and_then(|v| v.parse().ok())
-        .ok_or_else(|| std::io::Error::other("invalid start ticks"))
 }
 
 #[cfg(test)]
@@ -433,6 +710,25 @@ mod tests {
     }
 
     #[test]
+    fn cpu_waits_for_the_platform_minimum_interval() {
+        let mut sampler = Sampler::new();
+        let first = sampler.sample();
+        let immediate = sampler.sample();
+        assert!(first.cpu_percent.value.is_none());
+        if sysinfo::MINIMUM_CPU_UPDATE_INTERVAL > Duration::from_millis(5) {
+            assert!(immediate.cpu_percent.value.is_none());
+        }
+        std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL + Duration::from_millis(20));
+        let later = sampler.sample();
+        assert!(later.cpu_percent.value.is_some());
+        let cached = sampler.sample();
+        assert_eq!(
+            cached.cpu_percent.sampled_at_ms,
+            later.cpu_percent.sampled_at_ms
+        );
+    }
+
+    #[test]
     fn delta_rate_is_in_bytes_per_second() {
         assert_eq!(rate(200, Duration::from_millis(200)), 1000);
         assert_eq!(rate(100, Duration::from_millis(100)), 1000);
@@ -448,6 +744,29 @@ mod tests {
         assert_eq!(delta, 150);
         let rate_val = rate_from_counters(prev, curr, Duration::from_secs(1));
         assert_eq!(rate_val, 150);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn proc_stat_fixture_handles_parentheses_in_name() {
+        let prior = std::iter::once("S".to_owned())
+            .chain((4..=21).map(|field| field.to_string()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(
+            parse_linux_start_ticks(&format!("123 (odd ) worker) {prior} 12345")),
+            Some(12345)
+        );
+        assert_eq!(parse_linux_start_ticks("malformed"), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rapl_energy_wrap_uses_reported_range() {
+        assert_eq!(rapl_delta(90, 10, 100), Some(20));
+        assert_eq!(rapl_delta(20, 30, 100), Some(10));
+        assert_eq!(rapl_delta(20, 100, 100), None);
+        assert_eq!(rapl_delta(1, 2, 0), None);
     }
 
     #[cfg(windows)]

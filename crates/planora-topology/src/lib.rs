@@ -71,7 +71,12 @@ pub fn discover() -> Topology {
 #[cfg(target_os = "linux")]
 fn discover_linux(t: &mut Topology, count: usize) {
     use std::{fs, path::Path};
-    let mut grouped: BTreeMap<(u16, u16), Vec<u16>> = BTreeMap::new();
+    let online = fs::read_to_string("/sys/devices/system/cpu/online")
+        .ok()
+        .map(|text| parse_cpu_list(text.trim()))
+        .filter(|cpus| !cpus.is_empty())
+        .unwrap_or_else(|| (0..count).map(|cpu| cpu as u16).collect());
+    let mut grouped: BTreeMap<(u16, u16), (Vec<u16>, Option<u16>)> = BTreeMap::new();
     let read_num = |cpu: usize, name: &str| -> Option<u16> {
         fs::read_to_string(format!("/sys/devices/system/cpu/cpu{cpu}/topology/{name}"))
             .ok()?
@@ -79,31 +84,58 @@ fn discover_linux(t: &mut Topology, count: usize) {
             .parse()
             .ok()
     };
-    for cpu in 0..count {
+    for &logical in &online {
+        let cpu = logical as usize;
         let package = read_num(cpu, "physical_package_id");
         let core = read_num(cpu, "core_id");
+        let numa = fs::read_dir(format!("/sys/devices/system/cpu/cpu{cpu}"))
+            .ok()
+            .and_then(|entries| {
+                entries.flatten().find_map(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .strip_prefix("node")?
+                        .parse::<u16>()
+                        .ok()
+                })
+            });
         match (package, core) {
-            (Some(p), Some(c)) => grouped.entry((p, c)).or_default().push(cpu as u16),
+            (Some(p), Some(c)) => {
+                let group = grouped.entry((p, c)).or_insert_with(|| (Vec::new(), numa));
+                group.0.push(logical);
+                if group.1 != numa {
+                    group.1 = None;
+                }
+            }
             _ => t.cores.push(CoreDescriptor {
-                id: cpu as u16,
+                id: logical,
                 package_id: package,
-                numa_node: None,
-                logical_cpus: vec![cpu as u16],
+                numa_node: numa,
+                logical_cpus: vec![logical],
                 class: None,
             }),
         }
     }
-    for ((package, core), logical_cpus) in grouped {
+    for ((package, core), (logical_cpus, numa_node)) in grouped {
         t.cores.push(CoreDescriptor {
             id: core,
             package_id: Some(package),
-            numa_node: None,
+            numa_node,
             logical_cpus,
             class: None,
         });
     }
-    let cache_root = Path::new("/sys/devices/system/cpu/cpu0/cache");
-    if let Ok(entries) = fs::read_dir(cache_root) {
+    // sysfs core_id is scoped to a package, while canvas component IDs are global.
+    for (id, core) in t.cores.iter_mut().enumerate() {
+        core.id = id as u16;
+    }
+    let mut seen_caches = std::collections::HashSet::new();
+    for &cpu in &online {
+        let cache_root = Path::new("/sys/devices/system/cpu").join(format!("cpu{cpu}/cache"));
+        let Ok(entries) = fs::read_dir(cache_root) else {
+            continue;
+        };
         for e in entries.flatten() {
             let p = e.path();
             if !e.file_name().to_string_lossy().starts_with("index") {
@@ -127,12 +159,16 @@ fn discover_linux(t: &mut Topology, count: usize) {
             let line_bytes = read("coherency_line_size")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0);
+            let key = (level, size_bytes, line_bytes, shared_by.clone());
+            if !seen_caches.insert(key) {
+                continue;
+            }
             t.caches.push(CacheDescriptor {
                 level,
                 size_bytes,
                 line_bytes,
                 shared_by,
-                source: "Linux sysfs cpu0 cache index".into(),
+                source: "Linux sysfs CPU cache index".into(),
             });
         }
     }
@@ -190,10 +226,20 @@ fn discover_windows(t: &mut Topology) {
             .push("Windows logical processor query failed".into());
         return;
     }
-    fn cpus(masks: *const GROUP_AFFINITY, count: usize) -> Vec<u16> {
+    fn cpus(
+        buffer: &[u8],
+        record_offset: usize,
+        record_size: usize,
+        mask_offset: usize,
+        count: usize,
+    ) -> Vec<u16> {
         let mut out = Vec::new();
-        for i in 0..count.min(64) {
-            let mask = unsafe { *masks.add(i) };
+        let available =
+            record_size.saturating_sub(mask_offset) / std::mem::size_of::<GROUP_AFFINITY>();
+        for i in 0..count.min(available).min(64) {
+            let at = record_offset + mask_offset + i * std::mem::size_of::<GROUP_AFFINITY>();
+            let mask =
+                unsafe { (buffer.as_ptr().add(at) as *const GROUP_AFFINITY).read_unaligned() };
             for bit in 0..usize::BITS {
                 if mask.Mask & (1usize << bit) != 0
                     && let Ok(id) =
@@ -209,22 +255,33 @@ fn discover_windows(t: &mut Topology) {
     let mut numas: Vec<(u16, Vec<u16>)> = Vec::new();
     let mut offset = 0usize;
     while offset + 8 <= bytes as usize {
-        let size = unsafe { *(buffer.as_ptr().add(offset + 4) as *const u32) } as usize;
-        if size < 8 || offset + size > bytes as usize {
+        let size =
+            unsafe { (buffer.as_ptr().add(offset + 4) as *const u32).read_unaligned() } as usize;
+        if size < 8
+            || offset
+                .checked_add(size)
+                .is_none_or(|end| end > bytes as usize)
+        {
             break;
         }
-        let record = unsafe {
-            &*(buffer.as_ptr().add(offset) as *const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)
-        };
+        let relationship = unsafe { (buffer.as_ptr().add(offset) as *const i32).read_unaligned() };
         unsafe {
-            match record.Relationship {
+            match relationship {
                 RELATION_PROCESSOR_CORE | RELATION_PROCESSOR_PACKAGE => {
-                    let item = record.Anonymous.Processor;
+                    if size < 8 + std::mem::size_of::<PROCESSOR_RELATIONSHIP>() {
+                        offset += size;
+                        continue;
+                    }
+                    let item = (buffer.as_ptr().add(offset + 8) as *const PROCESSOR_RELATIONSHIP)
+                        .read_unaligned();
                     let logical = cpus(
-                        std::ptr::addr_of!(record.Anonymous.Processor.GroupMask).cast(),
+                        &buffer,
+                        offset,
+                        size,
+                        8 + std::mem::offset_of!(PROCESSOR_RELATIONSHIP, GroupMask),
                         item.GroupCount as usize,
                     );
-                    if record.Relationship == RELATION_PROCESSOR_CORE {
+                    if relationship == RELATION_PROCESSOR_CORE {
                         t.cores.push(CoreDescriptor {
                             id: t.cores.len() as u16,
                             package_id: None,
@@ -237,17 +294,33 @@ fn discover_windows(t: &mut Topology) {
                     }
                 }
                 RELATION_NUMA_NODE | RELATION_NUMA_NODE_EX => {
-                    let item = record.Anonymous.NumaNode;
+                    if size < 8 + std::mem::size_of::<NUMA_NODE_RELATIONSHIP>() {
+                        offset += size;
+                        continue;
+                    }
+                    let item = (buffer.as_ptr().add(offset + 8) as *const NUMA_NODE_RELATIONSHIP)
+                        .read_unaligned();
                     let logical = cpus(
-                        std::ptr::addr_of!(record.Anonymous.NumaNode.Anonymous.GroupMask).cast(),
+                        &buffer,
+                        offset,
+                        size,
+                        8 + std::mem::offset_of!(NUMA_NODE_RELATIONSHIP, Anonymous),
                         item.GroupCount.max(1) as usize,
                     );
                     numas.push((item.NodeNumber as u16, logical));
                 }
                 RELATION_CACHE => {
-                    let item = record.Anonymous.Cache;
+                    if size < 8 + std::mem::size_of::<CACHE_RELATIONSHIP>() {
+                        offset += size;
+                        continue;
+                    }
+                    let item = (buffer.as_ptr().add(offset + 8) as *const CACHE_RELATIONSHIP)
+                        .read_unaligned();
                     let logical = cpus(
-                        std::ptr::addr_of!(record.Anonymous.Cache.Anonymous.GroupMask).cast(),
+                        &buffer,
+                        offset,
+                        size,
+                        8 + std::mem::offset_of!(CACHE_RELATIONSHIP, Anonymous),
                         item.GroupCount.max(1) as usize,
                     );
                     t.caches.push(CacheDescriptor {

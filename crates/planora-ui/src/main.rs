@@ -45,6 +45,7 @@ fn worker(
     poll_ms: Arc<AtomicU64>,
 ) {
     let mut next = Instant::now();
+    let mut next_topology = Instant::now();
     loop {
         while let Ok(command) = rx.try_recv() {
             let response = planora_helper::transact(&command);
@@ -90,8 +91,8 @@ fn worker(
                     helper_authorized: true,
                     ..
                 }) => {
-                    let need_topology = { state.lock().unwrap().topology.is_none() };
-                    if need_topology {
+                    if Instant::now() >= next_topology {
+                        next_topology = Instant::now() + Duration::from_secs(5);
                         if let Ok(Response::Topology(value)) =
                             planora_helper::transact(&Command::Topology)
                         {
@@ -126,12 +127,20 @@ fn worker(
                 Ok(_) => {
                     let mut shared = state.lock().unwrap();
                     shared.connected = false;
+                    shared.frame = None;
+                    shared.topology = None;
+                    shared.capabilities.clear();
                     shared.error = Some("helper authorization failed".into());
+                    next_topology = Instant::now();
                 }
                 Err(error) => {
                     let mut shared = state.lock().unwrap();
                     shared.connected = false;
+                    shared.frame = None;
+                    shared.topology = None;
+                    shared.capabilities.clear();
                     shared.error = Some(error.to_string());
+                    next_topology = Instant::now();
                 }
             }
             context.request_repaint();
@@ -1350,11 +1359,21 @@ impl eframe::App for App {
                 if ui.button("Request macOS Daemon Approval").clicked()
                     && unsafe { planora_register_daemon() } != 0
                 {
-                    ui.colored_label(
-                        p.error,
-                        "Registration failed; check Console.app for details.",
-                    );
+                    self.shared.lock().unwrap().error =
+                        Some("Registration failed; check Console.app for details.".into());
                 }
+
+                #[cfg(target_os = "linux")]
+                if ui.button("Authorize Linux Helper (Administrator Approval)").clicked()
+                    && let Err(error) = std::process::Command::new(
+                        "/usr/libexec/planora/authorize-user",
+                    )
+                    .spawn()
+                {
+                    self.shared.lock().unwrap().error = Some(error.to_string());
+                }
+                #[cfg(target_os = "linux")]
+                ui.label("After approval, sign out and back in so group membership takes effect.");
 
                 if let Some(error) = snapshot.1 {
                     ui.add_space(8.0);

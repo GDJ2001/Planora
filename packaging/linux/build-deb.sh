@@ -21,7 +21,7 @@ Package: planora
 Version: $version
 Architecture: amd64
 Maintainer: Planora <maintainers@invalid.example>
-Depends: libc6, libgcc-s1, libx11-6, libwayland-client0, libpolkit-gobject-1-0, systemd
+Depends: libc6, libgcc-s1, libx11-6, libwayland-client0, libpolkit-gobject-1-0, pkexec, systemd
 Section: utils
 Priority: optional
 Description: Native hardware visualizer and resource monitor
