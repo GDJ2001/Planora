@@ -72,7 +72,7 @@ impl TimeSeries {
 
     pub fn push(&mut self, time: Instant, timestamp_ms: u64, value: Option<f32>) {
         // Repeated reports of a cached measurement are not new observations.
-        if self.samples.back().is_some_and(|s| s.timestamp_ms == timestamp_ms) {
+        if self.samples.back().is_some_and(|s| s.timestamp_ms >= timestamp_ms) {
             return;
         }
         self.samples.push_back(Sample {
@@ -307,6 +307,7 @@ mod tests {
         let mut ts = TimeSeries::new();
         ts.push(now, 10, Some(12.0));
         ts.push(now + Duration::from_secs(1), 10, Some(12.0));
+        ts.push(now + Duration::from_secs(2), 9, Some(50.0)); // late/out-of-order
         assert_eq!(ts.samples.len(), 1);
     }
 
