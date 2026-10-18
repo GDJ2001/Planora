@@ -106,7 +106,7 @@ pub enum AppState {
 #[derive(Clone, Debug, Default)]
 pub struct DisplayPause {
     pub is_paused: bool,
-    pub frozen_frame: Option<TelemetryFrame>,
+    pub frozen_frame: Option<Arc<TelemetryFrame>>,
     pub frozen_instant: Option<Instant>,
     pub frozen_histories: Option<Arc<crate::history::ResourceHistories>>,
 }
@@ -132,7 +132,7 @@ pub const BUILD_INFO: BuildInfo = BuildInfo {
 pub struct Shared {
     pub state: Option<AppState>,
     pub last_frame_received: Option<Instant>,
-    pub frame: Option<TelemetryFrame>,
+    pub frame: Option<Arc<TelemetryFrame>>,
     pub topology: Option<Topology>,
     pub capabilities: Vec<Capability>,
     pub benchmark_state: Option<BenchmarkState>,
@@ -320,7 +320,7 @@ pub fn background_worker(
                         let mut shared = state.lock().unwrap();
                         shared.state = Some(AppState::Live);
                         shared.last_frame_received = Some(Instant::now());
-                        shared.frame = Some(*frame);
+                        shared.frame = Some(Arc::from(frame));
                     }
                     Response::BenchmarkStatus(bms) => {
                         let mut shared = state.lock().unwrap();
