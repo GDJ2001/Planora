@@ -23,6 +23,8 @@ The cache line/page probes use a validated Sattolo single cycle, bounded memory 
 
 The integration test prints full probe distributions with `cargo test -p planora-telemetry --test sampling_overhead -- --nocapture`. The reported numbers are dependent on this machine and other activity at the time of measurement.
 
+The [draft PR CI run](https://github.com/GDJ2001/Planora/actions/runs/39127769363) was triggered on 2026-10-18. Every job ended before any steps ran. GitHub's check annotation says, “The job was not started because an Actions budget is preventing further use.” This is an account-level CI gate; it provides no Windows, Fedora, Ubuntu runner, or Apple Silicon result. The local Windows session is unelevated, so the service install and approval flow were not run on this PC.
+
 ## Release gates
 
 1. Run build, Clippy, unit and integration tests on Windows 10/11, Ubuntu 24.04, Fedora, and an Apple Silicon Mac. Run the planned UI tests on each desktop compositor/window manager.
