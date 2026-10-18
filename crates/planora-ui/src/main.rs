@@ -19,7 +19,7 @@ use std::{
         mpsc::{self, SyncSender},
     },
     thread,
-    time::{Duration, Instant},
+    time::Instant,
 };
 use theme::{Palette, SIDEBAR_WIDTH, apply_egui_theme, get_palette, theme_is_dark};
 use views::{
@@ -523,6 +523,7 @@ fn main() -> eframe::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     use components::table::{SortColumn, sort_processes};
     use planora_core::{AvailabilityReason, IdentitySource, Metric, ProcessRecord, TelemetryFrame};
     use state::UserSettings;
