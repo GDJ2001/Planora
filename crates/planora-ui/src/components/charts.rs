@@ -203,6 +203,9 @@ pub fn render_chart_panel(
                     // Chart area
                     let (canvas_rect, response) =
                         ui.allocate_exact_size(Vec2::new(canvas_w, canvas_h), egui::Sense::click());
+                    if !response.has_focus() {
+                        state.keyboard_cursor_x = None;
+                    }
                     if response.clicked() {
                         response.request_focus();
                         state.keyboard_cursor_x = Some(response.interact_pointer_pos()
