@@ -35,8 +35,8 @@ fn draw_sparklines_two_series(
     let painter = ui.painter();
     painter.rect_filled(rect, CornerRadius::same(3), bg);
 
-    let segs1 = s1.normalized_segments(now, range, Duration::from_secs(3));
-    let segs2 = s2.normalized_segments(now, range, Duration::from_secs(3));
+    let segs1 = s1.downsampled_segments(now, range, Duration::from_secs(3), rect.width() as usize);
+    let segs2 = s2.downsampled_segments(now, range, Duration::from_secs(3), rect.width() as usize);
 
     // Calculate max across both
     let mut max_val = 1024.0f32; // minimum 1 KB/s baseline
