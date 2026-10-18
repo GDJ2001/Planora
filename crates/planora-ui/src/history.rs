@@ -1,3 +1,4 @@
+use planora_core::ProcessIdentity;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::VecDeque,
@@ -5,6 +6,24 @@ use std::{
 };
 
 pub const MAX_HISTORY_DURATION: Duration = Duration::from_secs(300); // 5 minutes
+
+/// Convert a measurement's wall-clock capture time into the local monotonic timeline.
+/// `received_at` and `wall_clock_at_receipt_ms` must be taken together.
+/// Never position a delayed measurement at its delivery time.
+pub fn measurement_instant(
+    received_at: Instant,
+    wall_clock_at_receipt_ms: u64,
+    sampled_at_ms: u64,
+) -> Instant {
+    if sampled_at_ms == 0 || sampled_at_ms >= wall_clock_at_receipt_ms {
+        return received_at;
+    }
+    received_at
+        .checked_sub(Duration::from_millis(
+            wall_clock_at_receipt_ms - sampled_at_ms,
+        ))
+        .unwrap_or(received_at)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum HistoryRange {
@@ -52,6 +71,10 @@ impl TimeSeries {
     }
 
     pub fn push(&mut self, time: Instant, timestamp_ms: u64, value: Option<f32>) {
+        // Repeated reports of a cached measurement are not new observations.
+        if self.samples.back().is_some_and(|s| s.timestamp_ms == timestamp_ms) {
+            return;
+        }
         self.samples.push_back(Sample {
             time,
             timestamp_ms,
@@ -100,7 +123,8 @@ impl TimeSeries {
         let mut prev_time: Option<Instant> = None;
 
         for s in &self.samples {
-            if s.time < cutoff {
+            // Paused views use an earlier `now` and must not see future data.
+            if s.time < cutoff || s.time > now {
                 continue;
             }
             if let Some(prev) = prev_time
@@ -145,7 +169,7 @@ impl TimeSeries {
         let mut min_diff = Duration::MAX;
 
         for s in &self.samples {
-            if s.time < cutoff {
+            if s.time < cutoff || s.time > now {
                 continue;
             }
             let diff = if s.time > target_time {
@@ -179,7 +203,7 @@ pub struct ResourceHistories {
     pub net_tx: TimeSeries,
 
     // Selected process history (only recorded while observed)
-    pub selected_pid: Option<u32>,
+    pub selected_identity: Option<ProcessIdentity>,
     pub selected_cpu: TimeSeries,
     pub selected_memory: TimeSeries,
 }
@@ -196,14 +220,15 @@ impl ResourceHistories {
             self.disk_write.clear();
             self.net_rx.clear();
             self.net_tx.clear();
+            self.selected_identity = None;
             self.selected_cpu.clear();
             self.selected_memory.clear();
         }
     }
 
-    pub fn set_selected_process(&mut self, pid: Option<u32>) {
-        if self.selected_pid != pid {
-            self.selected_pid = pid;
+    pub fn set_selected_process(&mut self, identity: Option<&ProcessIdentity>) {
+        if self.selected_identity.as_ref() != identity {
+            self.selected_identity = identity.cloned();
             self.selected_cpu.clear();
             self.selected_memory.clear();
         }
@@ -213,6 +238,51 @@ impl ResourceHistories {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delayed_measurements_use_capture_time() {
+        let receipt = Instant::now();
+        assert_eq!(measurement_instant(receipt, 50_000, 50_000), receipt);
+        assert_eq!(
+            measurement_instant(receipt, 50_000, 48_500),
+            receipt - Duration::from_millis(1500)
+        );
+    }
+
+    #[test]
+    fn duplicate_timestamp_does_not_add_a_sample() {
+        let now = Instant::now();
+        let mut ts = TimeSeries::new();
+        ts.push(now, 10, Some(12.0));
+        ts.push(now + Duration::from_secs(1), 10, Some(12.0));
+        assert_eq!(ts.samples.len(), 1);
+    }
+
+    #[test]
+    fn paused_window_excludes_future_samples() {
+        let now = Instant::now();
+        let mut ts = TimeSeries::new();
+        ts.push(now - Duration::from_secs(1), 100, Some(1.0));
+        ts.push(now + Duration::from_secs(1), 200, Some(99.0));
+        let segs = ts.normalized_segments(now, HistoryRange::Sec30, Duration::from_secs(3));
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].len(), 1);
+        assert_eq!(segs[0][0].1, 1.0);
+        assert_eq!(ts.query_sample(now, HistoryRange::Sec30, 1.0).unwrap().0.value, Some(1.0));
+    }
+
+    #[test]
+    fn pid_reuse_resets_selected_process_history() {
+        let now = Instant::now();
+        let mut histories = ResourceHistories::default();
+        let old = ProcessIdentity { pid: 42, started: 1, source: "test".into() };
+        let reused = ProcessIdentity { pid: 42, started: 2, source: "test".into() };
+        histories.set_selected_process(Some(&old));
+        histories.selected_cpu.push(now, 1, Some(10.0));
+        histories.set_selected_process(Some(&reused));
+        assert!(histories.selected_cpu.samples.is_empty());
+        assert_eq!(histories.selected_identity.as_ref(), Some(&reused));
+    }
 
     #[test]
     fn test_push_and_query() {
