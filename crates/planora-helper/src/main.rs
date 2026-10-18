@@ -28,10 +28,35 @@ struct State {
 static STOP: AtomicBool = AtomicBool::new(false);
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 
-#[cfg(unix)]
+// The Linux systemd unit deliberately uses an unprivileged service account
+// with CAP_PERFMON (and CAP_SYS_NICE for affinity editing). Requiring uid 0
+// here prevents the packaged service from ever starting.
+#[cfg(target_os = "linux")]
+fn has_effective_capability(status: &str, capability: u32) -> bool {
+    if capability >= u64::BITS {
+        return false;
+    }
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("CapEff:"))
+        .and_then(|value| u64::from_str_radix(value.trim(), 16).ok())
+        .is_some_and(|bits| bits & (1_u64 << capability) != 0)
+}
+
+#[cfg(target_os = "linux")]
+fn elevated() -> bool {
+    const CAP_PERFMON: u32 = 38;
+    unsafe { libc::geteuid() == 0 }
+        || std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .is_some_and(|status| has_effective_capability(&status, CAP_PERFMON))
+}
+
+#[cfg(target_os = "macos")]
 fn elevated() -> bool {
     unsafe { libc::geteuid() == 0 }
 }
+
 #[cfg(windows)]
 fn elevated() -> bool {
     unsafe { windows_sys::Win32::UI::Shell::IsUserAnAdmin() != 0 }
@@ -401,7 +426,7 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
     if !elevated() {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "Planora helper requires local administrator/root authorization",
+            "Planora helper requires administrator/root or approved Linux service capabilities",
         ));
     }
     let state = Arc::new(State {
@@ -530,4 +555,23 @@ fn main() -> io::Result<()> {
         return windows_service::run();
     }
     run_server(|| {})
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_service_tests {
+    use super::has_effective_capability;
+
+    #[test]
+    fn cap_perfmon_is_accepted_without_root() {
+        let status = "Name:\tplanora-helper\nCapEff:\t0000004000000000\n";
+        assert!(has_effective_capability(status, 38));
+    }
+
+    #[test]
+    fn missing_or_unrelated_capability_is_denied() {
+        assert!(!has_effective_capability("CapEff:\t0000000000800000\n", 38));
+        assert!(!has_effective_capability("Name:\tplanora-helper\n", 38));
+        assert!(!has_effective_capability("CapEff:\tnot-hex\n", 38));
+        assert!(!has_effective_capability("CapEff:\tffffffffffffffff\n", 64));
+    }
 }
