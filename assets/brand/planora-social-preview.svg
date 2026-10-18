@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" fill="none" role="img" aria-label="Planora"><defs><linearGradient id="bg" x2=".8" y2="1"><stop stop-color="#F8FBFF"/><stop offset="1" stop-color="#E2F0FD"/></linearGradient></defs><rect width="1200" height="630" fill="url(#bg)"/><circle cx="1045" cy="292" r="330" stroke="#D1E7FD" stroke-width="3"/><circle cx="1045" cy="292" r="230" stroke="#D1E7FD" stroke-width="3"/><g transform="translate(139 160) scale(.77)"><g><defs>
+  <linearGradient id="pBlue" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#087EFF"/><stop offset="45%" stop-color="#0860DA"/><stop offset="100%" stop-color="#061947"/></linearGradient>
+  <linearGradient id="pCyan" x1="0" y1="0" x2=".85" y2="1"><stop offset="0%" stop-color="#0667ED"/><stop offset="52%" stop-color="#0A9EF6"/><stop offset="100%" stop-color="#0BE6C6"/></linearGradient>
+  <linearGradient id="pOrb" x1="0" y1="0" x2=".9" y2="1"><stop offset="0%" stop-color="#08E5C6"/><stop offset="100%" stop-color="#056FE5"/></linearGradient>
+</defs>
+<!-- Abstract Planora P: a route winding to its destination -->
+<path fill="url(#pBlue)" d="M 8,153 C -4,116 18,58 61,30 C 101,3 142,-2 180,10 C 240,28 272,78 268,125 C 265,168 246,189 207,229 L 174,262 L 125,218 C 149,196 189,164 199,144 C 213,111 203,82 180,66 C 157,51 130,57 115,75 C 101,92 94,111 94,124 L 12,172 C 10,168 9,160 8,153 Z"/>
+<path fill="url(#pCyan)" d="M 129,132 C 101,149 61,164 38,187 C 10,214 8,248 23,275 C 34,299 60,324 83,346 C 89,352 97,354 106,344 L 159,285 L 110,245 C 87,226 91,202 113,187 C 134,171 153,162 166,151 L 155,128 C 146,130 137,132 129,132 Z"/>
+<!-- Ribbon channel/route defined through negative space -->
+<path fill="#FFFFFF" d="M 2,177 C 27,170 58,156 90,136 C 117,119 130,106 144,92 C 160,77 183,80 197,94 C 214,111 212,133 198,147 C 189,156 180,163 165,173 C 139,191 115,200 105,216 C 94,234 107,248 126,263 L 156,287 L 146,299 L 112,269 C 78,240 75,216 90,194 C 106,170 142,156 170,138 C 184,128 187,115 175,108 C 167,102 156,109 148,117 C 125,141 90,161 60,179 C 30,197 14,199 2,199 Z"/>
+<circle cx="170" cy="109" r="26" fill="#FFFFFF"/>
+<circle cx="170" cy="109" r="22" fill="url(#pOrb)"/></g></g><text x="390" y="363" font-size="153" font-family="'Nunito Sans', 'Poppins', 'Avenir Next', Arial, sans-serif" font-weight="800" letter-spacing="-4" fill="#05255D">Planora</text><text x="600" y="475" font-family="Arial, sans-serif" font-size="34" text-anchor="middle" fill="#305A84">Plan with clarity. Move with purpose.</text></svg>
