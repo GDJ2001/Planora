@@ -172,10 +172,10 @@ pub fn render_summary_cards(
                     ui.strong("Disk");
                 });
                 ui.add_space(2.0);
-                let r_rate = frame.disk_read_bytes_per_sec.value.unwrap_or(0);
-                let w_rate = frame.disk_write_bytes_per_sec.value.unwrap_or(0);
+                let r_rate = frame.disk_read_bytes_per_sec.value;
+                let w_rate = frame.disk_write_bytes_per_sec.value;
                 ui.label(
-                    egui::RichText::new(format_rate(Some((r_rate + w_rate) as f32)))
+                    egui::RichText::new(format_rate(r_rate.zip(w_rate).map(|(r, w)| r.saturating_add(w) as f32)))
                         .size(19.0)
                         .strong()
                         .color(p.text),
@@ -184,8 +184,8 @@ pub fn render_summary_cards(
                     ui.label(
                         egui::RichText::new(format!(
                             "R: {} · W: {}",
-                            format_rate(Some(r_rate as f32)),
-                            format_rate(Some(w_rate as f32))
+                            format_rate(r_rate.map(|r| r as f32)),
+                            format_rate(w_rate.map(|w| w as f32))
                         ))
                         .size(10.5)
                         .color(p.secondary),
@@ -218,10 +218,10 @@ pub fn render_summary_cards(
                     ui.strong("Network");
                 });
                 ui.add_space(2.0);
-                let rx = frame.network_rx_bytes_per_sec.value.unwrap_or(0);
-                let tx = frame.network_tx_bytes_per_sec.value.unwrap_or(0);
+                let rx = frame.network_rx_bytes_per_sec.value;
+                let tx = frame.network_tx_bytes_per_sec.value;
                 ui.label(
-                    egui::RichText::new(format_rate(Some((rx + tx) as f32)))
+                    egui::RichText::new(format_rate(rx.zip(tx).map(|(rx, tx)| rx.saturating_add(tx) as f32)))
                         .size(19.0)
                         .strong()
                         .color(p.text),
@@ -230,8 +230,8 @@ pub fn render_summary_cards(
                     ui.label(
                         egui::RichText::new(format!(
                             "↓: {} · ↑: {}",
-                            format_rate(Some(rx as f32)),
-                            format_rate(Some(tx as f32))
+                            format_rate(rx.map(|rx| rx as f32)),
+                            format_rate(tx.map(|tx| tx as f32))
                         ))
                         .size(10.5)
                         .color(p.secondary),
