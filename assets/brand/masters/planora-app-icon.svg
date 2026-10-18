@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="Planora application icon"><svg x="172" y="104" width="680" height="816" viewBox="0 0 300 360">
+  
+  <defs>
+    <linearGradient id="orbit" x1="36" y1="20" x2="236" y2="224" gradientUnits="userSpaceOnUse"><stop stop-color="#087EFF"/><stop offset=".43" stop-color="#0767D6"/><stop offset="1" stop-color="#05255D"/></linearGradient>
+    <linearGradient id="depth" x1="136" y1="38" x2="218" y2="207" gradientUnits="userSpaceOnUse"><stop stop-color="#0866D2"/><stop offset=".6" stop-color="#05255D"/><stop offset="1" stop-color="#061947"/></linearGradient>
+    <linearGradient id="tail" x1="46" y1="168" x2="133" y2="327" gradientUnits="userSpaceOnUse"><stop stop-color="#087EFF"/><stop offset="1" stop-color="#00BDD9"/></linearGradient>
+    <linearGradient id="inner" x1="163" y1="160" x2="162" y2="276" gradientUnits="userSpaceOnUse"><stop stop-color="#0A9EF6"/><stop offset="1" stop-color="#08E5C6"/></linearGradient>
+    <linearGradient id="core" x1="175" y1="85" x2="156" y2="134" gradientUnits="userSpaceOnUse"><stop stop-color="#08E5C6"/><stop offset="1" stop-color="#087EFF"/></linearGradient>
+  </defs>
+  <g transform="translate(10 10)">
+    <path fill="url(#orbit)" d="M12 160C-16 101 30 36 91 11C157-17 225 7 257 58C280 95 278 145 252 180C237 200 216 216 197 230C176 207 178 185 192 156C207 126 219 96 196 74C175 53 143 53 120 75C101 93 95 108 92 120Z"/>
+    <path fill="url(#depth)" d="M92 120C96 57 145 9 207 14C237 27 254 51 264 77C285 134 256 181 197 230C176 207 178 185 192 156C207 126 219 96 196 74C175 53 143 53 120 75C103 91 96 106 92 120Z"/>
+    <path fill="url(#tail)" d="M141 133L152 139C133 152 101 162 84 180C62 205 79 235 143 280L105 325Q96 338 84 327C35 288 2 249 18 209C32 175 76 158 141 133Z"/>
+    <path fill="url(#inner)" d="M192 156C175 175 132 180 118 198C103 221 128 248 152 271L197 230C176 207 178 185 192 156Z"/>
+    <circle fill="url(#core)" cx="163" cy="105" r="28"/>
+  </g>
+</svg></svg>

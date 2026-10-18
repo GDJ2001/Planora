@@ -1,0 +1,12 @@
+{
+  "name": "planora-brand-kit",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Asset tooling only; the Rust application is not implemented.",
+  "scripts": {
+    "brand:build": "node scripts/build-brand.cjs && python scripts/export-icons.py && node scripts/build-showcase.cjs",
+    "brand:validate": "node scripts/validate-brand.cjs && python scripts/export-icons.py --check"
+  },
+  "engines": { "node": ">=20.9.0" },
+  "devDependencies": { "sharp": "0.35.5" }
+}

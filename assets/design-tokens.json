@@ -1,0 +1,246 @@
+{
+  "$schema": "./design-tokens.schema.json",
+  "version": 1,
+  "description": "Planora project-specific token contract; not a DTCG format claim.",
+  "units": {
+    "color": "Opaque sRGB #RRGGBB.",
+    "dimension": "Logical pixels (device-independent), before platform scale factor.",
+    "duration": "Milliseconds.",
+    "lineHeight": "Unitless multiplier.",
+    "references": "Exact {primitive.path} or {semantic.path} strings. Semantic references resolve against the selected theme. No arithmetic or embedded references."
+  },
+  "primitive": {
+    "color": {
+      "brand": {
+        "navy": "#05255D",
+        "deep": "#061947",
+        "blue": "#087EFF",
+        "cyan": "#0A9EF6",
+        "teal": "#08E5C6"
+      },
+      "neutral": {
+        "50": "#F4F7FB",
+        "100": "#E9EFF7",
+        "200": "#E6EDF7",
+        "300": "#CBD5E1",
+        "400": "#A7B4C8",
+        "600": "#64748B",
+        "700": "#52627A",
+        "800": "#23324B",
+        "850": "#19263B",
+        "900": "#111C2E",
+        "950": "#0B1220",
+        "white": "#FFFFFF",
+        "ink": "#14213D"
+      },
+      "blue": {
+        "300": "#93C5FD",
+        "400": "#60A5FA",
+        "600": "#2563EB",
+        "700": "#1D4ED8",
+        "800": "#1E40AF"
+      },
+      "cyan": {
+        "400": "#22D3EE",
+        "700": "#0E7490"
+      },
+      "violet": {
+        "400": "#A78BFA",
+        "600": "#7C3AED"
+      },
+      "amber": {
+        "400": "#FBBF24",
+        "700": "#B45309"
+      },
+      "pink": {
+        "400": "#F472B6",
+        "700": "#BE185D"
+      },
+      "green": {
+        "400": "#34D399",
+        "700": "#047857"
+      },
+      "red": {
+        "400": "#F87171",
+        "700": "#B91C1C"
+      }
+    },
+    "spacing": {
+      "0": 0,
+      "1": 4,
+      "2": 8,
+      "3": 12,
+      "4": 16,
+      "5": 20,
+      "6": 24,
+      "8": 32,
+      "10": 40,
+      "12": 48
+    },
+    "radius": {
+      "small": 6,
+      "medium": 8,
+      "large": 12,
+      "pill": 999
+    },
+    "typography": {
+      "family": {
+        "ui": "system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif",
+        "mono": "ui-monospace, \"SFMono-Regular\", Consolas, \"Liberation Mono\", monospace"
+      },
+      "size": {
+        "caption": 12,
+        "body": 14,
+        "label": 14,
+        "heading": 20,
+        "title": 32,
+        "display": 48
+      },
+      "weight": {
+        "regular": 400,
+        "medium": 500,
+        "semibold": 600,
+        "bold": 700
+      },
+      "lineHeight": {
+        "body": 1.5,
+        "heading": 1.2
+      }
+    },
+    "duration": {
+      "none": 0,
+      "fast": 120,
+      "normal": 180
+    }
+  },
+  "semantic": {
+    "dark": {
+      "background": "{primitive.color.neutral.950}",
+      "surface": "{primitive.color.neutral.900}",
+      "surfaceRaised": "{primitive.color.neutral.850}",
+      "text": "{primitive.color.neutral.200}",
+      "textSecondary": "{primitive.color.neutral.400}",
+      "borderSubtle": "{primitive.color.neutral.800}",
+      "borderControl": "{primitive.color.neutral.600}",
+      "hover": "{primitive.color.neutral.850}",
+      "pressed": "{primitive.color.neutral.800}",
+      "selected": "{primitive.color.neutral.800}",
+      "disabledBackground": "{primitive.color.neutral.800}",
+      "disabledText": "{primitive.color.neutral.400}",
+      "primary": "{primitive.color.blue.600}",
+      "primaryHover": "{primitive.color.blue.700}",
+      "primaryPressed": "{primitive.color.blue.800}",
+      "onPrimary": "{primitive.color.neutral.white}",
+      "accent": "{primitive.color.blue.400}",
+      "focus": "{primitive.color.blue.400}",
+      "selectedText": "{primitive.color.blue.300}",
+      "success": "{primitive.color.green.400}",
+      "warning": "{primitive.color.amber.400}",
+      "error": "{primitive.color.red.400}",
+      "resource": {
+        "cpu": "{primitive.color.blue.400}",
+        "memory": "{primitive.color.cyan.400}",
+        "gpu": "{primitive.color.violet.400}",
+        "disk": "{primitive.color.amber.400}",
+        "network": "{primitive.color.pink.400}"
+      }
+    },
+    "light": {
+      "background": "{primitive.color.neutral.50}",
+      "surface": "{primitive.color.neutral.white}",
+      "surfaceRaised": "{primitive.color.neutral.white}",
+      "text": "{primitive.color.neutral.ink}",
+      "textSecondary": "{primitive.color.neutral.700}",
+      "borderSubtle": "{primitive.color.neutral.300}",
+      "borderControl": "{primitive.color.neutral.600}",
+      "hover": "{primitive.color.neutral.100}",
+      "pressed": "{primitive.color.neutral.300}",
+      "selected": "{primitive.color.neutral.100}",
+      "disabledBackground": "{primitive.color.neutral.100}",
+      "disabledText": "{primitive.color.neutral.700}",
+      "primary": "{primitive.color.blue.600}",
+      "primaryHover": "{primitive.color.blue.700}",
+      "primaryPressed": "{primitive.color.blue.800}",
+      "onPrimary": "{primitive.color.neutral.white}",
+      "accent": "{primitive.color.blue.600}",
+      "focus": "{primitive.color.blue.600}",
+      "selectedText": "{primitive.color.blue.800}",
+      "success": "{primitive.color.green.700}",
+      "warning": "{primitive.color.amber.700}",
+      "error": "{primitive.color.red.700}",
+      "resource": {
+        "cpu": "{primitive.color.blue.600}",
+        "memory": "{primitive.color.cyan.700}",
+        "gpu": "{primitive.color.violet.600}",
+        "disk": "{primitive.color.amber.700}",
+        "network": "{primitive.color.pink.700}"
+      }
+    }
+  },
+  "component": {
+    "button": {
+      "background": "{semantic.primary}",
+      "foreground": "{semantic.onPrimary}",
+      "hoverBackground": "{semantic.primaryHover}",
+      "pressedBackground": "{semantic.primaryPressed}",
+      "disabledBackground": "{semantic.disabledBackground}",
+      "disabledForeground": "{semantic.disabledText}",
+      "radius": "{primitive.radius.small}",
+      "height": 36,
+      "paddingInline": "{primitive.spacing.4}"
+    },
+    "input": {
+      "background": "{semantic.surface}",
+      "foreground": "{semantic.text}",
+      "border": "{semantic.borderControl}",
+      "placeholder": "{semantic.textSecondary}",
+      "focus": "{semantic.focus}",
+      "radius": "{primitive.radius.small}",
+      "height": 36
+    },
+    "panel": {
+      "background": "{semantic.surface}",
+      "border": "{semantic.borderSubtle}",
+      "radius": "{primitive.radius.medium}",
+      "padding": "{primitive.spacing.6}"
+    },
+    "table": {
+      "rowHeight": 40,
+      "headerForeground": "{semantic.textSecondary}",
+      "rowForeground": "{semantic.text}",
+      "hoverBackground": "{semantic.hover}",
+      "selectedBackground": "{semantic.selected}",
+      "selectedForeground": "{semantic.selectedText}"
+    },
+    "chart": {
+      "grid": "{semantic.borderSubtle}",
+      "label": "{semantic.textSecondary}",
+      "lineWidth": 2,
+      "pointRadius": 3
+    },
+    "focus": {
+      "color": "{semantic.focus}",
+      "width": 2,
+      "offset": 3
+    },
+    "icon": {
+      "size": 24,
+      "strokeWidth": 1.75
+    },
+    "motion": {
+      "transition": "{primitive.duration.fast}",
+      "reducedMotion": "{primitive.duration.none}"
+    }
+  },
+  "behavior": {
+    "themeDefault": "system",
+    "themeChoices": [
+      "system",
+      "dark",
+      "light"
+    ],
+    "showcaseInitialTheme": "dark",
+    "numericStyle": "tabular-nums",
+    "status": "Pair status colors with text and icons; resource colors identify series, never severity."
+  }
+}

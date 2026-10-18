@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Planora token document",
+  "type": "object",
+  "required": [
+    "version",
+    "units",
+    "primitive",
+    "semantic",
+    "component",
+    "behavior"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "units": {
+      "type": "object"
+    },
+    "primitive": {
+      "type": "object",
+      "required": [
+        "color",
+        "spacing",
+        "radius",
+        "typography",
+        "duration"
+      ]
+    },
+    "semantic": {
+      "type": "object",
+      "required": [
+        "dark",
+        "light"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "dark": {
+          "type": "object"
+        },
+        "light": {
+          "type": "object"
+        }
+      }
+    },
+    "component": {
+      "type": "object"
+    },
+    "behavior": {
+      "type": "object"
+    }
+  }
+}
