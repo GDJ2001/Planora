@@ -346,7 +346,7 @@ mod tests {
             let value = if idx == 375 { Some(99.0) }
                 else if idx == 500 { None }
                 else { Some(1.0) };
-            ts.push(t, idx as u64 + 1, value);
+            ts.push(t, idx + 1, value);
         }
         let full = ts.normalized_segments(now, HistoryRange::Sec30, Duration::from_secs(2));
         let compact = ts.downsampled_segments(now, HistoryRange::Sec30, Duration::from_secs(2), 40);
