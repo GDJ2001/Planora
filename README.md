@@ -11,9 +11,8 @@
 
 See how processes use your computer’s hardware and resources.
 
-[![Native CI](https://github.com/Planora/Planora/actions/workflows/native.yml/badge.svg)](https://github.com/Planora/Planora/actions/workflows/native.yml)
+[![Native CI](https://github.com/GDJ2001/Planora/actions/workflows/native.yml/badge.svg)](https://github.com/Planora/Planora/actions/workflows/native.yml)
 [![Rust 1.95.0](https://img.shields.io/badge/rust-1.95.0-blue.svg)](rust-toolchain.toml)
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
 </div>
 
@@ -25,10 +24,12 @@ Planora couples a strictly **unelevated graphical user interface** (`egui`/`efra
 
 ---
 
+[**Current implementation audit and release gates**](docs/implementation-status.md)
+
 ## Key Features
 
 - **Micro-Architectural Topology Canvas**: Interactive pan/zoom canvas rendering physical packages, NUMA domains, core complexes, SMT logical processors, L1/L2/L3 cache hierarchies, and GPU compute nodes.
-- **High-Frequency Telemetry**: Configurable sampling interval (50 ms – 1000 ms, default 100 ms) with measured overhead under 30 ms.
+- **High-Frequency Telemetry**: Configurable sampling interval (50 ms – 1000 ms, default 100 ms) with measured per-sample overhead; cross-platform overhead targets still require independent verification.
 - **PID-Reuse Protection**: Tracks processes using both OS Process IDs (PID) and immutable OS creation identities (`SystemBasicProcessInformation` monotonic sequence numbers on Windows 11 with `FILETIME` fallback; `/proc/[pid]/stat` ticks on Linux).
 - **Explicit, Safe Affinity Control**: Two-phase revalidation prevents race conditions or applying affinity sets to reused PIDs. Rejects empty or invalid masks.
 - **Bounded Hardware Probes**:
@@ -150,9 +151,9 @@ bash packaging/macos/build-package.sh
 
 ---
 
-## Verified Hardware Benchmarks & Profiling
+## Reference Hardware Benchmarks & Profiling (not independently verified)
 
-Planora's sampling overhead and cache benchmark methodology have been verified on physical hardware:
+The following machine configuration and measurements are **reference results documented by the project**, not independently reproducible evidence: the repository does not currently contain raw timing traces or a repeatable hardware-test report. Treat these as provisional until measured again and checked against OS tools:
 
 ### Test Machine Configuration
 - **Platform**: Windows 11 x86_64
@@ -215,8 +216,4 @@ npm run brand:validate
 
 ## License
 
-This project is licensed under either of:
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
-
-at your option.
+A distribution license has not yet been added to this repository. Do not assume an open-source license until the project owner selects one and commits the corresponding license file.
