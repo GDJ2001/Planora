@@ -72,7 +72,11 @@ impl TimeSeries {
 
     pub fn push(&mut self, time: Instant, timestamp_ms: u64, value: Option<f32>) {
         // Repeated reports of a cached measurement are not new observations.
-        if self.samples.back().is_some_and(|s| s.timestamp_ms >= timestamp_ms) {
+        if self
+            .samples
+            .back()
+            .is_some_and(|s| s.timestamp_ms >= timestamp_ms)
+        {
             return;
         }
         self.samples.push_back(Sample {
@@ -321,15 +325,31 @@ mod tests {
         assert_eq!(segs.len(), 1);
         assert_eq!(segs[0].len(), 1);
         assert_eq!(segs[0][0].1, 1.0);
-        assert_eq!(ts.query_sample(now, HistoryRange::Sec30, 1.0).unwrap().0.value, Some(1.0));
+        assert_eq!(
+            ts.query_sample(now, HistoryRange::Sec30, 1.0)
+                .unwrap()
+                .0
+                .value,
+            Some(1.0)
+        );
     }
 
     #[test]
     fn pid_reuse_resets_selected_process_history() {
         let now = Instant::now();
         let mut histories = ResourceHistories::default();
-        let old = ProcessIdentity { pid: 42, started: 1, source: "test".into() };
-        let reused = ProcessIdentity { pid: 42, started: 2, source: "test".into() };
+        let old = ProcessIdentity {
+            pid: 42,
+            started: 1,
+            sequence_number: None,
+            source: planora_core::IdentitySource::SysinfoEpochSeconds,
+        };
+        let reused = ProcessIdentity {
+            pid: 42,
+            started: 2,
+            sequence_number: None,
+            source: planora_core::IdentitySource::SysinfoEpochSeconds,
+        };
         histories.set_selected_process(Some(&old));
         histories.selected_cpu.push(now, 1, Some(10.0));
         histories.set_selected_process(Some(&reused));
@@ -343,9 +363,13 @@ mod tests {
         let mut ts = TimeSeries::new();
         for idx in 0..1_000 {
             let t = now - Duration::from_millis((999 - idx) * 10);
-            let value = if idx == 375 { Some(99.0) }
-                else if idx == 500 { None }
-                else { Some(1.0) };
+            let value = if idx == 375 {
+                Some(99.0)
+            } else if idx == 500 {
+                None
+            } else {
+                Some(1.0)
+            };
             ts.push(t, idx + 1, value);
         }
         let full = ts.normalized_segments(now, HistoryRange::Sec30, Duration::from_secs(2));

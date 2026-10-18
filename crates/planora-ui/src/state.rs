@@ -137,7 +137,7 @@ pub struct Shared {
     pub capabilities: Vec<Capability>,
     pub benchmark_state: Option<BenchmarkState>,
     pub diagnostic_logs: Vec<DiagnosticEntry>,
-    pub affinity: Option<Vec<u16>>,
+    pub affinity: Option<(planora_core::ProcessIdentity, Vec<u16>)>,
     pub action_error: Option<String>,
 }
 
@@ -330,13 +330,17 @@ pub fn background_worker(
                         let mut shared = state.lock().unwrap();
                         shared.diagnostic_logs = logs;
                     }
-                    Response::Affinity { logical_cpus, .. } => {
-                        let mut shared = state.lock().unwrap();
-                        shared.affinity = Some(logical_cpus);
+                    Response::Affinity {
+                        process,
+                        logical_cpus,
                     }
-                    Response::AffinityChanged { logical_cpus, .. } => {
+                    | Response::AffinityChanged {
+                        process,
+                        logical_cpus,
+                        ..
+                    } => {
                         let mut shared = state.lock().unwrap();
-                        shared.affinity = Some(logical_cpus);
+                        shared.affinity = Some((process, logical_cpus));
                     }
                     Response::Error { code, message } => {
                         let mut shared = state.lock().unwrap();

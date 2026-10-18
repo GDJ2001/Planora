@@ -175,10 +175,12 @@ pub fn render_summary_cards(
                 let r_rate = frame.disk_read_bytes_per_sec.value;
                 let w_rate = frame.disk_write_bytes_per_sec.value;
                 ui.label(
-                    egui::RichText::new(format_rate(r_rate.zip(w_rate).map(|(r, w)| r.saturating_add(w) as f32)))
-                        .size(19.0)
-                        .strong()
-                        .color(p.text),
+                    egui::RichText::new(format_rate(
+                        r_rate.zip(w_rate).map(|(r, w)| r.saturating_add(w) as f32),
+                    ))
+                    .size(19.0)
+                    .strong()
+                    .color(p.text),
                 );
                 ui.horizontal(|ui| {
                     ui.label(
@@ -221,10 +223,12 @@ pub fn render_summary_cards(
                 let rx = frame.network_rx_bytes_per_sec.value;
                 let tx = frame.network_tx_bytes_per_sec.value;
                 ui.label(
-                    egui::RichText::new(format_rate(rx.zip(tx).map(|(rx, tx)| rx.saturating_add(tx) as f32)))
-                        .size(19.0)
-                        .strong()
-                        .color(p.text),
+                    egui::RichText::new(format_rate(
+                        rx.zip(tx).map(|(rx, tx)| rx.saturating_add(tx) as f32),
+                    ))
+                    .size(19.0)
+                    .strong()
+                    .color(p.text),
                 );
                 ui.horizontal(|ui| {
                     ui.label(

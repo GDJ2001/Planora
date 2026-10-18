@@ -153,10 +153,14 @@ impl eframe::App for App {
                 if frame.cpu_percent.sampled_at_ms != self.histories.last_cpu_sampled_at_ms {
                     self.histories.last_cpu_sampled_at_ms = frame.cpu_percent.sampled_at_ms;
                     let measured_at = measurement_instant(
-                        now, wall_clock_now_ms, frame.cpu_percent.sampled_at_ms,
+                        now,
+                        wall_clock_now_ms,
+                        frame.cpu_percent.sampled_at_ms,
                     );
                     self.histories.cpu.push(
-                        measured_at, frame.cpu_percent.sampled_at_ms, frame.cpu_percent.value,
+                        measured_at,
+                        frame.cpu_percent.sampled_at_ms,
+                        frame.cpu_percent.value,
                     );
                 }
 
@@ -169,22 +173,34 @@ impl eframe::App for App {
                     _ => None,
                 };
                 let measured_at = measurement_instant(
-                    now, wall_clock_now_ms, frame.memory_used_bytes.sampled_at_ms,
+                    now,
+                    wall_clock_now_ms,
+                    frame.memory_used_bytes.sampled_at_ms,
                 );
                 self.histories.memory_pct.push(
-                    measured_at, frame.memory_used_bytes.sampled_at_ms, mem_pct,
+                    measured_at,
+                    frame.memory_used_bytes.sampled_at_ms,
+                    mem_pct,
                 );
 
                 // Disk
                 let disk_r = frame.disk_read_bytes_per_sec.value.map(|v| v as f32);
                 let disk_w = frame.disk_write_bytes_per_sec.value.map(|v| v as f32);
                 self.histories.disk_read.push(
-                    measurement_instant(now, wall_clock_now_ms, frame.disk_read_bytes_per_sec.sampled_at_ms),
+                    measurement_instant(
+                        now,
+                        wall_clock_now_ms,
+                        frame.disk_read_bytes_per_sec.sampled_at_ms,
+                    ),
                     frame.disk_read_bytes_per_sec.sampled_at_ms,
                     disk_r,
                 );
                 self.histories.disk_write.push(
-                    measurement_instant(now, wall_clock_now_ms, frame.disk_write_bytes_per_sec.sampled_at_ms),
+                    measurement_instant(
+                        now,
+                        wall_clock_now_ms,
+                        frame.disk_write_bytes_per_sec.sampled_at_ms,
+                    ),
                     frame.disk_write_bytes_per_sec.sampled_at_ms,
                     disk_w,
                 );
@@ -193,12 +209,20 @@ impl eframe::App for App {
                 let net_rx = frame.network_rx_bytes_per_sec.value.map(|v| v as f32);
                 let net_tx = frame.network_tx_bytes_per_sec.value.map(|v| v as f32);
                 self.histories.net_rx.push(
-                    measurement_instant(now, wall_clock_now_ms, frame.network_rx_bytes_per_sec.sampled_at_ms),
+                    measurement_instant(
+                        now,
+                        wall_clock_now_ms,
+                        frame.network_rx_bytes_per_sec.sampled_at_ms,
+                    ),
                     frame.network_rx_bytes_per_sec.sampled_at_ms,
                     net_rx,
                 );
                 self.histories.net_tx.push(
-                    measurement_instant(now, wall_clock_now_ms, frame.network_tx_bytes_per_sec.sampled_at_ms),
+                    measurement_instant(
+                        now,
+                        wall_clock_now_ms,
+                        frame.network_tx_bytes_per_sec.sampled_at_ms,
+                    ),
                     frame.network_tx_bytes_per_sec.sampled_at_ms,
                     net_tx,
                 );
@@ -214,7 +238,11 @@ impl eframe::App for App {
                         proc.cpu_percent.value,
                     );
                     self.histories.selected_memory.push(
-                        measurement_instant(now, wall_clock_now_ms, proc.memory_bytes.sampled_at_ms),
+                        measurement_instant(
+                            now,
+                            wall_clock_now_ms,
+                            proc.memory_bytes.sampled_at_ms,
+                        ),
                         proc.memory_bytes.sampled_at_ms,
                         proc.memory_bytes.value.map(|b| b as f32),
                     );
@@ -235,14 +263,15 @@ impl eframe::App for App {
             self.display_pause.frozen_histories = None;
         }
 
-        let render_frame: Option<Arc<planora_core::TelemetryFrame>> = if self.display_pause.is_paused {
-            self.display_pause
-                .frozen_frame
-                .clone()
-                .or_else(|| frame_opt.clone())
-        } else {
-            frame_opt.clone()
-        };
+        let render_frame: Option<Arc<planora_core::TelemetryFrame>> =
+            if self.display_pause.is_paused {
+                self.display_pause
+                    .frozen_frame
+                    .clone()
+                    .or_else(|| frame_opt.clone())
+            } else {
+                frame_opt.clone()
+            };
 
         let render_now = if self.display_pause.is_paused {
             self.display_pause.frozen_instant.unwrap_or(now)
@@ -521,10 +550,10 @@ fn main() -> eframe::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
     use components::table::{SortColumn, sort_processes};
     use planora_core::{AvailabilityReason, IdentitySource, Metric, ProcessRecord, TelemetryFrame};
     use state::UserSettings;
+    use std::time::Duration;
     use theme::Theme;
 
     fn test_frame() -> TelemetryFrame {

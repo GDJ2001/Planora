@@ -261,9 +261,15 @@ pub fn render_overview_view(
 
     // Clear a stale crosshair once no chart is hovered or keyboard-focused.
     let panels = [
-        &state.cpu_chart, &state.mem_chart, &state.disk_chart, &state.net_chart,
+        &state.cpu_chart,
+        &state.mem_chart,
+        &state.disk_chart,
+        &state.net_chart,
     ];
-    if !panels.iter().any(|panel| panel.pointer_inside || panel.keyboard_cursor_x.is_some()) {
+    if !panels
+        .iter()
+        .any(|panel| panel.pointer_inside || panel.keyboard_cursor_x.is_some())
+    {
         crosshair_x = None;
     }
     state.shared_crosshair_x = crosshair_x;

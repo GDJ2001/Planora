@@ -435,20 +435,7 @@ fn render_core_heatmap(ui: &mut egui::Ui, result: &BenchmarkResult, p: Palette) 
 
 /// The benchmark measures each unordered CPU pair once. The heatmap is symmetric.
 fn pair_matches(measured_a: u16, measured_b: u16, cell_a: u16, cell_b: u16) -> bool {
-    (measured_a == cell_a && measured_b == cell_b)
-        || (measured_a == cell_b && measured_b == cell_a)
-}
-
-#[cfg(test)]
-mod heatmap_tests {
-    use super::pair_matches;
-
-    #[test]
-    fn measured_pair_is_visible_in_both_triangles() {
-        assert!(pair_matches(2, 5, 2, 5));
-        assert!(pair_matches(2, 5, 5, 2));
-        assert!(!pair_matches(2, 5, 2, 7));
-    }
+    (measured_a == cell_a && measured_b == cell_b) || (measured_a == cell_b && measured_b == cell_a)
 }
 
 fn render_points_table(ui: &mut egui::Ui, points: &[BenchmarkPoint], _p: Palette) {
@@ -477,4 +464,16 @@ fn render_points_table(ui: &mut egui::Ui, points: &[BenchmarkPoint], _p: Palette
                     }
                 });
         });
+}
+
+#[cfg(test)]
+mod heatmap_tests {
+    use super::pair_matches;
+
+    #[test]
+    fn measured_pair_is_visible_in_both_triangles() {
+        assert!(pair_matches(2, 5, 2, 5));
+        assert!(pair_matches(2, 5, 5, 2));
+        assert!(!pair_matches(2, 5, 2, 7));
+    }
 }
