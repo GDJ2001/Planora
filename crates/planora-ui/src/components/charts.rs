@@ -87,6 +87,8 @@ pub fn render_chart_panel(
             ui.add_space(8.0);
 
             if state.show_table {
+                // The alternate view has no chart focus or active cursor.
+                state.keyboard_cursor_x = None;
                 // Tabular view of points
                 ui.label(
                     egui::RichText::new("Tabular Sample History")
