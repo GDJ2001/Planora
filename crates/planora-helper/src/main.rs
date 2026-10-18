@@ -46,7 +46,8 @@ fn has_effective_capability(status: &str, capability: u32) -> bool {
 #[cfg(target_os = "linux")]
 fn elevated() -> bool {
     const CAP_PERFMON: u32 = 38;
-    unsafe { libc::geteuid() == 0 }
+    let is_root = unsafe { libc::geteuid() == 0 };
+    is_root
         || std::fs::read_to_string("/proc/self/status")
             .ok()
             .is_some_and(|status| has_effective_capability(&status, CAP_PERFMON))
