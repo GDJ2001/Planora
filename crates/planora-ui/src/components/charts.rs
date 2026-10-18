@@ -297,7 +297,7 @@ pub fn render_chart_panel(
                         if !enabled {
                             continue;
                         }
-                        let segs = c.series.normalized_segments(now, state.range, gap_thresh);
+                        let segs = c.series.downsampled_segments(now, state.range, gap_thresh, canvas_w as usize);
                         for seg in &segs {
                             if seg.is_empty() {
                                 continue;
