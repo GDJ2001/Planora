@@ -417,19 +417,27 @@ impl eframe::App for App {
 
             // Dispatch active page
             match self.page {
-                Page::Overview => render_overview_view(
-                    ui,
-                    frame,
-                    render_histories,
-                    &mut self.overview_state,
-                    &app_state,
-                    &mut self.display_pause,
-                    current_poll,
-                    &mut self.selected,
-                    &mut self.page,
-                    render_now,
-                    p,
-                ),
+                Page::Overview => {
+                    // Overview has multiple stacked charts and a process table;
+                    // always make the whole page scroll at the minimum window size.
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            render_overview_view(
+                                ui,
+                                frame,
+                                render_histories,
+                                &mut self.overview_state,
+                                &app_state,
+                                &mut self.display_pause,
+                                current_poll,
+                                &mut self.selected,
+                                &mut self.page,
+                                render_now,
+                                p,
+                            );
+                        });
+                },
                 Page::Processes => render_processes_view(
                     ui,
                     frame,
@@ -454,16 +462,22 @@ impl eframe::App for App {
                     current_poll,
                     p,
                 ),
-                Page::Benchmarks => render_benchmarks_view(
-                    ui,
-                    shared_copy.benchmark_state.as_ref(),
-                    &mut self.benchmarks_state,
-                    &app_state,
-                    &mut self.display_pause,
-                    current_poll,
-                    &self.tx,
-                    p,
-                ),
+                Page::Benchmarks => {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            render_benchmarks_view(
+                                ui,
+                                shared_copy.benchmark_state.as_ref(),
+                                &mut self.benchmarks_state,
+                                &app_state,
+                                &mut self.display_pause,
+                                current_poll,
+                                &self.tx,
+                                p,
+                            );
+                        });
+                },
                 Page::Capabilities => render_capabilities_view(
                     ui,
                     &caps,
@@ -486,10 +500,8 @@ impl eframe::App for App {
             }
         });
 
-        // Repaint request management: if reduced motion or paused, avoid continuous high-frequency redraws
-        if !self.settings.reduced_motion && !self.display_pause.is_paused {
-            ctx.request_repaint_after(Duration::from_millis(current_poll.max(50)));
-        }
+        // Background telemetry and direct UI events request repaints.
+        // A permanent animation timer would keep repainting an idle window.
     }
 }
 
