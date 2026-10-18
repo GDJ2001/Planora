@@ -6,7 +6,7 @@
 
 Planora is a Rust 2024 desktop resource monitor and hardware visualizer. Its native interface uses `eframe`/`egui` 0.37 and the [Planora design tokens](assets/design-tokens.json). The workspace targets Windows 10/11 x86-64, Linux x86-64, and Apple Silicon macOS 13+; it does not include a browser edition.
 
-The current implementation includes system and process telemetry, topology discovery, an overview, process search/sort and inspector, a hardware canvas, resource charts, explicit cancellable probes, and affinity editing on Windows and Linux. Monitoring requires a locally authorized privileged helper. Measurements that lack a supported source are shown as **Unavailable** with a reason. See [development status and verification](docs/development-status.md) for platform-specific limits and tests still required before release.
+The current implementation includes system and process telemetry, topology discovery, an overview, process search/sort and inspector, a hardware canvas, resource charts, explicit cancellable probes, and affinity editing on Windows and Linux. Monitoring requires a locally authorized privileged helper. Measurements that lack a supported source are shown as **Unavailable** with a reason. See [development status and verification](docs/development-status.md) and [implementation audit status](docs/implementation-status.md) for platform-specific limits and release gates.
 
 ## Build and test
 
@@ -52,3 +52,7 @@ These package recipes produce development artifacts. Installation, upgrade, remo
 | [Brand guidelines](docs/brand-guidelines.md) | Logo, typography, color, and icon rules |
 
 The supplied [hardware visualizer development document](docs/hwviz_%20Micro-Architectural%20Hardware%20Visualizer%20%26%20Task%20Manager%20-%20Developer%20Documentation.docx) is design input. Its code snippets and performance claims are evaluated against current platform APIs and measurements rather than assumed to be implemented verbatim.
+
+## License
+
+A distribution license has not yet been added to this repository. Do not assume an open-source license until the project owner selects one and commits the corresponding license file.

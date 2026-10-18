@@ -433,6 +433,12 @@ mod tests {
     }
 
     #[test]
+    fn same_cpu_never_produces_fake_zero_latency() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        assert!(core_pair_latency(0, 0, cancel).is_err());
+    }
+
+    #[test]
     fn matrix_validates_cpu_selection() {
         let cancel = Arc::new(AtomicBool::new(false));
         assert!(run_core_matrix(&[0], cancel.clone()).is_err());

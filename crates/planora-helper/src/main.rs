@@ -116,23 +116,32 @@ struct State {
     diagnostics: Arc<DiagnosticLogger>,
 }
 
+// The Linux systemd unit uses an unprivileged service account
+// with CAP_SYS_NICE (for affinity) and/or CAP_PERFMON.
+#[cfg(target_os = "linux")]
+fn has_effective_capability(status: &str, capability: u32) -> bool {
+    if capability >= u64::BITS {
+        return false;
+    }
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("CapEff:"))
+        .and_then(|value| u64::from_str_radix(value.trim(), 16).ok())
+        .is_some_and(|bits| bits & (1_u64 << capability) != 0)
+}
+
 #[cfg(target_os = "linux")]
 fn elevated() -> bool {
-    if unsafe { libc::geteuid() == 0 } {
-        return true;
-    }
-    // Grant only privileges required by implemented operations (e.g. CAP_SYS_NICE for scheduling)
-    const CAP_SYS_NICE: u64 = 1 << 23;
-    let effective = std::fs::read_to_string("/proc/self/status")
-        .ok()
-        .and_then(|status| {
-            status.lines().find_map(|line| {
-                line.strip_prefix("CapEff:")
-                    .and_then(|hex| u64::from_str_radix(hex.trim(), 16).ok())
+    const CAP_SYS_NICE: u32 = 23;
+    const CAP_PERFMON: u32 = 38;
+    let is_root = unsafe { libc::geteuid() == 0 };
+    is_root
+        || std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .is_some_and(|status| {
+                has_effective_capability(&status, CAP_SYS_NICE)
+                    || has_effective_capability(&status, CAP_PERFMON)
             })
-        })
-        .unwrap_or(0);
-    effective & CAP_SYS_NICE == CAP_SYS_NICE
 }
 
 #[cfg(target_os = "macos")]
@@ -581,7 +590,7 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
     if !elevated() {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "Planora helper requires local administrator/root authorization",
+            "Planora helper requires administrator/root or approved Linux service capabilities",
         ));
     }
 
@@ -807,4 +816,23 @@ fn main() -> io::Result<()> {
     }
 
     run_server(|| {})
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_service_tests {
+    use super::has_effective_capability;
+
+    #[test]
+    fn cap_perfmon_is_accepted_without_root() {
+        let status = "Name:\tplanora-helper\nCapEff:\t0000004000000000\n";
+        assert!(has_effective_capability(status, 38));
+    }
+
+    #[test]
+    fn missing_or_unrelated_capability_is_denied() {
+        assert!(!has_effective_capability("CapEff:\t0000000000800000\n", 38));
+        assert!(!has_effective_capability("Name:\tplanora-helper\n", 38));
+        assert!(!has_effective_capability("CapEff:\tnot-hex\n", 38));
+        assert!(!has_effective_capability("CapEff:\tffffffffffffffff\n", 64));
+    }
 }
