@@ -128,7 +128,7 @@ pub fn run_cache_probe(mode: ChaseMode, cancel: &AtomicBool) -> Result<Benchmark
 /// CAS ping-pong. Returns a measured transfer estimate, never a guaranteed fabric latency.
 pub fn core_pair_latency(a: usize, b: usize, cancel: Arc<AtomicBool>) -> Result<f32, String> {
     if a == b {
-        return Ok(0.0);
+        return Err("inter-core latency requires two distinct logical CPUs".into());
     }
     if !cfg!(any(target_arch = "x86_64", target_arch = "x86")) {
         return Err("exact core pinning unsupported on this architecture".into());
@@ -265,6 +265,12 @@ mod tests {
         assert!(res.is_err());
         assert_eq!(res.unwrap_err(), "cancelled");
     }
+    #[test]
+    fn same_cpu_never_produces_fake_zero_latency() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        assert!(core_pair_latency(0, 0, cancel).is_err());
+    }
+
     #[test]
     fn matrix_validates_cpu_selection() {
         let cancel = Arc::new(AtomicBool::new(false));
