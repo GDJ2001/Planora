@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+if [ "$(id -u)" -ne 0 ]; then
+  exec pkexec /usr/libexec/planora/authorize-user
+fi
+case "${PKEXEC_UID:-}" in
+  ''|*[!0-9]*) echo 'Run this command through pkexec from the user session.' >&2; exit 1 ;;
+esac
+user_name=$(getent passwd "$PKEXEC_UID" | cut -d: -f1)
+[ -n "$user_name" ] || { echo 'User not found.' >&2; exit 1; }
+/usr/sbin/usermod -aG planora-users "$user_name"
+echo 'Planora authorization added. Sign out and back in for group membership to take effect.'

@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/planora-core",
+  "crates/planora-topology",
+  "crates/planora-telemetry",
+  "crates/planora-bench",
+  "crates/planora-helper",
+  "crates/planora-ui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+sysinfo = "0.39.6"
+raw-cpuid = "11.6"
+eframe = { version = "0.37", default-features = false, features = ["wgpu", "default_fonts", "system_fonts", "accesskit", "x11", "wayland", "persistence"] }
+interprocess = "2.4.6"
+libc = "0.2"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_System_ProcessStatus", "Win32_Graphics", "Win32_Graphics_Gdi", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_System_IO"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"

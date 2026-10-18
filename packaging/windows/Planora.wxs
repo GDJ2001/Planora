@@ -1,0 +1,29 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Planora" Manufacturer="Planora" Version="0.1.0" UpgradeCode="D8D1E733-9195-4B0D-9B9C-23E1B455D8D8" Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer Planora version is already installed." />
+    <MediaTemplate />
+    <Icon Id="PlanoraIcon" SourceFile="$(var.ProjectDir)\assets\brand\platforms\windows\planora.ico" />
+    <Property Id="ARPPRODUCTICON" Value="PlanoraIcon" />
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Planora">
+        <Component Id="PlanoraApp" Guid="*">
+          <File Id="PlanoraExe" Source="$(var.SourceDir)\planora.exe" KeyPath="yes" />
+          <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="Planora" Target="[INSTALLFOLDER]planora.exe" Icon="PlanoraIcon" WorkingDirectory="INSTALLFOLDER" />
+        </Component>
+        <Component Id="PlanoraHelper" Guid="*">
+          <File Id="PlanoraHelperExe" Source="$(var.SourceDir)\planora-helper.exe" KeyPath="yes" />
+          <ServiceInstall Id="InstallHelper" Name="PlanoraHelper" DisplayName="Planora Helper" Description="Local hardware telemetry for Planora" Type="ownProcess" Start="demand" ErrorControl="normal" Account="LocalSystem" Arguments="--service" />
+          <ServiceControl Id="ControlHelper" Name="PlanoraHelper" Stop="both" Remove="uninstall" Wait="yes" />
+        </Component>
+        <Component Id="AuthorizationScript" Guid="*">
+          <File Id="AuthorizationFile" Source="$(var.ProjectDir)\packaging\windows\Authorize-Planora.ps1" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+    <Feature Id="Main" Title="Planora" Level="1">
+      <ComponentRef Id="PlanoraApp" />
+      <ComponentRef Id="PlanoraHelper" />
+      <ComponentRef Id="AuthorizationScript" />
+    </Feature>
+  </Package>
+</Wix>

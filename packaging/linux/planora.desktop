@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Planora
+Comment=Your PC, clearly.
+Exec=planora
+Icon=planora
+Categories=System;Monitor;
+Terminal=false

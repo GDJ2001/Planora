@@ -1,0 +1,23 @@
+[Unit]
+Description=Planora local hardware helper
+After=local-fs.target
+
+[Service]
+Type=simple
+User=planora
+Group=planora-users
+ExecStart=/usr/libexec/planora/planora-helper
+Restart=on-failure
+RuntimeDirectory=planora
+RuntimeDirectoryMode=0750
+UMask=0007
+AmbientCapabilities=CAP_PERFMON CAP_SYS_NICE
+CapabilityBoundingSet=CAP_PERFMON CAP_SYS_NICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

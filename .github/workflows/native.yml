@@ -1,0 +1,84 @@
+name: Native build and packages
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.95.0'
+          components: clippy, rustfmt
+      - run: cargo test --workspace --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo build --release --bins --locked
+      - shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          New-Item -ItemType Directory -Force dist | Out-Null
+          wix build packaging/windows/Planora.wxs -d ProjectDir="$PWD" -d SourceDir="$PWD\target\release" -o dist/Planora-0.1.0-x64.msi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: planora-windows-x64
+          path: dist/*.msi
+
+  ubuntu:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Native libraries
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxkbcommon-dev libwayland-dev libpolkit-gobject-1-dev
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.95.0'
+          components: clippy, rustfmt
+      - run: cargo test --workspace --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo build --release --bins --locked
+      - run: bash packaging/linux/build-deb.sh
+      - run: dpkg-deb --contents dist/*.deb | head -80
+      - uses: actions/upload-artifact@v4
+        with:
+          name: planora-ubuntu24-amd64
+          path: dist/*.deb
+
+  fedora:
+    runs-on: ubuntu-24.04
+    container: fedora:43
+    steps:
+      - uses: actions/checkout@v4
+      - run: dnf install -y gcc clang cmake pkgconf-pkg-config libX11-devel libxkbcommon-devel wayland-devel rpm-build curl tar gzip
+      - run: curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain 1.95.0
+      - run: |
+          . "$HOME/.cargo/env"
+          cargo test --workspace --locked
+          cargo build --release --bins --locked
+          bash packaging/linux/build-rpm.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: planora-fedora43-x86_64
+          path: dist/*.rpm
+
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.95.0'
+          targets: aarch64-apple-darwin
+          components: clippy, rustfmt
+      - run: cargo test --workspace --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: bash packaging/macos/build-package.sh
+      - run: pkgutil --payload-files dist/*.pkg | head -80
+      - uses: actions/upload-artifact@v4
+        with:
+          name: planora-macos-arm64
+          path: |
+            dist/*.pkg
+            dist/*-app.zip

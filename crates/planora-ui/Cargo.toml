@@ -1,0 +1,19 @@
+[package]
+name = "planora-ui"
+version = "0.1.0"
+edition.workspace = true
+build = "build.rs"
+
+[dependencies]
+planora-core = { path = "../planora-core" }
+planora-helper = { path = "../planora-helper" }
+eframe.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[build-dependencies]
+serde_json.workspace = true
+cc = "1"
+
+[[bin]]
+name = "planora"
+path = "src/main.rs"
