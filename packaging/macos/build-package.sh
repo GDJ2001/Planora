@@ -2,7 +2,7 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 target="aarch64-apple-darwin"
-version="${PLANORA_VERSION:-0.1.0}"
+version="${PLANORA_VERSION:-0.1.1}"
 export RUSTUP_TOOLCHAIN=1.95.0
 cargo build --manifest-path "$root/Cargo.toml" --release --target "$target" --bins --locked
 stage="$root/target/package/macos"
