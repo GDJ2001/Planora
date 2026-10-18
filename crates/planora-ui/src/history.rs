@@ -154,6 +154,58 @@ impl TimeSeries {
         segments
     }
 
+    /// Collapse dense samples to at most two extrema per horizontal pixel.
+    /// Gaps are preserved because each contiguous segment is processed separately.
+    pub fn downsampled_segments(
+        &self,
+        now: Instant,
+        range: HistoryRange,
+        gap_threshold: Duration,
+        pixel_columns: usize,
+    ) -> Vec<Vec<(f32, f32)>> {
+        let columns = pixel_columns.max(1);
+        self.normalized_segments(now, range, gap_threshold)
+            .into_iter()
+            .map(|segment| {
+                if segment.len() <= columns * 2 {
+                    return segment;
+                }
+                let mut result = Vec::with_capacity(columns * 2);
+                let mut start = 0;
+                while start < segment.len() {
+                    let bucket = (segment[start].0 * columns as f32).floor() as usize;
+                    let mut end = start + 1;
+                    while end < segment.len()
+                        && (segment[end].0 * columns as f32).floor() as usize == bucket
+                    {
+                        end += 1;
+                    }
+                    let mut min_idx = start;
+                    let mut max_idx = start;
+                    for idx in start + 1..end {
+                        if segment[idx].1 < segment[min_idx].1 {
+                            min_idx = idx;
+                        }
+                        if segment[idx].1 > segment[max_idx].1 {
+                            max_idx = idx;
+                        }
+                    }
+                    if min_idx <= max_idx {
+                        result.push(segment[min_idx]);
+                        if max_idx != min_idx {
+                            result.push(segment[max_idx]);
+                        }
+                    } else {
+                        result.push(segment[max_idx]);
+                        result.push(segment[min_idx]);
+                    }
+                    start = end;
+                }
+                result
+            })
+            .collect()
+    }
+
     /// Query exact sample closest to `norm_x` in the time window `[now - range, now]`.
     pub fn query_sample(
         &self,
@@ -282,6 +334,24 @@ mod tests {
         histories.set_selected_process(Some(&reused));
         assert!(histories.selected_cpu.samples.is_empty());
         assert_eq!(histories.selected_identity.as_ref(), Some(&reused));
+    }
+
+    #[test]
+    fn downsampling_retains_spikes_and_missing_data_gaps() {
+        let now = Instant::now();
+        let mut ts = TimeSeries::new();
+        for idx in 0..1_000 {
+            let t = now - Duration::from_millis((999 - idx) * 10);
+            let value = if idx == 375 { Some(99.0) }
+                else if idx == 500 { None }
+                else { Some(1.0) };
+            ts.push(t, idx as u64 + 1, value);
+        }
+        let full = ts.normalized_segments(now, HistoryRange::Sec30, Duration::from_secs(2));
+        let compact = ts.downsampled_segments(now, HistoryRange::Sec30, Duration::from_secs(2), 40);
+        assert_eq!(full.len(), compact.len());
+        assert!(compact.iter().flatten().any(|(_, value)| *value == 99.0));
+        assert!(compact.iter().map(Vec::len).sum::<usize>() <= 160);
     }
 
     #[test]
