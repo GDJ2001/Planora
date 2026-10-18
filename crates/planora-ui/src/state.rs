@@ -106,8 +106,9 @@ pub enum AppState {
 #[derive(Clone, Debug, Default)]
 pub struct DisplayPause {
     pub is_paused: bool,
-    pub frozen_frame: Option<TelemetryFrame>,
+    pub frozen_frame: Option<Arc<TelemetryFrame>>,
     pub frozen_instant: Option<Instant>,
+    pub frozen_histories: Option<Arc<crate::history::ResourceHistories>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -131,12 +132,12 @@ pub const BUILD_INFO: BuildInfo = BuildInfo {
 pub struct Shared {
     pub state: Option<AppState>,
     pub last_frame_received: Option<Instant>,
-    pub frame: Option<TelemetryFrame>,
+    pub frame: Option<Arc<TelemetryFrame>>,
     pub topology: Option<Topology>,
     pub capabilities: Vec<Capability>,
     pub benchmark_state: Option<BenchmarkState>,
     pub diagnostic_logs: Vec<DiagnosticEntry>,
-    pub affinity: Option<Vec<u16>>,
+    pub affinity: Option<(planora_core::ProcessIdentity, Vec<u16>)>,
     pub action_error: Option<String>,
 }
 
@@ -319,7 +320,7 @@ pub fn background_worker(
                         let mut shared = state.lock().unwrap();
                         shared.state = Some(AppState::Live);
                         shared.last_frame_received = Some(Instant::now());
-                        shared.frame = Some(*frame);
+                        shared.frame = Some(Arc::from(frame));
                     }
                     Response::BenchmarkStatus(bms) => {
                         let mut shared = state.lock().unwrap();
@@ -329,13 +330,17 @@ pub fn background_worker(
                         let mut shared = state.lock().unwrap();
                         shared.diagnostic_logs = logs;
                     }
-                    Response::Affinity { logical_cpus, .. } => {
-                        let mut shared = state.lock().unwrap();
-                        shared.affinity = Some(logical_cpus);
+                    Response::Affinity {
+                        process,
+                        logical_cpus,
                     }
-                    Response::AffinityChanged { logical_cpus, .. } => {
+                    | Response::AffinityChanged {
+                        process,
+                        logical_cpus,
+                        ..
+                    } => {
                         let mut shared = state.lock().unwrap();
-                        shared.affinity = Some(logical_cpus);
+                        shared.affinity = Some((process, logical_cpus));
                     }
                     Response::Error { code, message } => {
                         let mut shared = state.lock().unwrap();

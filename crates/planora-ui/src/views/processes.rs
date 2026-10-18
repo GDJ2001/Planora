@@ -22,6 +22,25 @@ pub struct ProcessesViewState {
     pub affinity_selection: HashSet<u16>,
     pub pending_affinity_confirm: bool,
     pub show_column_chooser: bool,
+    /// Adjustable inspector width on wide desktops (logical pixels).
+    pub inspector_width: f32,
+    pub affinity_identity: Option<ProcessIdentity>,
+    pub affinity_requested: bool,
+    pub affinity_initialized: bool,
+    pub affinity_error: Option<String>,
+}
+
+impl ProcessesViewState {
+    fn select_affinity_target(&mut self, identity: Option<&ProcessIdentity>) {
+        if self.affinity_identity.as_ref() != identity {
+            self.affinity_identity = identity.cloned();
+            self.affinity_selection.clear();
+            self.pending_affinity_confirm = false;
+            self.affinity_requested = false;
+            self.affinity_initialized = false;
+            self.affinity_error = None;
+        }
+    }
 }
 
 pub fn render_processes_view(
@@ -33,12 +52,28 @@ pub fn render_processes_view(
     pause_state: &mut DisplayPause,
     poll_interval_ms: u64,
     selected_identity: &mut Option<ProcessIdentity>,
-    current_affinity: Option<&Vec<u16>>,
+    affinity_response: Option<&(ProcessIdentity, Vec<u16>)>,
     topology: Option<&Topology>,
     tx: &SyncSender<Command>,
     now: Instant,
     p: Palette,
 ) {
+    state.select_affinity_target(selected_identity.as_ref());
+    let current_affinity = affinity_response
+        .filter(|(identity, _)| Some(identity) == selected_identity.as_ref())
+        .map(|(_, cpus)| cpus);
+    let actions_disabled = pause_state.is_paused || *app_state != AppState::Live;
+    if !actions_disabled
+        && !state.affinity_requested
+        && let Some(identity) = selected_identity.as_ref()
+    {
+        match tx.try_send(Command::GetAffinity {
+            process: identity.clone(),
+        }) {
+            Ok(()) => state.affinity_requested = true,
+            Err(error) => state.affinity_error = Some(format!("Unable to query affinity: {error}")),
+        }
+    }
     // 1. Page Header
     render_page_header(
         ui,
@@ -100,9 +135,14 @@ pub fn render_processes_view(
         .and_then(|id| frame.processes.iter().find(|p| &p.identity == id));
 
     if is_wide {
-        // Wide window: Left Table (70%), Right Inspector (30%)
-        let inspector_w = 330.0;
-        let table_w = ui.available_width() - inspector_w - 16.0;
+        // The middle grip is draggable without assuming a fixed 30% inspector.
+        let max_inspector = (ui.available_width() - 620.0).max(280.0);
+        let inspector_w = if state.inspector_width <= 0.0 {
+            330.0f32.min(max_inspector)
+        } else {
+            state.inspector_width.clamp(280.0, max_inspector)
+        };
+        let table_w = (ui.available_width() - inspector_w - 12.0).max(300.0);
 
         ui.horizontal(|ui| {
             ui.allocate_ui(Vec2::new(table_w, ui.available_height()), |ui| {
@@ -116,7 +156,19 @@ pub fn render_processes_view(
                 );
             });
 
-            ui.add_space(16.0);
+            // Native draggable split handle; keep the table usable.
+            let (grip, drag) = ui.allocate_exact_size(
+                Vec2::new(12.0, ui.available_height().max(100.0)),
+                egui::Sense::drag(),
+            );
+            ui.painter().line_segment(
+                [grip.center_top(), grip.center_bottom()],
+                Stroke::new(2.0, p.border_control),
+            );
+            if drag.dragged() {
+                state.inspector_width =
+                    (inspector_w - drag.drag_delta().x).clamp(280.0, max_inspector);
+            }
 
             // Right Inspector Pane
             ui.allocate_ui(Vec2::new(inspector_w, ui.available_height()), |ui| {
@@ -125,7 +177,7 @@ pub fn render_processes_view(
                     selected_record,
                     histories,
                     state,
-                    pause_state.is_paused,
+                    actions_disabled || pause_state.is_paused,
                     current_affinity,
                     topology,
                     tx,
@@ -157,7 +209,7 @@ pub fn render_processes_view(
                 Some(record),
                 histories,
                 state,
-                pause_state.is_paused,
+                actions_disabled || pause_state.is_paused,
                 current_affinity,
                 topology,
                 tx,
@@ -189,6 +241,9 @@ fn render_inspector_pane(
     now: Instant,
     p: Palette,
 ) {
+    // Editing controls are Windows-only; other targets show read-only details.
+    #[cfg(not(windows))]
+    let _ = (&state, is_paused, current_affinity, topology, tx);
     egui::Frame::group(ui.style())
         .fill(p.surface)
         .stroke(Stroke::new(1.0, p.border))
@@ -332,27 +387,38 @@ fn render_inspector_pane(
                 if is_paused {
                     ui.colored_label(
                         p.warning,
-                        "⏸ Display is paused. Resume live telemetry to modify process affinity.",
+                        "Affinity changes require live, unpaused telemetry.",
                     );
                     return;
                 }
 
-                let total_cpus = topology
-                    .map(|t| t.cores.iter().map(|c| c.logical_cpus.len()).sum::<usize>())
-                    .unwrap_or(8)
-                    .min(64);
+                let mut available_cpus: Vec<u16> = topology
+                    .into_iter().flat_map(|t| &t.cores)
+                    .flat_map(|core| core.logical_cpus.iter().copied())
+                    .collect();
+                available_cpus.sort_unstable();
+                available_cpus.dedup();
+                if available_cpus.is_empty() || available_cpus.iter().any(|cpu| *cpu >= 64) {
+                    ui.label("Affinity editing is unavailable for this processor topology.");
+                    return;
+                }
+                if let Some(error) = &state.affinity_error { ui.colored_label(p.error, error); }
+                let Some(current_affinity) = current_affinity else {
+                    ui.label("Current affinity is unavailable. Query it before applying changes.");
+                    if ui.button("Retry affinity query").clicked() { state.affinity_requested = false; }
+                    return;
+                };
 
                 // Initialize selection if empty
-                if state.affinity_selection.is_empty()
-                    && let Some(cur) = current_affinity
-                {
-                    for cpu in cur {
+                if !state.affinity_initialized {
+                    for cpu in current_affinity {
                         state.affinity_selection.insert(*cpu);
                     }
+                    state.affinity_initialized = true;
                 }
 
                 ui.horizontal_wrapped(|ui| {
-                    for cpu_idx in 0..total_cpus as u16 {
+                    for cpu_idx in available_cpus.iter().copied() {
                         let mut checked = state.affinity_selection.contains(&cpu_idx);
                         if ui.checkbox(&mut checked, format!("CPU {cpu_idx}")).changed() {
                             if checked {
@@ -367,14 +433,14 @@ fn render_inspector_pane(
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     if ui.small_button("All").clicked() {
-                        for cpu_idx in 0..total_cpus as u16 {
+                        for cpu_idx in available_cpus.iter().copied() {
                             state.affinity_selection.insert(cpu_idx);
                         }
                     }
                     if ui.small_button("Clear").clicked() {
                         state.affinity_selection.clear();
                     }
-                    if ui.button("Apply Affinity...").clicked() {
+                    if ui.add_enabled(!state.affinity_selection.is_empty(), egui::Button::new("Apply Affinity...")).clicked() {
                         state.pending_affinity_confirm = true;
                     }
                 });
@@ -393,17 +459,17 @@ fn render_inspector_pane(
                         .show(ui, |ui| {
                             ui.colored_label(p.focus, "Confirm Affinity Change");
                             ui.label(format!("Target: PID {} ({})", record.identity.pid, record.name));
-                            ui.label(format!("Old CPUs: {:?}", current_affinity.unwrap_or(&vec![])));
+                            ui.label(format!("Old CPUs: {:?}", current_affinity));
                             ui.label(format!("Proposed CPUs: {:?}", proposed));
                             ui.small("Process creation identity will be revalidated through the opened handle.");
 
                             ui.horizontal(|ui| {
-                                if ui.button("Confirm & Apply").clicked() {
+                                if ui.add_enabled(!proposed.is_empty(), egui::Button::new("Confirm & Apply")).clicked() {
                                     state.pending_affinity_confirm = false;
-                                    let _ = tx.send(Command::SetAffinity {
+                                    if let Err(error) = tx.try_send(Command::SetAffinity {
                                         process: record.identity.clone(),
                                         logical_cpus: proposed.clone(),
-                                    });
+                                    }) { state.affinity_error = Some(format!("Unable to apply affinity: {error}")); }
                                 }
                                 if ui.button("Cancel").clicked() {
                                     state.pending_affinity_confirm = false;
@@ -413,4 +479,36 @@ fn render_inspector_pane(
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn changing_process_clears_pending_affinity_and_query_state() {
+        let first = ProcessIdentity {
+            pid: 42,
+            started: 1,
+            sequence_number: None,
+            source: planora_core::IdentitySource::WindowsProcessFiletime,
+        };
+        let reused = ProcessIdentity {
+            started: 2,
+            ..first.clone()
+        };
+        let mut state = ProcessesViewState::default();
+        state.select_affinity_target(Some(&first));
+        state.affinity_selection.insert(3);
+        state.pending_affinity_confirm = true;
+        state.affinity_requested = true;
+        state.affinity_initialized = true;
+        state.select_affinity_target(Some(&first));
+        assert!(state.pending_affinity_confirm);
+        state.select_affinity_target(Some(&reused));
+        assert!(state.affinity_selection.is_empty());
+        assert!(!state.pending_affinity_confirm);
+        assert!(!state.affinity_requested);
+        assert!(!state.affinity_initialized);
+    }
 }

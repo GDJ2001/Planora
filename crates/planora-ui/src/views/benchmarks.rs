@@ -369,12 +369,12 @@ fn render_core_heatmap(ui: &mut egui::Ui, result: &BenchmarkResult, p: Palette) 
             let cell_rect = Rect::from_min_size(Pos2::new(x, y), Vec2::new(cell_size, cell_size));
 
             if cpu_a == cpu_b {
-                // Diagonal: 0.0 ns
+                // A self-pair is inapplicable, not a measured zero-latency sample.
                 painter.rect_filled(cell_rect, CornerRadius::ZERO, p.surface_raised);
                 painter.text(
                     cell_rect.center(),
                     egui::Align2::CENTER_CENTER,
-                    "0.0",
+                    "N/A",
                     egui::FontId::monospace(10.5),
                     p.secondary,
                 );
@@ -382,7 +382,7 @@ fn render_core_heatmap(ui: &mut egui::Ui, result: &BenchmarkResult, p: Palette) 
                 let pair = result
                     .core_pairs
                     .iter()
-                    .find(|cp| cp.cpu_a == *cpu_a && cp.cpu_b == *cpu_b);
+                    .find(|cp| pair_matches(cp.cpu_a, cp.cpu_b, *cpu_a, *cpu_b));
                 if let Some(cp) = pair {
                     let norm = (cp.estimated_one_way_ns / max_lat).clamp(0.0, 1.0);
                     let color = p.accent.linear_multiply(0.2 + 0.6 * norm as f32);
@@ -433,6 +433,11 @@ fn render_core_heatmap(ui: &mut egui::Ui, result: &BenchmarkResult, p: Palette) 
     }
 }
 
+/// The benchmark measures each unordered CPU pair once. The heatmap is symmetric.
+fn pair_matches(measured_a: u16, measured_b: u16, cell_a: u16, cell_b: u16) -> bool {
+    (measured_a == cell_a && measured_b == cell_b) || (measured_a == cell_b && measured_b == cell_a)
+}
+
 fn render_points_table(ui: &mut egui::Ui, points: &[BenchmarkPoint], _p: Palette) {
     egui::ScrollArea::vertical()
         .max_height(260.0)
@@ -459,4 +464,16 @@ fn render_points_table(ui: &mut egui::Ui, points: &[BenchmarkPoint], _p: Palette
                     }
                 });
         });
+}
+
+#[cfg(test)]
+mod heatmap_tests {
+    use super::pair_matches;
+
+    #[test]
+    fn measured_pair_is_visible_in_both_triangles() {
+        assert!(pair_matches(2, 5, 2, 5));
+        assert!(pair_matches(2, 5, 5, 2));
+        assert!(!pair_matches(2, 5, 2, 7));
+    }
 }

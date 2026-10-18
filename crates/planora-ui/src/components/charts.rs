@@ -24,6 +24,8 @@ pub struct ChartPanelState {
     pub show_table: bool,
     pub series1_enabled: bool,
     pub series2_enabled: bool,
+    pub pointer_inside: bool,
+    pub keyboard_cursor_x: Option<f32>,
 }
 
 impl Default for ChartPanelState {
@@ -33,6 +35,8 @@ impl Default for ChartPanelState {
             show_table: false,
             series1_enabled: true,
             series2_enabled: true,
+            pointer_inside: false,
+            keyboard_cursor_x: None,
         }
     }
 }
@@ -48,6 +52,7 @@ pub fn render_chart_panel(
     p: Palette,
 ) {
     let panel_w = ui.available_width();
+    state.pointer_inside = false;
     egui::Frame::group(ui.style())
         .fill(p.surface)
         .stroke(Stroke::new(1.0, p.border))
@@ -82,6 +87,8 @@ pub fn render_chart_panel(
             ui.add_space(8.0);
 
             if state.show_table {
+                // The alternate view has no chart focus or active cursor.
+                state.keyboard_cursor_x = None;
                 // Tabular view of points
                 ui.label(
                     egui::RichText::new("Tabular Sample History")
@@ -178,6 +185,7 @@ pub fn render_chart_panel(
                     }
                 };
 
+                let mut keyboard_readout: Vec<String> = Vec::new();
                 ui.horizontal(|ui| {
                     // Y-axis labels
                     let (y_rect, _) =
@@ -196,7 +204,22 @@ pub fn render_chart_panel(
 
                     // Chart area
                     let (canvas_rect, response) =
-                        ui.allocate_exact_size(Vec2::new(canvas_w, canvas_h), egui::Sense::hover());
+                        ui.allocate_exact_size(Vec2::new(canvas_w, canvas_h), egui::Sense::click());
+                    if !response.has_focus() {
+                        state.keyboard_cursor_x = None;
+                    }
+                    if response.clicked() {
+                        response.request_focus();
+                        state.keyboard_cursor_x = Some(
+                            response
+                                .interact_pointer_pos()
+                                .map(|pos| {
+                                    ((pos.x - canvas_rect.min.x) / canvas_rect.width())
+                                        .clamp(0.0, 1.0)
+                                })
+                                .unwrap_or(0.5),
+                        );
+                    }
                     let painter = ui.painter_at(canvas_rect);
 
                     painter.rect_filled(canvas_rect, CornerRadius::same(4), p.surface_raised);
@@ -239,15 +262,52 @@ pub fn render_chart_panel(
                         );
                     }
 
-                    // Hover crosshair detection
+                    // Click to focus; Left/Right/Home/End inspect without a mouse.
                     let mut active_crosshair_x = *shared_hover_norm_x;
+                    let mut dismissed = false;
+                    if response.has_focus() {
+                        let (left, right, home, end, escape) = ui.input(|i| {
+                            (
+                                i.key_pressed(egui::Key::ArrowLeft),
+                                i.key_pressed(egui::Key::ArrowRight),
+                                i.key_pressed(egui::Key::Home),
+                                i.key_pressed(egui::Key::End),
+                                i.key_pressed(egui::Key::Escape),
+                            )
+                        });
+                        if escape {
+                            response.surrender_focus();
+                            dismissed = true;
+                            state.keyboard_cursor_x = None;
+                            *shared_hover_norm_x = None;
+                            active_crosshair_x = None;
+                        } else {
+                            let cursor = state.keyboard_cursor_x.unwrap_or(0.5);
+                            let next = if home {
+                                0.0
+                            } else if end {
+                                1.0
+                            } else if left {
+                                (cursor - 0.02).max(0.0)
+                            } else if right {
+                                (cursor + 0.02).min(1.0)
+                            } else {
+                                cursor
+                            };
+                            state.keyboard_cursor_x = Some(next);
+                            active_crosshair_x = Some(next);
+                            *shared_hover_norm_x = Some(next);
+                        }
+                    }
                     if let Some(hover_pos) = response.hover_pos()
                         && canvas_rect.contains(hover_pos)
+                        && !dismissed
                     {
                         let norm = ((hover_pos.x - canvas_rect.min.x) / canvas_rect.width())
                             .clamp(0.0, 1.0);
                         *shared_hover_norm_x = Some(norm);
                         active_crosshair_x = Some(norm);
+                        state.pointer_inside = true;
                     }
 
                     // Plot each active series
@@ -260,7 +320,12 @@ pub fn render_chart_panel(
                         if !enabled {
                             continue;
                         }
-                        let segs = c.series.normalized_segments(now, state.range, gap_thresh);
+                        let segs = c.series.downsampled_segments(
+                            now,
+                            state.range,
+                            gap_thresh,
+                            canvas_w as usize,
+                        );
                         for seg in &segs {
                             if seg.is_empty() {
                                 continue;
@@ -280,20 +345,20 @@ pub fn render_chart_panel(
                             if pts.len() >= 2 {
                                 // Draw area fill for single series
                                 if series_configs.len() == 1 {
-                                    let mut poly = pts.clone();
-                                    poly.push(Pos2::new(
-                                        pts.last().unwrap().x,
-                                        canvas_rect.max.y - 16.0,
-                                    ));
-                                    poly.push(Pos2::new(
-                                        pts.first().unwrap().x,
-                                        canvas_rect.max.y - 16.0,
-                                    ));
-                                    painter.add(egui::Shape::convex_polygon(
-                                        poly,
-                                        c.color.linear_multiply(0.15),
-                                        Stroke::NONE,
-                                    ));
+                                    // A fluctuating trace is not a convex polygon.
+                                    // Fill each adjacent pair as a convex trapezoid.
+                                    for pair in pts.windows(2) {
+                                        painter.add(egui::Shape::convex_polygon(
+                                            vec![
+                                                pair[0],
+                                                pair[1],
+                                                Pos2::new(pair[1].x, canvas_rect.max.y - 16.0),
+                                                Pos2::new(pair[0].x, canvas_rect.max.y - 16.0),
+                                            ],
+                                            c.color.linear_multiply(0.15),
+                                            Stroke::NONE,
+                                        ));
+                                    }
                                 }
                                 painter.add(egui::Shape::line(pts, Stroke::new(1.8, c.color)));
                             }
@@ -350,6 +415,9 @@ pub fn render_chart_panel(
                             }
                         }
 
+                        if response.has_focus() {
+                            keyboard_readout = tooltip_lines.clone();
+                        }
                         if !tooltip_lines.is_empty() && response.hovered() {
                             response.on_hover_ui(|ui| {
                                 for line in tooltip_lines {
@@ -359,6 +427,14 @@ pub fn render_chart_panel(
                         }
                     }
                 });
+                if !keyboard_readout.is_empty() {
+                    ui.label(
+                        egui::RichText::new(keyboard_readout.join(" | "))
+                            .monospace()
+                            .size(11.0)
+                            .color(p.secondary),
+                    );
+                }
             }
 
             // Visible Series Legend
@@ -381,4 +457,97 @@ pub fn render_chart_panel(
                 }
             });
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn escape_releases_chart_focus_and_stays_dismissed() {
+        let ctx = egui::Context::default();
+        let mut state = ChartPanelState::default();
+        let mut shared_cursor = None;
+        let now = Instant::now();
+        let mut series = TimeSeries::new();
+        series.push(now - Duration::from_secs(1), 1, Some(20.0));
+        series.push(now, 2, Some(40.0));
+        let p = crate::theme::get_palette(true);
+        let mut render = |events| {
+            let output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        Pos2::ZERO,
+                        Vec2::new(700.0, 500.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    render_chart_panel(
+                        ui,
+                        "CPU",
+                        &mut state,
+                        ChartScale::Fixed0To100,
+                        vec![ChartSeriesConfig {
+                            name: "CPU",
+                            color: p.cpu,
+                            series: &series,
+                            unit: "%",
+                        }],
+                        now,
+                        &mut shared_cursor,
+                        p,
+                    );
+                },
+            );
+            let shapes = output.shapes.clone();
+            output.drop_without_applying_deltas();
+            shapes
+        };
+        let output = render(vec![]);
+        let canvas = output
+            .iter()
+            .find_map(|shape| {
+                if let egui::Shape::Rect(rect) = &shape.shape
+                    && rect.fill == p.surface_raised
+                    && rect.rect.width() > 200.0
+                {
+                    Some(rect.rect)
+                } else {
+                    None
+                }
+            })
+            .expect("chart canvas must be painted");
+        let pos = canvas.center();
+        render(vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            },
+        ]);
+        render(vec![egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        }]);
+        assert!(ctx.memory(|m| m.focused().is_some()));
+        render(vec![
+            egui::Event::PointerGone,
+            egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            },
+        ]);
+        render(vec![]);
+        assert!(ctx.memory(|m| m.focused().is_none()));
+        assert!(state.keyboard_cursor_x.is_none());
+    }
 }

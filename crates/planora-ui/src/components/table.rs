@@ -452,7 +452,9 @@ pub fn render_process_table(
                             } else {
                                 &process.name
                             };
-                            ui.painter().text(
+                            // Clip long executable names to their own column.
+                            // Hover reveals the full name without overlapping numeric cells.
+                            ui.painter_at(name_rect).text(
                                 Pos2::new(name_rect.min.x, name_rect.center().y),
                                 egui::Align2::LEFT_CENTER,
                                 display_name,
@@ -463,6 +465,7 @@ pub fn render_process_table(
                             if name_resp.clicked() {
                                 *selected_identity = Some(process.identity.clone());
                             }
+                            name_resp.on_hover_text(display_name);
 
                             // PID
                             if state.columns.show_pid {

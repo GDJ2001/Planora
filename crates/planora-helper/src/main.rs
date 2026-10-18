@@ -330,10 +330,11 @@ fn get_affinity(process: &ProcessIdentity) -> Result<Vec<u16>, String> {
     {
         return Err(io::Error::last_os_error().to_string());
     }
-    if let Ok(started) = planora_telemetry::linux_start_ticks(process.pid) {
-        if started != process.started && process.started != 0 {
-            return Err("process identity changed during query (PID reused)".into());
-        }
+    if let Ok(started) = planora_telemetry::linux_start_ticks(process.pid)
+        && started != process.started
+        && process.started != 0
+    {
+        return Err("process identity changed during query (PID reused)".into());
     }
     Ok((0..libc::CPU_SETSIZE as usize)
         .filter(|i| unsafe { libc::CPU_ISSET(*i, &set) })

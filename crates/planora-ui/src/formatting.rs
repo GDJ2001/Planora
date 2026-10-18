@@ -34,7 +34,7 @@ pub fn format_rate(rate_bytes_per_sec: Option<f32>) -> String {
         return "Unavailable".to_string();
     };
     if !r.is_finite() || r < 0.0 {
-        return "0.0 B/s".to_string();
+        return "Unavailable".to_string();
     }
     const KIB: f32 = 1024.0;
     const MIB: f32 = 1024.0 * 1024.0;
@@ -126,6 +126,8 @@ mod tests {
         assert_eq!(format_rate(Some(450.0 * 1024.0)), "450.0 KiB/s");
         assert_eq!(format_rate(Some(128.0)), "128 B/s");
         assert_eq!(format_rate(None), "Unavailable");
+        assert_eq!(format_rate(Some(f32::NAN)), "Unavailable");
+        assert_eq!(format_rate(Some(-3.0)), "Unavailable");
     }
 
     #[test]

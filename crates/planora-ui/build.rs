@@ -15,6 +15,20 @@ fn main() {
     println!("cargo:rerun-if-changed={}", path.display());
     println!("cargo:rerun-if-changed=../../assets/brand/ui");
 
+    // Rebuild the displayed identity when switching branches or advancing HEAD.
+    for git_path in ["HEAD", "refs", "packed-refs"] {
+        if let Ok(output) = std::process::Command::new("git")
+            .args(["rev-parse", "--git-path", git_path])
+            .output()
+            && output.status.success()
+        {
+            println!(
+                "cargo:rerun-if-changed={}",
+                String::from_utf8_lossy(&output.stdout).trim()
+            );
+        }
+    }
+
     let git_commit = std::process::Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
         .output()

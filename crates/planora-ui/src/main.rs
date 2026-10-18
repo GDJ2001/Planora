@@ -9,7 +9,7 @@ pub mod views;
 
 use components::{badge::render_compact_sidebar_status, icons, logo::LogoCache};
 use eframe::egui::{self, Color32, CornerRadius, Pos2, Rect, Stroke, Vec2};
-use history::ResourceHistories;
+use history::{ResourceHistories, measurement_instant};
 use planora_core::{Command, PROTOCOL_VERSION, ProcessIdentity};
 use state::{AppState, DisplayPause, Page, Shared, UserSettings, background_worker, is_data_stale};
 use std::{
@@ -19,7 +19,7 @@ use std::{
         mpsc::{self, SyncSender},
     },
     thread,
-    time::{Duration, Instant},
+    time::Instant,
 };
 use theme::{Palette, SIDEBAR_WIDTH, apply_egui_theme, get_palette, theme_is_dark};
 use views::{
@@ -142,6 +142,7 @@ impl eframe::App for App {
 
         // Ingest new frame into histories
         let now = Instant::now();
+        let wall_clock_now_ms = planora_telemetry::unix_ms();
         if let Some(frame) = &frame_opt {
             self.histories.reset_if_new_session(frame.session_id);
 
@@ -151,9 +152,16 @@ impl eframe::App for App {
                 // CPU (sample time preserved)
                 if frame.cpu_percent.sampled_at_ms != self.histories.last_cpu_sampled_at_ms {
                     self.histories.last_cpu_sampled_at_ms = frame.cpu_percent.sampled_at_ms;
-                    self.histories
-                        .cpu
-                        .push(now, frame.sampled_at_ms, frame.cpu_percent.value);
+                    let measured_at = measurement_instant(
+                        now,
+                        wall_clock_now_ms,
+                        frame.cpu_percent.sampled_at_ms,
+                    );
+                    self.histories.cpu.push(
+                        measured_at,
+                        frame.cpu_percent.sampled_at_ms,
+                        frame.cpu_percent.value,
+                    );
                 }
 
                 // Memory %
@@ -164,40 +172,78 @@ impl eframe::App for App {
                     (Some(u), Some(t)) if t > 0 => Some(((u as f64 / t as f64) * 100.0) as f32),
                     _ => None,
                 };
-                self.histories
-                    .memory_pct
-                    .push(now, frame.sampled_at_ms, mem_pct);
+                let measured_at = measurement_instant(
+                    now,
+                    wall_clock_now_ms,
+                    frame.memory_used_bytes.sampled_at_ms,
+                );
+                self.histories.memory_pct.push(
+                    measured_at,
+                    frame.memory_used_bytes.sampled_at_ms,
+                    mem_pct,
+                );
 
                 // Disk
                 let disk_r = frame.disk_read_bytes_per_sec.value.map(|v| v as f32);
                 let disk_w = frame.disk_write_bytes_per_sec.value.map(|v| v as f32);
-                self.histories
-                    .disk_read
-                    .push(now, frame.sampled_at_ms, disk_r);
-                self.histories
-                    .disk_write
-                    .push(now, frame.sampled_at_ms, disk_w);
+                self.histories.disk_read.push(
+                    measurement_instant(
+                        now,
+                        wall_clock_now_ms,
+                        frame.disk_read_bytes_per_sec.sampled_at_ms,
+                    ),
+                    frame.disk_read_bytes_per_sec.sampled_at_ms,
+                    disk_r,
+                );
+                self.histories.disk_write.push(
+                    measurement_instant(
+                        now,
+                        wall_clock_now_ms,
+                        frame.disk_write_bytes_per_sec.sampled_at_ms,
+                    ),
+                    frame.disk_write_bytes_per_sec.sampled_at_ms,
+                    disk_w,
+                );
 
                 // Network
                 let net_rx = frame.network_rx_bytes_per_sec.value.map(|v| v as f32);
                 let net_tx = frame.network_tx_bytes_per_sec.value.map(|v| v as f32);
-                self.histories.net_rx.push(now, frame.sampled_at_ms, net_rx);
-                self.histories.net_tx.push(now, frame.sampled_at_ms, net_tx);
+                self.histories.net_rx.push(
+                    measurement_instant(
+                        now,
+                        wall_clock_now_ms,
+                        frame.network_rx_bytes_per_sec.sampled_at_ms,
+                    ),
+                    frame.network_rx_bytes_per_sec.sampled_at_ms,
+                    net_rx,
+                );
+                self.histories.net_tx.push(
+                    measurement_instant(
+                        now,
+                        wall_clock_now_ms,
+                        frame.network_tx_bytes_per_sec.sampled_at_ms,
+                    ),
+                    frame.network_tx_bytes_per_sec.sampled_at_ms,
+                    net_tx,
+                );
 
                 // Selected Process trends (only recorded while observed!)
-                let sel_pid = self.selected.as_ref().map(|id| id.pid);
-                self.histories.set_selected_process(sel_pid);
-                if let Some(pid) = sel_pid
-                    && let Some(proc) = frame.processes.iter().find(|pr| pr.identity.pid == pid)
+                self.histories.set_selected_process(self.selected.as_ref());
+                if let Some(identity) = self.selected.as_ref()
+                    && let Some(proc) = frame.processes.iter().find(|pr| &pr.identity == identity)
                 {
                     self.histories.selected_cpu.push(
-                        now,
-                        frame.sampled_at_ms,
+                        measurement_instant(now, wall_clock_now_ms, proc.cpu_percent.sampled_at_ms),
+                        proc.cpu_percent.sampled_at_ms,
                         proc.cpu_percent.value,
                     );
                     self.histories.selected_memory.push(
-                        now,
-                        frame.sampled_at_ms,
+                        measurement_instant(
+                            now,
+                            wall_clock_now_ms,
+                            proc.memory_bytes.sampled_at_ms,
+                        ),
+                        proc.memory_bytes.sampled_at_ms,
                         proc.memory_bytes.value.map(|b| b as f32),
                     );
                 }
@@ -209,26 +255,34 @@ impl eframe::App for App {
             if self.display_pause.frozen_frame.is_none() {
                 self.display_pause.frozen_frame = frame_opt.clone();
                 self.display_pause.frozen_instant = Some(now);
+                self.display_pause.frozen_histories = Some(Arc::new(self.histories.clone()));
             }
         } else {
             self.display_pause.frozen_frame = None;
             self.display_pause.frozen_instant = None;
+            self.display_pause.frozen_histories = None;
         }
 
-        let render_frame: Option<planora_core::TelemetryFrame> = if self.display_pause.is_paused {
-            self.display_pause
-                .frozen_frame
-                .clone()
-                .or_else(|| frame_opt.clone())
-        } else {
-            frame_opt.clone()
-        };
+        let render_frame: Option<Arc<planora_core::TelemetryFrame>> =
+            if self.display_pause.is_paused {
+                self.display_pause
+                    .frozen_frame
+                    .clone()
+                    .or_else(|| frame_opt.clone())
+            } else {
+                frame_opt.clone()
+            };
 
         let render_now = if self.display_pause.is_paused {
             self.display_pause.frozen_instant.unwrap_or(now)
         } else {
             now
         };
+        // Snapshot the chart buffers as well as the table frame when paused.
+        // Live collection continues in self.histories without mutating the display.
+        // Clone only the Arc handle so page controls can mutably borrow pause state.
+        let frozen_histories = self.display_pause.frozen_histories.clone();
+        let render_histories = frozen_histories.as_deref().unwrap_or(&self.histories);
 
         // 1. Sidebar (208 px)
         egui::Panel::left("nav_sidebar")
@@ -390,23 +444,31 @@ impl eframe::App for App {
 
             // Dispatch active page
             match self.page {
-                Page::Overview => render_overview_view(
-                    ui,
-                    frame,
-                    &self.histories,
-                    &mut self.overview_state,
-                    &app_state,
-                    &mut self.display_pause,
-                    current_poll,
-                    &mut self.selected,
-                    &mut self.page,
-                    render_now,
-                    p,
-                ),
+                Page::Overview => {
+                    // Overview has multiple stacked charts and a process table;
+                    // always make the whole page scroll at the minimum window size.
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            render_overview_view(
+                                ui,
+                                frame,
+                                render_histories,
+                                &mut self.overview_state,
+                                &app_state,
+                                &mut self.display_pause,
+                                current_poll,
+                                &mut self.selected,
+                                &mut self.page,
+                                render_now,
+                                p,
+                            );
+                        });
+                },
                 Page::Processes => render_processes_view(
                     ui,
                     frame,
-                    &self.histories,
+                    render_histories,
                     &mut self.processes_state,
                     &app_state,
                     &mut self.display_pause,
@@ -427,16 +489,22 @@ impl eframe::App for App {
                     current_poll,
                     p,
                 ),
-                Page::Benchmarks => render_benchmarks_view(
-                    ui,
-                    shared_copy.benchmark_state.as_ref(),
-                    &mut self.benchmarks_state,
-                    &app_state,
-                    &mut self.display_pause,
-                    current_poll,
-                    &self.tx,
-                    p,
-                ),
+                Page::Benchmarks => {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            render_benchmarks_view(
+                                ui,
+                                shared_copy.benchmark_state.as_ref(),
+                                &mut self.benchmarks_state,
+                                &app_state,
+                                &mut self.display_pause,
+                                current_poll,
+                                &self.tx,
+                                p,
+                            );
+                        });
+                },
                 Page::Capabilities => render_capabilities_view(
                     ui,
                     &caps,
@@ -459,10 +527,8 @@ impl eframe::App for App {
             }
         });
 
-        // Repaint request management: if reduced motion or paused, avoid continuous high-frequency redraws
-        if !self.settings.reduced_motion && !self.display_pause.is_paused {
-            ctx.request_repaint_after(Duration::from_millis(current_poll.max(50)));
-        }
+        // Background telemetry and direct UI events request repaints.
+        // A permanent animation timer would keep repainting an idle window.
     }
 }
 
@@ -487,6 +553,7 @@ mod tests {
     use components::table::{SortColumn, sort_processes};
     use planora_core::{AvailabilityReason, IdentitySource, Metric, ProcessRecord, TelemetryFrame};
     use state::UserSettings;
+    use std::time::Duration;
     use theme::Theme;
 
     fn test_frame() -> TelemetryFrame {
