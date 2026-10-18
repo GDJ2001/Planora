@@ -108,6 +108,7 @@ pub struct DisplayPause {
     pub is_paused: bool,
     pub frozen_frame: Option<TelemetryFrame>,
     pub frozen_instant: Option<Instant>,
+    pub frozen_histories: Option<crate::history::ResourceHistories>,
 }
 
 #[derive(Clone, Copy, Debug)]
