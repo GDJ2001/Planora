@@ -235,7 +235,7 @@ impl eframe::App for App {
             self.display_pause.frozen_histories = None;
         }
 
-        let render_frame: Option<planora_core::TelemetryFrame> = if self.display_pause.is_paused {
+        let render_frame: Option<Arc<planora_core::TelemetryFrame>> = if self.display_pause.is_paused {
             self.display_pause
                 .frozen_frame
                 .clone()
