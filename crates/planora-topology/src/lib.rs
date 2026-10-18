@@ -13,6 +13,7 @@ pub fn discover() -> Topology {
         .unwrap_or(1)
         .min(u16::MAX as usize);
     let mut t = Topology {
+        generation: 1,
         vendor: String::new(),
         model: String::new(),
         architecture: std::env::consts::ARCH.into(),
@@ -158,13 +159,22 @@ fn discover_linux(t: &mut Topology, count: usize) {
                 .unwrap_or_default();
             let line_bytes = read("coherency_line_size")
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(0);
-            let key = (level, size_bytes, line_bytes, shared_by.clone());
+                .filter(|&v| v > 0);
+            let cache_type = match read("type").as_deref() {
+                Some("Data") => planora_core::CacheType::Data,
+                Some("Instruction") => planora_core::CacheType::Instruction,
+                Some("Unified") => planora_core::CacheType::Unified,
+                _ => planora_core::CacheType::Unknown,
+            };
+            let key = (level, cache_type, size_bytes, line_bytes, shared_by.clone());
             if !seen_caches.insert(key) {
                 continue;
             }
+            let id = t.caches.len() as u32;
             t.caches.push(CacheDescriptor {
+                id,
                 level,
+                cache_type,
                 size_bytes,
                 line_bytes,
                 shared_by,
@@ -323,10 +333,18 @@ fn discover_windows(t: &mut Topology) {
                         8 + std::mem::offset_of!(CACHE_RELATIONSHIP, Anonymous),
                         item.GroupCount.max(1) as usize,
                     );
+                    let cache_type = match item.Type {
+                        1 => planora_core::CacheType::Instruction,
+                        2 => planora_core::CacheType::Data,
+                        _ => planora_core::CacheType::Unified,
+                    };
+                    let id = t.caches.len() as u32;
                     t.caches.push(CacheDescriptor {
+                        id,
                         level: item.Level,
+                        cache_type,
                         size_bytes: item.CacheSize as u64,
-                        line_bytes: item.LineSize,
+                        line_bytes: (item.LineSize > 0).then_some(item.LineSize),
                         shared_by: logical,
                         source: "Windows GetLogicalProcessorInformationEx".into(),
                     });
@@ -462,20 +480,40 @@ fn discover_macos(t: &mut Topology) {
     if let Some(physical) = number("hw.physicalcpu_max") {
         t.notes.push(format!("macOS reports {physical} physical cores; logical-to-core mapping is unavailable through this query"));
     }
+    let line_bytes = number("hw.cachelinesize")
+        .and_then(|v| (v > 0 && v <= u16::MAX as u64).then_some(v as u16));
     if let Some(l1d) = number("hw.l1dcachesize") {
+        let id = t.caches.len() as u32;
         t.caches.push(planora_core::CacheDescriptor {
+            id,
             level: 1,
+            cache_type: planora_core::CacheType::Data,
             size_bytes: l1d,
-            line_bytes: 64,
+            line_bytes,
             shared_by: Vec::new(),
             source: "macOS sysctl hw.l1dcachesize".into(),
         });
     }
-    if let Some(l2) = number("hw.l2cachesize") {
+    if let Some(l1i) = number("hw.l1icachesize") {
+        let id = t.caches.len() as u32;
         t.caches.push(planora_core::CacheDescriptor {
+            id,
+            level: 1,
+            cache_type: planora_core::CacheType::Instruction,
+            size_bytes: l1i,
+            line_bytes,
+            shared_by: Vec::new(),
+            source: "macOS sysctl hw.l1icachesize".into(),
+        });
+    }
+    if let Some(l2) = number("hw.l2cachesize") {
+        let id = t.caches.len() as u32;
+        t.caches.push(planora_core::CacheDescriptor {
+            id,
             level: 2,
+            cache_type: planora_core::CacheType::Unified,
             size_bytes: l2,
-            line_bytes: 128,
+            line_bytes,
             shared_by: Vec::new(),
             source: "macOS sysctl hw.l2cachesize".into(),
         });

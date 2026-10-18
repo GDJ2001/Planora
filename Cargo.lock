@@ -2386,7 +2386,9 @@ name = "planora-bench"
 version = "0.1.0"
 dependencies = [
  "core_affinity",
+ "libc",
  "planora-core",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2444,6 +2446,8 @@ dependencies = [
  "image",
  "planora-core",
  "planora-helper",
+ "planora-telemetry",
+ "serde",
  "serde_json",
 ]
 

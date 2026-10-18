@@ -1,23 +1,74 @@
-//! Portable contracts shared by the UI, helper, and collectors.
+//! Portable versioned contracts shared by the UI, helper, and collectors.
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
+pub const MAX_REQUEST_SIZE: usize = 64 * 1024;
+pub const MAX_RESPONSE_SIZE: usize = 8 * 1024 * 1024;
+pub const MAX_PROCESSES_LIMIT: usize = 65_536;
+
+/// Typed classification of why a metric cannot be provided.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AvailabilityReason {
+    WarmingUp,
+    Unsupported(String),
+    PermissionDenied(String),
+    TemporarilyFailed(String),
+    Stale(u64),
+}
+
+impl std::fmt::Display for AvailabilityReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WarmingUp => write!(f, "Warming up"),
+            Self::Unsupported(r) => write!(f, "Unsupported ({r})"),
+            Self::PermissionDenied(r) => write!(f, "Permission denied ({r})"),
+            Self::TemporarilyFailed(r) => write!(f, "Temporarily unavailable ({r})"),
+            Self::Stale(elapsed_ms) => write!(f, "Stale data ({elapsed_ms} ms old)"),
+        }
+    }
+}
+
+/// Provenance and mechanism used to track process creation identity.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum IdentitySource {
+    WindowsBasicProcessSequence,
+    WindowsProcessFiletime,
+    LinuxProcStartTicks,
+    DarwinStartTime,
+    SysinfoEpochSeconds,
+}
+
+impl std::fmt::Display for IdentitySource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WindowsBasicProcessSequence => {
+                write!(f, "Windows sequence (SystemBasicProcessInformation)")
+            }
+            Self::WindowsProcessFiletime => write!(f, "Windows FILETIME"),
+            Self::LinuxProcStartTicks => write!(f, "Linux /proc/[pid]/stat start ticks"),
+            Self::DarwinStartTime => write!(f, "macOS start time"),
+            Self::SysinfoEpochSeconds => write!(f, "sysinfo epoch seconds"),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct ProcessIdentity {
     pub pid: u32,
-    /// OS creation identity, in the units stated by `source`.
+    /// OS creation identity / start timestamp or ticks.
     pub started: u64,
-    pub source: String,
+    /// Monotonic sequence number (e.g. from Windows 11 SystemBasicProcessInformation) if supported.
+    pub sequence_number: Option<u64>,
+    pub source: IdentitySource,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Metric<T> {
     pub value: Option<T>,
     pub unit: String,
     pub source: String,
     pub sampled_at_ms: u64,
-    pub unavailable_reason: Option<String>,
+    pub unavailable_reason: Option<AvailabilityReason>,
 }
 
 impl<T> Metric<T> {
@@ -35,20 +86,22 @@ impl<T> Metric<T> {
             unavailable_reason: None,
         }
     }
+
     pub fn unavailable(
         unit: impl Into<String>,
         source: impl Into<String>,
         sampled_at_ms: u64,
-        reason: impl Into<String>,
+        reason: AvailabilityReason,
     ) -> Self {
         Self {
             value: None,
             unit: unit.into(),
             source: source.into(),
             sampled_at_ms,
-            unavailable_reason: Some(reason.into()),
+            unavailable_reason: Some(reason),
         }
     }
+
     pub fn is_available(&self) -> bool {
         self.value.is_some()
     }
@@ -60,12 +113,12 @@ pub enum ComponentId {
     NumaNode(u16),
     PhysicalCore(u16),
     LogicalCpu(u16),
-    Cache { level: u8, instance: u16 },
+    Cache(u32),
     Gpu(u16),
     Storage(u16),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct CoreDescriptor {
     pub id: u16,
     pub package_id: Option<u16>,
@@ -74,17 +127,46 @@ pub struct CoreDescriptor {
     pub class: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum CacheType {
+    Unified,
+    Data,
+    Instruction,
+    Unknown,
+}
+
+impl std::fmt::Display for CacheType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unified => write!(f, "Unified"),
+            Self::Data => write!(f, "Data"),
+            Self::Instruction => write!(f, "Instruction"),
+            Self::Unknown => write!(f, "Unknown"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct CacheDescriptor {
+    pub id: u32,
     pub level: u8,
+    pub cache_type: CacheType,
     pub size_bytes: u64,
-    pub line_bytes: u16,
+    pub line_bytes: Option<u16>,
     pub shared_by: Vec<u16>,
     pub source: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct GpuDescriptor {
+    pub id: u16,
+    pub name: String,
+    pub source: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Topology {
+    pub generation: u64,
     pub vendor: String,
     pub model: String,
     pub architecture: String,
@@ -95,14 +177,7 @@ pub struct Topology {
     pub notes: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct GpuDescriptor {
-    pub id: u16,
-    pub name: String,
-    pub source: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ProcessRecord {
     pub identity: ProcessIdentity,
     pub name: String,
@@ -114,9 +189,11 @@ pub struct ProcessRecord {
     pub affinity: Metric<Vec<u16>>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct TelemetryFrame {
     pub protocol_version: u32,
+    pub session_id: u64,
+    pub topology_generation: u64,
     pub sequence: u64,
     pub sampled_at_ms: u64,
     pub collection_duration_ms: f32,
@@ -132,14 +209,114 @@ pub struct TelemetryFrame {
     pub processes: Vec<ProcessRecord>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Debug, thiserror::Error, PartialEq)]
+pub enum FrameValidationError {
+    #[error("protocol version mismatch: expected {expected}, got {actual}")]
+    VersionMismatch { expected: u32, actual: u32 },
+    #[error("non-finite float in field '{field}'")]
+    NonFiniteFloat { field: &'static str },
+    #[error("percentage in '{field}' out of bounds: {value}")]
+    PercentageOutOfBounds { field: &'static str, value: f32 },
+    #[error("memory used ({used}) exceeds total ({total})")]
+    MemoryExceedsTotal { used: u64, total: u64 },
+    #[error(
+        "metric '{field}' has contradictory state (has_value={has_value}, has_reason={has_reason})"
+    )]
+    ContradictoryMetricState {
+        field: &'static str,
+        has_value: bool,
+        has_reason: bool,
+    },
+    #[error("process count ({count}) exceeds maximum allowed ({max})")]
+    ExcessiveProcesses { count: usize, max: usize },
+}
+
+fn validate_metric<T>(m: &Metric<T>, name: &'static str) -> Result<(), FrameValidationError> {
+    let has_value = m.value.is_some();
+    let has_reason = m.unavailable_reason.is_some();
+    if has_value == has_reason {
+        return Err(FrameValidationError::ContradictoryMetricState {
+            field: name,
+            has_value,
+            has_reason,
+        });
+    }
+    Ok(())
+}
+
+fn validate_pct(m: &Metric<f32>, name: &'static str) -> Result<(), FrameValidationError> {
+    validate_metric(m, name)?;
+    if let Some(val) = m.value {
+        if !val.is_finite() {
+            return Err(FrameValidationError::NonFiniteFloat { field: name });
+        }
+        if !(0.0..=100.0).contains(&val) {
+            return Err(FrameValidationError::PercentageOutOfBounds {
+                field: name,
+                value: val,
+            });
+        }
+    }
+    Ok(())
+}
+
+impl TelemetryFrame {
+    pub fn validate(&self) -> Result<(), FrameValidationError> {
+        if self.protocol_version != PROTOCOL_VERSION {
+            return Err(FrameValidationError::VersionMismatch {
+                expected: PROTOCOL_VERSION,
+                actual: self.protocol_version,
+            });
+        }
+        if !self.collection_duration_ms.is_finite() {
+            return Err(FrameValidationError::NonFiniteFloat {
+                field: "collection_duration_ms",
+            });
+        }
+        validate_pct(&self.cpu_percent, "cpu_percent")?;
+        validate_pct(&self.gpu_percent, "gpu_percent")?;
+        validate_metric(&self.memory_used_bytes, "memory_used_bytes")?;
+        validate_metric(&self.memory_total_bytes, "memory_total_bytes")?;
+        validate_metric(&self.disk_read_bytes_per_sec, "disk_read_bytes_per_sec")?;
+        validate_metric(&self.disk_write_bytes_per_sec, "disk_write_bytes_per_sec")?;
+        validate_metric(&self.network_rx_bytes_per_sec, "network_rx_bytes_per_sec")?;
+        validate_metric(&self.network_tx_bytes_per_sec, "network_tx_bytes_per_sec")?;
+        validate_metric(&self.package_power_watts, "package_power_watts")?;
+
+        if let (Some(used), Some(total)) =
+            (self.memory_used_bytes.value, self.memory_total_bytes.value)
+            && total > 0
+            && used > total
+        {
+            return Err(FrameValidationError::MemoryExceedsTotal { used, total });
+        }
+
+        if self.processes.len() > MAX_PROCESSES_LIMIT {
+            return Err(FrameValidationError::ExcessiveProcesses {
+                count: self.processes.len(),
+                max: MAX_PROCESSES_LIMIT,
+            });
+        }
+
+        for p in &self.processes {
+            validate_pct(&p.cpu_percent, "process.cpu_percent")?;
+            validate_pct(&p.gpu_percent, "process.gpu_percent")?;
+            validate_metric(&p.memory_bytes, "process.memory_bytes")?;
+            validate_metric(&p.affinity, "process.affinity")?;
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Capability {
     pub name: String,
     pub available: bool,
     pub reason: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct BenchmarkPoint {
     pub working_set_bytes: u64,
     pub min_ns: f64,
@@ -148,24 +325,89 @@ pub struct BenchmarkPoint {
     pub p99_ns: f64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct CorePair {
+    pub cpu_a: u16,
+    pub cpu_b: u16,
+    pub estimated_one_way_ns: f64,
+    pub min_ns: f64,
+    pub p95_ns: f64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct BenchmarkResult {
     pub mode: String,
     pub methodology: String,
     pub comparable_to_x86_cycles: bool,
+    pub is_partial: bool,
     pub points: Vec<BenchmarkPoint>,
     #[serde(default)]
     pub core_pairs: Vec<CorePair>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CorePair {
-    pub cpu_a: u16,
-    pub cpu_b: u16,
-    pub estimated_one_way_ns: f64,
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ErrorCode {
+    VersionMismatch,
+    Unauthorized,
+    PermissionDenied,
+    NotFound,
+    Busy,
+    Cancelled,
+    InvalidInput,
+    Timeout,
+    PidReused,
+    Unsupported,
+    Internal,
+}
+
+impl std::fmt::Display for ErrorCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum BenchmarkState {
+    Idle,
+    Running {
+        job_id: u64,
+        elapsed_ms: u64,
+    },
+    Completed {
+        job_id: u64,
+        result: BenchmarkResult,
+    },
+    Failed {
+        job_id: u64,
+        code: ErrorCode,
+        message: String,
+    },
+    Cancelled {
+        job_id: u64,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DiagnosticEntry {
+    pub timestamp_ms: u64,
+    pub operation_id: u64,
+    pub code: ErrorCode,
+    pub message: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Request {
+    pub request_id: u64,
+    pub command: Command,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ResponseEnvelope {
+    pub request_id: u64,
+    pub response: Response,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum Command {
     Hello {
         version: u32,
@@ -174,12 +416,16 @@ pub enum Command {
     Snapshot,
     Capabilities,
     RunCacheProbe {
+        job_id: u64,
         page_mode: bool,
     },
     RunCoreMatrix {
+        job_id: u64,
         logical_cpus: Vec<u16>,
     },
-    CancelBenchmark,
+    CancelBenchmark {
+        job_id: u64,
+    },
     BenchmarkStatus,
     GetAffinity {
         process: ProcessIdentity,
@@ -188,23 +434,20 @@ pub enum Command {
         process: ProcessIdentity,
         logical_cpus: Vec<u16>,
     },
+    DiagnosticLogs,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum Response {
     Hello {
         version: u32,
+        session_id: u64,
         helper_authorized: bool,
     },
     Topology(Topology),
     Snapshot(Box<TelemetryFrame>),
     Capabilities(Vec<Capability>),
-    Benchmark(BenchmarkResult),
-    BenchmarkStatus {
-        running: bool,
-        result: Option<BenchmarkResult>,
-        error: Option<String>,
-    },
+    BenchmarkStatus(BenchmarkState),
     Affinity {
         process: ProcessIdentity,
         logical_cpus: Vec<u16>,
@@ -214,8 +457,9 @@ pub enum Response {
         previous_cpus: Vec<u16>,
         logical_cpus: Vec<u16>,
     },
+    DiagnosticLogs(Vec<DiagnosticEntry>),
     Error {
-        code: String,
+        code: ErrorCode,
         message: String,
     },
 }
@@ -223,28 +467,41 @@ pub enum Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn unavailable_is_distinct_from_zero() {
         let zero = Metric::available(0u64, "bytes", "test", 1);
-        let absent = Metric::<u64>::unavailable("bytes", "test", 1, "unsupported");
+        let absent = Metric::<u64>::unavailable(
+            "bytes",
+            "test",
+            1,
+            AvailabilityReason::Unsupported("unsupported".into()),
+        );
         assert_ne!(zero.value, absent.value);
-        assert_eq!(absent.unavailable_reason.as_deref(), Some("unsupported"));
+        assert!(absent.unavailable_reason.is_some());
         assert_eq!(zero.unit, "bytes");
         assert_eq!(absent.unit, "bytes");
     }
+
     #[test]
-    fn process_identity_includes_creation() {
+    fn process_identity_includes_creation_and_source() {
         let a = ProcessIdentity {
             pid: 12,
             started: 1,
-            source: "test".into(),
+            sequence_number: Some(100),
+            source: IdentitySource::WindowsBasicProcessSequence,
         };
         let b = ProcessIdentity {
             started: 2,
             ..a.clone()
         };
         assert_ne!(a, b);
+        assert_eq!(
+            a.source.to_string(),
+            "Windows sequence (SystemBasicProcessInformation)"
+        );
     }
+
     #[test]
     fn metric_serialization_round_trip() {
         let m = Metric::available(42.5f32, "%", "test_source", 100);
@@ -255,5 +512,96 @@ mod tests {
         assert_eq!(d.source, "test_source");
         assert_eq!(d.sampled_at_ms, 100);
         assert!(d.unavailable_reason.is_none());
+    }
+
+    #[test]
+    fn availability_reason_display_formatting() {
+        assert_eq!(AvailabilityReason::WarmingUp.to_string(), "Warming up");
+        assert_eq!(
+            AvailabilityReason::Unsupported("no PMU".into()).to_string(),
+            "Unsupported (no PMU)"
+        );
+        assert_eq!(
+            AvailabilityReason::PermissionDenied("need root".into()).to_string(),
+            "Permission denied (need root)"
+        );
+        assert_eq!(
+            AvailabilityReason::Stale(1500).to_string(),
+            "Stale data (1500 ms old)"
+        );
+    }
+
+    #[test]
+    fn frame_validation_catches_invalid_percentages_and_contradictions() {
+        let valid_frame = TelemetryFrame {
+            protocol_version: PROTOCOL_VERSION,
+            session_id: 1,
+            topology_generation: 1,
+            sequence: 1,
+            sampled_at_ms: 1000,
+            collection_duration_ms: 12.5,
+            cpu_percent: Metric::available(45.0, "%", "sys", 1000),
+            memory_used_bytes: Metric::available(4_000_000, "bytes", "sys", 1000),
+            memory_total_bytes: Metric::available(8_000_000, "bytes", "sys", 1000),
+            disk_read_bytes_per_sec: Metric::available(1024, "bytes/s", "sys", 1000),
+            disk_write_bytes_per_sec: Metric::available(2048, "bytes/s", "sys", 1000),
+            network_rx_bytes_per_sec: Metric::available(512, "bytes/s", "sys", 1000),
+            network_tx_bytes_per_sec: Metric::available(256, "bytes/s", "sys", 1000),
+            gpu_percent: Metric::unavailable(
+                "%",
+                "sys",
+                1000,
+                AvailabilityReason::Unsupported("no gpu".into()),
+            ),
+            package_power_watts: Metric::unavailable(
+                "W",
+                "sys",
+                1000,
+                AvailabilityReason::Unsupported("no rapl".into()),
+            ),
+            processes: vec![],
+        };
+
+        assert!(valid_frame.validate().is_ok());
+
+        // Test contradictory metric (has value AND reason)
+        let mut contradictory = valid_frame.clone();
+        contradictory.cpu_percent.unavailable_reason = Some(AvailabilityReason::WarmingUp);
+        assert!(matches!(
+            contradictory.validate(),
+            Err(FrameValidationError::ContradictoryMetricState { .. })
+        ));
+
+        // Test out of bounds percentage (>100%)
+        let mut out_of_bounds = valid_frame.clone();
+        out_of_bounds.cpu_percent.value = Some(150.0);
+        assert!(matches!(
+            out_of_bounds.validate(),
+            Err(FrameValidationError::PercentageOutOfBounds { .. })
+        ));
+
+        // Test non-finite float
+        let mut non_finite = valid_frame.clone();
+        non_finite.cpu_percent.value = Some(f32::NAN);
+        assert!(matches!(
+            non_finite.validate(),
+            Err(FrameValidationError::NonFiniteFloat { .. })
+        ));
+
+        // Test memory used > memory total
+        let mut memory_exceeds = valid_frame.clone();
+        memory_exceeds.memory_used_bytes.value = Some(9_000_000);
+        assert!(matches!(
+            memory_exceeds.validate(),
+            Err(FrameValidationError::MemoryExceedsTotal { .. })
+        ));
+
+        // Test version mismatch
+        let mut bad_version = valid_frame.clone();
+        bad_version.protocol_version = 999;
+        assert!(matches!(
+            bad_version.validate(),
+            Err(FrameValidationError::VersionMismatch { .. })
+        ));
     }
 }

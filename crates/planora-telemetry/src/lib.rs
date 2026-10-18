@@ -1,5 +1,8 @@
 //! Cross-platform baseline collector. Hardware-specific counters can enrich its frames.
-use planora_core::{Metric, PROTOCOL_VERSION, ProcessIdentity, ProcessRecord, TelemetryFrame};
+use planora_core::{
+    AvailabilityReason, IdentitySource, Metric, PROTOCOL_VERSION, ProcessIdentity, ProcessRecord,
+    TelemetryFrame,
+};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sysinfo::{Disks, Networks, ProcessRefreshKind, ProcessesToUpdate, System};
@@ -261,7 +264,6 @@ pub fn query_windows_basic_processes() -> Result<Vec<BasicProcessInfo>, i32> {
         return Err(STATUS_INFO_LENGTH_MISMATCH);
     }
     while offset + std::mem::size_of::<SYSTEM_BASICPROCESS_INFORMATION>() <= limit {
-        // The API buffer is byte-aligned; never form an aligned reference into it.
         let entry = unsafe {
             (buffer.as_ptr().add(offset) as *const SYSTEM_BASICPROCESS_INFORMATION).read_unaligned()
         };
@@ -309,9 +311,13 @@ pub struct Sampler {
     last_cpu: Option<Instant>,
     system_cpu: Option<Metric<f32>>,
     process_cpu: HashMap<ProcessIdentity, Metric<f32>>,
+    prev_disks: HashMap<String, (u64, u64)>,
+    prev_networks: HashMap<String, (u64, u64)>,
     #[cfg(target_os = "linux")]
     rapl: HashMap<String, RaplSample>,
     sequence: u64,
+    session_id: u64,
+    topology_generation: u64,
 }
 
 impl Default for Sampler {
@@ -322,6 +328,10 @@ impl Default for Sampler {
 
 impl Sampler {
     pub fn new() -> Self {
+        Self::new_with_session(1, 1)
+    }
+
+    pub fn new_with_session(session_id: u64, topology_generation: u64) -> Self {
         Self {
             system: System::new_all(),
             disks: Disks::new_with_refreshed_list(),
@@ -330,10 +340,18 @@ impl Sampler {
             last_cpu: None,
             system_cpu: None,
             process_cpu: HashMap::new(),
+            prev_disks: HashMap::new(),
+            prev_networks: HashMap::new(),
             #[cfg(target_os = "linux")]
             rapl: HashMap::new(),
             sequence: 0,
+            session_id,
+            topology_generation,
         }
+    }
+
+    pub fn set_topology_generation(&mut self, generation: u64) {
+        self.topology_generation = generation;
     }
 
     pub fn sample(&mut self) -> TelemetryFrame {
@@ -384,20 +402,24 @@ impl Sampler {
                     "bytes/s",
                     "sysinfo",
                     stamp,
-                    "Windows counts all process I/O, not disk I/O",
+                    AvailabilityReason::Unsupported(
+                        "Windows counts all process I/O, not disk I/O".into(),
+                    ),
                 ),
                 Metric::unavailable(
                     "bytes/s",
                     "sysinfo",
                     stamp,
-                    "Windows counts all process I/O, not disk I/O",
+                    AvailabilityReason::Unsupported(
+                        "Windows counts all process I/O, not disk I/O".into(),
+                    ),
                 ),
             );
             #[cfg(not(windows))]
             let (read, write) = if first {
                 (
-                    Metric::unavailable("bytes/s", "sysinfo", stamp, "first sample"),
-                    Metric::unavailable("bytes/s", "sysinfo", stamp, "first sample"),
+                    Metric::unavailable("bytes/s", "sysinfo", stamp, AvailabilityReason::WarmingUp),
+                    Metric::unavailable("bytes/s", "sysinfo", stamp, AvailabilityReason::WarmingUp),
                 )
             } else {
                 (
@@ -419,46 +441,48 @@ impl Sampler {
             let _ = io;
 
             #[cfg(target_os = "linux")]
-            let identity = linux_start_ticks(pid.as_u32())
-                .map(|started| ProcessIdentity {
-                    pid: pid.as_u32(),
-                    started,
-                    source: "linux proc start ticks".into(),
-                })
-                .unwrap_or_else(|_| ProcessIdentity {
-                    pid: pid.as_u32(),
-                    started: p.start_time(),
-                    source: "sysinfo epoch seconds".into(),
-                });
+            let (started, source) = if let Ok(ticks) = linux_start_ticks(pid.as_u32()) {
+                (ticks, IdentitySource::LinuxProcStartTicks)
+            } else {
+                (p.start_time(), IdentitySource::SysinfoEpochSeconds)
+            };
+            #[cfg(target_os = "linux")]
+            let identity = ProcessIdentity {
+                pid: pid.as_u32(),
+                started,
+                sequence_number: None,
+                source,
+            };
 
             #[cfg(windows)]
-            let identity = windows_start_filetime(pid.as_u32())
-                .map(|started| ProcessIdentity {
-                    pid: pid.as_u32(),
-                    started,
-                    source: "windows process FILETIME".into(),
-                })
-                .or_else(|| {
-                    basic_map
-                        .get(&pid.as_u32())
-                        .map(|&started| ProcessIdentity {
-                            pid: pid.as_u32(),
-                            started,
-                            source: "windows process sequence (SystemBasicProcessInformation)"
-                                .into(),
-                        })
-                })
-                .unwrap_or_else(|| ProcessIdentity {
-                    pid: pid.as_u32(),
-                    started: p.start_time(),
-                    source: "sysinfo epoch seconds".into(),
-                });
+            let (started, seq, source) = if let Some(ft) = windows_start_filetime(pid.as_u32()) {
+                (
+                    ft,
+                    basic_map.get(&pid.as_u32()).copied(),
+                    IdentitySource::WindowsProcessFiletime,
+                )
+            } else if let Some(&seq) = basic_map.get(&pid.as_u32()) {
+                (seq, Some(seq), IdentitySource::WindowsBasicProcessSequence)
+            } else {
+                (p.start_time(), None, IdentitySource::SysinfoEpochSeconds)
+            };
+            #[cfg(windows)]
+            let identity = ProcessIdentity {
+                pid: pid.as_u32(),
+                started,
+                sequence_number: seq,
+                source,
+            };
 
             #[cfg(not(any(target_os = "linux", windows)))]
             let identity = ProcessIdentity {
                 pid: pid.as_u32(),
                 started: p.start_time(),
-                source: "sysinfo epoch seconds".into(),
+                sequence_number: None,
+                #[cfg(target_os = "macos")]
+                source: IdentitySource::DarwinStartTime,
+                #[cfg(not(target_os = "macos"))]
+                source: IdentitySource::SysinfoEpochSeconds,
             };
 
             let cpu = if cpu_due {
@@ -476,10 +500,11 @@ impl Sampler {
                         "%",
                         "sysinfo process time delta",
                         stamp,
-                        "waiting for minimum CPU update interval",
+                        AvailabilityReason::WarmingUp,
                     )
                 })
             };
+
             processes.push(ProcessRecord {
                 identity,
                 name: p.name().to_string_lossy().into_owned(),
@@ -496,16 +521,17 @@ impl Sampler {
                     "%",
                     "OS GPU provider",
                     stamp,
-                    "per-process GPU counter unavailable",
+                    AvailabilityReason::Unsupported("per-process GPU counter unavailable".into()),
                 ),
                 affinity: Metric::unavailable(
                     "cpus",
                     "OS affinity provider",
                     stamp,
-                    "not queried in baseline sampler",
+                    AvailabilityReason::Unsupported("not queried in baseline sampler".into()),
                 ),
             });
         }
+
         processes.sort_by(|a, b| {
             b.cpu_percent
                 .value
@@ -515,34 +541,84 @@ impl Sampler {
         let live: HashSet<_> = processes.iter().map(|p| &p.identity).collect();
         self.process_cpu
             .retain(|identity, _| live.contains(identity));
-        let (read, write) = self.disks.list().iter().fold((0u64, 0u64), |(r, w), d| {
-            let io = d.usage();
-            (
-                r.saturating_add(io.read_bytes),
-                w.saturating_add(io.written_bytes),
-            )
-        });
-        let (rx, tx) = self.networks.iter().fold((0u64, 0u64), |(r, t), (_, n)| {
-            (
-                r.saturating_add(n.received()),
-                t.saturating_add(n.transmitted()),
-            )
-        });
+
+        // Deduplicate disks by name to avoid double-counting partitions on the same device
+        let mut disk_read_delta = 0u64;
+        let mut disk_write_delta = 0u64;
+        let mut seen_disks = HashSet::new();
+        for disk in self.disks.list() {
+            let name = disk.name().to_string_lossy().into_owned();
+            if !seen_disks.insert(name.clone()) {
+                continue;
+            }
+            let usage = disk.usage();
+            let curr_read = usage.read_bytes;
+            let curr_write = usage.written_bytes;
+
+            if let Some(&(prev_read, prev_write)) = self.prev_disks.get(&name) {
+                let r_delta = if curr_read >= prev_read {
+                    curr_read - prev_read
+                } else if curr_read.wrapping_sub(prev_read) < (u64::MAX / 2) {
+                    curr_read.wrapping_sub(prev_read)
+                } else {
+                    0
+                };
+                let w_delta = if curr_write >= prev_write {
+                    curr_write - prev_write
+                } else if curr_write.wrapping_sub(prev_write) < (u64::MAX / 2) {
+                    curr_write.wrapping_sub(prev_write)
+                } else {
+                    0
+                };
+                disk_read_delta = disk_read_delta.saturating_add(r_delta);
+                disk_write_delta = disk_write_delta.saturating_add(w_delta);
+            }
+            self.prev_disks.insert(name, (curr_read, curr_write));
+        }
+
+        // Deduplicate network interfaces and ignore loopback interfaces
+        let mut net_rx_delta = 0u64;
+        let mut net_tx_delta = 0u64;
+        for (name, net) in self.networks.iter() {
+            let name_lower = name.to_lowercase();
+            if name_lower.contains("loopback") || name == "lo" {
+                continue;
+            }
+            let curr_rx = net.total_received();
+            let curr_tx = net.total_transmitted();
+
+            if let Some(&(prev_rx, prev_tx)) = self.prev_networks.get(name) {
+                let rx_d = if curr_rx >= prev_rx {
+                    curr_rx - prev_rx
+                } else if curr_rx.wrapping_sub(prev_rx) < (u64::MAX / 2) {
+                    curr_rx.wrapping_sub(prev_rx)
+                } else {
+                    0
+                };
+                let tx_d = if curr_tx >= prev_tx {
+                    curr_tx - prev_tx
+                } else if curr_tx.wrapping_sub(prev_tx) < (u64::MAX / 2) {
+                    curr_tx.wrapping_sub(prev_tx)
+                } else {
+                    0
+                };
+                net_rx_delta = net_rx_delta.saturating_add(rx_d);
+                net_tx_delta = net_tx_delta.saturating_add(tx_d);
+            }
+            self.prev_networks.insert(name.clone(), (curr_rx, curr_tx));
+        }
+
         let measured = |value: u64, source: &str| {
             if first {
-                Metric::unavailable(
-                    "bytes/s",
-                    source,
-                    stamp,
-                    "first sample has no elapsed interval",
-                )
+                Metric::unavailable("bytes/s", source, stamp, AvailabilityReason::WarmingUp)
             } else {
                 Metric::available(rate(value, delta), "bytes/s", source, stamp)
             }
         };
+
         if cpu_due {
             self.system_cpu = Some(Metric::available(
-                self.system.global_cpu_usage(),
+                self.system.global_cpu_usage().clamp(0.0, 100.0),
                 "%",
                 "sysinfo total CPU delta",
                 stamp,
@@ -553,9 +629,10 @@ impl Sampler {
                 "%",
                 "sysinfo total CPU delta",
                 stamp,
-                "waiting for minimum CPU update interval",
+                AvailabilityReason::WarmingUp,
             )
         });
+
         #[cfg(target_os = "linux")]
         let gpu = match amd_gpu_busy() {
             Ok((value, device)) => Metric::available(
@@ -564,17 +641,37 @@ impl Sampler {
                 format!("Linux amdgpu {device} gpu_busy_percent"),
                 stamp,
             ),
-            Err(reason) => Metric::unavailable("%", "Linux amdgpu sysfs", stamp, reason),
+            Err(reason) => Metric::unavailable(
+                "%",
+                "Linux amdgpu sysfs",
+                stamp,
+                AvailabilityReason::Unsupported(reason),
+            ),
         };
         #[cfg(not(target_os = "linux"))]
-        let gpu = Metric::unavailable("%", "OS GPU provider", stamp, "GPU counter unavailable");
+        let gpu = Metric::unavailable(
+            "%",
+            "OS GPU provider",
+            stamp,
+            AvailabilityReason::Unsupported("GPU counter unavailable on this platform".into()),
+        );
+
         #[cfg(target_os = "linux")]
         let package_power = self.sample_rapl(now, stamp);
         #[cfg(not(target_os = "linux"))]
-        let package_power =
-            Metric::unavailable("W", "OS power provider", stamp, "power counter unavailable");
+        let package_power = Metric::unavailable(
+            "W",
+            "OS power provider",
+            stamp,
+            AvailabilityReason::Unsupported(
+                "Package power counter unavailable on this platform".into(),
+            ),
+        );
+
         let mut frame = TelemetryFrame {
             protocol_version: PROTOCOL_VERSION,
+            session_id: self.session_id,
+            topology_generation: self.topology_generation,
             sequence: self.sequence,
             sampled_at_ms: stamp,
             collection_duration_ms: 0.0,
@@ -591,10 +688,10 @@ impl Sampler {
                 "sysinfo physical memory",
                 stamp,
             ),
-            disk_read_bytes_per_sec: measured(read, "sysinfo disk device delta"),
-            disk_write_bytes_per_sec: measured(write, "sysinfo disk device delta"),
-            network_rx_bytes_per_sec: measured(rx, "sysinfo interface delta"),
-            network_tx_bytes_per_sec: measured(tx, "sysinfo interface delta"),
+            disk_read_bytes_per_sec: measured(disk_read_delta, "sysinfo disk device delta"),
+            disk_write_bytes_per_sec: measured(disk_write_delta, "sysinfo disk device delta"),
+            network_rx_bytes_per_sec: measured(net_rx_delta, "sysinfo interface delta"),
+            network_tx_bytes_per_sec: measured(net_tx_delta, "sysinfo interface delta"),
             gpu_percent: gpu,
             package_power_watts: package_power,
             processes,
@@ -610,7 +707,12 @@ impl Sampler {
             Ok(zones) => zones,
             Err(reason) => {
                 self.rapl.clear();
-                return Metric::unavailable("W", "Linux powercap RAPL", stamp, reason);
+                return Metric::unavailable(
+                    "W",
+                    "Linux powercap RAPL",
+                    stamp,
+                    AvailabilityReason::Unsupported(reason),
+                );
             }
         };
         let mut watts = 0.0f64;
@@ -651,7 +753,7 @@ impl Sampler {
                 "W",
                 "Linux powercap Intel RAPL",
                 stamp,
-                "first interval or invalid energy counter",
+                AvailabilityReason::WarmingUp,
             )
         }
     }
@@ -707,6 +809,11 @@ mod tests {
         assert!(f.network_rx_bytes_per_sec.value.is_none());
         assert_eq!(f.cpu_percent.unit, "%");
         assert_eq!(f.disk_read_bytes_per_sec.unit, "bytes/s");
+        assert_eq!(
+            f.cpu_percent.unavailable_reason,
+            Some(AvailabilityReason::WarmingUp)
+        );
+        assert!(f.validate().is_ok());
     }
 
     #[test]
@@ -726,6 +833,7 @@ mod tests {
             cached.cpu_percent.sampled_at_ms,
             later.cpu_percent.sampled_at_ms
         );
+        assert!(later.validate().is_ok());
     }
 
     #[test]
@@ -737,7 +845,6 @@ mod tests {
 
     #[test]
     fn counter_wraparound_calculation() {
-        // Monotonic 64-bit rollover
         let prev = u64::MAX - 99;
         let curr = 50u64;
         let delta = counter_delta(prev, curr);
@@ -773,8 +880,6 @@ mod tests {
     #[test]
     fn windows_basic_or_fallback_query() {
         let result = query_windows_basic_processes();
-        // On Windows 11 build 26100+ this returns Ok, on earlier builds it returns an error.
-        // In either case, it doesn't crash or violate memory safety.
         if let Ok(procs) = result {
             assert!(!procs.is_empty());
             assert!(procs.iter().any(|p| p.pid == std::process::id()));

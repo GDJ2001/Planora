@@ -19,8 +19,9 @@ fn measures_sampling_overhead_and_cache_probe() {
     println!("Caches: {}", topo.caches.len());
     for cache in &topo.caches {
         println!(
-            "  L{} - {} KiB, line {} bytes (shared by CPUs {:?}, source: {})",
+            "  L{} {:?} - {} KiB, line {:?} bytes (shared by CPUs {:?}, source: {})",
             cache.level,
+            cache.cache_type,
             cache.size_bytes / 1024,
             cache.line_bytes,
             cache.shared_by,

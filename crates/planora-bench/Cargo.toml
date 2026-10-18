@@ -8,3 +8,9 @@ license.workspace = true
 [dependencies]
 planora-core = { path = "../planora-core" }
 core_affinity = "0.8.3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation"] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

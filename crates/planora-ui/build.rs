@@ -15,6 +15,24 @@ fn main() {
     println!("cargo:rerun-if-changed={}", path.display());
     println!("cargo:rerun-if-changed=../../assets/brand/ui");
 
+    let git_commit = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "release".to_string());
+    println!("cargo:rustc-env=PLANORA_GIT_COMMIT={}", git_commit);
+    println!(
+        "cargo:rustc-env=PLANORA_TARGET={}",
+        env::var("TARGET").unwrap_or_else(|_| "unknown".to_string())
+    );
+    println!(
+        "cargo:rustc-env=PLANORA_PROFILE={}",
+        env::var("PROFILE").unwrap_or_else(|_| "debug".to_string())
+    );
+
     let root: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     let mut generated = String::new();
 

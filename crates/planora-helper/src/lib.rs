@@ -4,16 +4,22 @@ use interprocess::local_socket::GenericFilePath;
 #[cfg(windows)]
 use interprocess::local_socket::GenericNamespaced;
 use interprocess::local_socket::{ListenerOptions, Stream, prelude::*};
-use planora_core::{Command, PROTOCOL_VERSION, Response};
+use planora_core::{
+    Command, MAX_REQUEST_SIZE, MAX_RESPONSE_SIZE, PROTOCOL_VERSION, Request, Response,
+    ResponseEnvelope,
+};
 use std::io::{self, Read, Write};
+use std::time::Duration;
 
-const MAX_MESSAGE: usize = 8 * 1024 * 1024;
 #[cfg(windows)]
-const ENDPOINT: &str = "planora-v1";
+const ENDPOINT: &str = "planora-v2";
 #[cfg(target_os = "linux")]
-const ENDPOINT: &str = "/run/planora/planora.sock";
+const ENDPOINT: &str = "/run/planora/planora-v2.sock";
 #[cfg(target_os = "macos")]
-const ENDPOINT: &str = "/var/run/planora/planora.sock";
+const ENDPOINT: &str = "/var/run/planora/planora-v2.sock";
+
+pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn name() -> io::Result<interprocess::local_socket::Name<'static>> {
     #[cfg(windows)]
@@ -30,19 +36,112 @@ pub fn connect() -> io::Result<Stream> {
     Stream::connect(name()?)
 }
 
+/// Send a request with size enforcement (max 64 KiB).
+pub fn send_request(stream: &mut impl Write, req: &Request) -> io::Result<()> {
+    let data = serde_json::to_vec(req).map_err(io::Error::other)?;
+    if data.len() > MAX_REQUEST_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "request size ({} bytes) exceeds limit of {} bytes",
+                data.len(),
+                MAX_REQUEST_SIZE
+            ),
+        ));
+    }
+    stream.write_all(&(data.len() as u32).to_le_bytes())?;
+    stream.write_all(&data)?;
+    stream.flush()
+}
+
+/// Receive a request with size enforcement (max 64 KiB).
+pub fn receive_request(stream: &mut impl Read) -> io::Result<Request> {
+    let mut length = [0u8; 4];
+    stream.read_exact(&mut length)?;
+    let len = u32::from_le_bytes(length) as usize;
+    if len > MAX_REQUEST_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("request size ({len} bytes) exceeds limit of {MAX_REQUEST_SIZE} bytes"),
+        ));
+    }
+    let mut data = vec![0u8; len];
+    stream.read_exact(&mut data)?;
+    serde_json::from_slice(&data).map_err(io::Error::other)
+}
+
+/// Send a response with size enforcement (max 8 MiB).
+pub fn send_response(stream: &mut impl Write, resp: &ResponseEnvelope) -> io::Result<()> {
+    let data = serde_json::to_vec(resp).map_err(io::Error::other)?;
+    if data.len() > MAX_RESPONSE_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "response size ({} bytes) exceeds limit of {} bytes",
+                data.len(),
+                MAX_RESPONSE_SIZE
+            ),
+        ));
+    }
+    stream.write_all(&(data.len() as u32).to_le_bytes())?;
+    stream.write_all(&data)?;
+    stream.flush()
+}
+
+/// Receive a response with size enforcement (max 8 MiB).
+pub fn receive_response(stream: &mut impl Read) -> io::Result<ResponseEnvelope> {
+    let mut length = [0u8; 4];
+    stream.read_exact(&mut length)?;
+    let len = u32::from_le_bytes(length) as usize;
+    if len > MAX_RESPONSE_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("response size ({len} bytes) exceeds limit of {MAX_RESPONSE_SIZE} bytes"),
+        ));
+    }
+    let mut data = vec![0u8; len];
+    stream.read_exact(&mut data)?;
+    serde_json::from_slice(&data).map_err(io::Error::other)
+}
+
+/// Transact a command to the helper over a dedicated local IPC connection.
 pub fn transact(command: &Command) -> io::Result<Response> {
+    static REQUEST_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let mut stream = connect()?;
-    send(
+
+    // Perform handshake
+    let handshake_id = REQUEST_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    send_request(
         &mut stream,
-        &Command::Hello {
-            version: PROTOCOL_VERSION,
+        &Request {
+            request_id: handshake_id,
+            command: Command::Hello {
+                version: PROTOCOL_VERSION,
+            },
         },
     )?;
-    match receive::<Response>(&mut stream)? {
+
+    let handshake_env = receive_response(&mut stream)?;
+    match handshake_env.response {
         Response::Hello {
             version,
             helper_authorized: true,
+            ..
         } if version == PROTOCOL_VERSION => {}
+        Response::Hello { version, .. } => {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!(
+                    "protocol version mismatch: helper is v{version}, client is v{PROTOCOL_VERSION}"
+                ),
+            ));
+        }
+        Response::Error { code, message } => {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("helper handshake error: [{code}] {message}"),
+            ));
+        }
         _ => {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -50,39 +149,29 @@ pub fn transact(command: &Command) -> io::Result<Response> {
             ));
         }
     }
-    send(&mut stream, command)?;
-    receive(&mut stream)
-}
 
-pub fn send<T: serde::Serialize>(stream: &mut impl Write, value: &T) -> io::Result<()> {
-    let data = serde_json::to_vec(value).map_err(io::Error::other)?;
-    if data.len() > MAX_MESSAGE {
+    // Send payload command
+    let req_id = REQUEST_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    send_request(
+        &mut stream,
+        &Request {
+            request_id: req_id,
+            command: command.clone(),
+        },
+    )?;
+
+    let resp_env = receive_response(&mut stream)?;
+    if resp_env.request_id != req_id {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "message too large",
+            format!(
+                "request ID mismatch: sent {}, got {}",
+                req_id, resp_env.request_id
+            ),
         ));
     }
-    stream.write_all(&(data.len() as u32).to_le_bytes())?;
-    stream.write_all(&data)
-}
 
-pub fn receive<T: serde::de::DeserializeOwned>(stream: &mut impl Read) -> io::Result<T> {
-    let mut length = [0u8; 4];
-    stream.read_exact(&mut length)?;
-    let len = u32::from_le_bytes(length) as usize;
-    if len > MAX_MESSAGE {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "message too large",
-        ));
-    }
-    let mut data = vec![0; len];
-    stream.read_exact(&mut data)?;
-    serde_json::from_slice(&data).map_err(io::Error::other)
-}
-
-pub fn protocol_ok(command: &Command) -> bool {
-    matches!(command, Command::Hello { version } if *version == PROTOCOL_VERSION)
+    Ok(resp_env.response)
 }
 
 pub fn listener() -> io::Result<interprocess::local_socket::Listener> {
@@ -101,7 +190,14 @@ pub fn listener() -> io::Result<interprocess::local_socket::Listener> {
                 return Err(io::Error::last_os_error());
             }
         }
+        #[cfg(target_os = "linux")]
+        {
+            let directory = std::path::Path::new("/run/planora");
+            std::fs::create_dir_all(directory)?;
+        }
+
         let result = options.mode(0o660).create_sync()?;
+
         #[cfg(target_os = "macos")]
         {
             let name = std::ffi::CString::new(ENDPOINT).map_err(io::Error::other)?;
@@ -148,7 +244,7 @@ pub fn listener() -> io::Result<interprocess::local_socket::Listener> {
     }
 }
 
-/// Unix peer credentials are checked in addition to filesystem socket permissions.
+/// Peer credentials check ensuring caller is local and authorized.
 #[cfg(unix)]
 pub fn peer_authorized(stream: &Stream) -> bool {
     let peer_uid = stream.peer_creds().ok().and_then(|p| p.euid());
@@ -159,7 +255,9 @@ pub fn peer_authorized(stream: &Stream) -> bool {
         let Ok(metadata) = std::fs::metadata(path) else {
             return false;
         };
-        if metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+        // Protect against symlink attacks and unsafe permissions
+        if metadata.file_type().is_symlink() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0
+        {
             return false;
         }
         let approved_uid = std::fs::read_to_string(path)
@@ -172,25 +270,83 @@ pub fn peer_authorized(stream: &Stream) -> bool {
         peer_uid.is_some()
     }
 }
+
 #[cfg(windows)]
 pub fn peer_authorized(stream: &Stream) -> bool {
+    // On Windows, the Security Descriptor restricts access to the authorized SID at pipe creation.
+    // In addition, verify that the caller has a valid local PID.
     stream.peer_creds().ok().and_then(|p| p.pid()).is_some()
+}
+
+pub fn caller_id(stream: &Stream) -> u64 {
+    #[cfg(unix)]
+    {
+        stream
+            .peer_creds()
+            .ok()
+            .and_then(|p| p.euid())
+            .map(|uid| uid as u64)
+            .unwrap_or(0)
+    }
+    #[cfg(windows)]
+    {
+        stream
+            .peer_creds()
+            .ok()
+            .and_then(|p| p.pid())
+            .map(|pid| pid as u64)
+            .unwrap_or(0)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use planora_core::ErrorCode;
+
     #[test]
-    fn rejects_oversize_frame() {
-        let input = ((MAX_MESSAGE + 1) as u32).to_le_bytes();
-        let result: io::Result<Command> = receive(&mut input.as_slice());
+    fn rejects_oversize_request() {
+        let input = ((MAX_REQUEST_SIZE + 1) as u32).to_le_bytes();
+        let result = receive_request(&mut input.as_slice());
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
     }
+
     #[test]
-    fn version_is_exact() {
-        assert!(protocol_ok(&Command::Hello {
-            version: PROTOCOL_VERSION
-        }));
-        assert!(!protocol_ok(&Command::Hello { version: 0 }));
+    fn rejects_oversize_response() {
+        let input = ((MAX_RESPONSE_SIZE + 1) as u32).to_le_bytes();
+        let result = receive_response(&mut input.as_slice());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn request_response_serialization_round_trip() {
+        let req = Request {
+            request_id: 42,
+            command: Command::Topology,
+        };
+        let mut buf = Vec::new();
+        send_request(&mut buf, &req).unwrap();
+        let decoded = receive_request(&mut buf.as_slice()).unwrap();
+        assert_eq!(decoded.request_id, 42);
+        assert_eq!(decoded.command, Command::Topology);
+
+        let resp = ResponseEnvelope {
+            request_id: 42,
+            response: Response::Error {
+                code: ErrorCode::Unauthorized,
+                message: "access denied".into(),
+            },
+        };
+        let mut resp_buf = Vec::new();
+        send_response(&mut resp_buf, &resp).unwrap();
+        let decoded_resp = receive_response(&mut resp_buf.as_slice()).unwrap();
+        assert_eq!(decoded_resp.request_id, 42);
+        match decoded_resp.response {
+            Response::Error { code, message } => {
+                assert_eq!(code, ErrorCode::Unauthorized);
+                assert_eq!(message, "access denied");
+            }
+            _ => panic!("unexpected response variant"),
+        }
     }
 }
