@@ -1246,28 +1246,28 @@ impl eframe::App for App {
                     self.mem_history.pop_front();
                 }
             }
-            let disk_rate = frame
-                .disk_read_bytes_per_sec
-                .value
-                .unwrap_or(0)
-                .saturating_add(frame.disk_write_bytes_per_sec.value.unwrap_or(0))
-                as f32
-                / 1024.0;
-            self.disk_history.push_back(disk_rate);
-            if self.disk_history.len() > 120 {
-                self.disk_history.pop_front();
+            // Never graph an unavailable counter as zero: that would make
+            // missing OS data indistinguishable from real idle activity.
+            if let (Some(read), Some(write)) = (
+                frame.disk_read_bytes_per_sec.value,
+                frame.disk_write_bytes_per_sec.value,
+            ) {
+                self.disk_history
+                    .push_back(read.saturating_add(write) as f32 / 1024.0);
+                if self.disk_history.len() > 120 {
+                    self.disk_history.pop_front();
+                }
             }
 
-            let net_rate = frame
-                .network_rx_bytes_per_sec
-                .value
-                .unwrap_or(0)
-                .saturating_add(frame.network_tx_bytes_per_sec.value.unwrap_or(0))
-                as f32
-                / 1024.0;
-            self.net_history.push_back(net_rate);
-            if self.net_history.len() > 120 {
-                self.net_history.pop_front();
+            if let (Some(rx), Some(tx)) = (
+                frame.network_rx_bytes_per_sec.value,
+                frame.network_tx_bytes_per_sec.value,
+            ) {
+                self.net_history
+                    .push_back(rx.saturating_add(tx) as f32 / 1024.0);
+                if self.net_history.len() > 120 {
+                    self.net_history.pop_front();
+                }
             }
         }
 
