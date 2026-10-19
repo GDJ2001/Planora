@@ -59,6 +59,8 @@ pub struct App {
     benchmarks_state: BenchmarksViewState,
     capabilities_state: CapabilitiesViewState,
     auto_close: Option<(Instant, std::time::Duration)>,
+    screenshot_out: Option<std::path::PathBuf>,
+    frames_rendered: usize,
 }
 
 impl App {
@@ -95,6 +97,8 @@ impl App {
             benchmarks_state: BenchmarksViewState::default(),
             capabilities_state: CapabilitiesViewState::default(),
             auto_close: None,
+            screenshot_out: None,
+            frames_rendered: 0,
         }
     }
 
@@ -114,7 +118,35 @@ impl App {
         {
             root.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
+
         let ctx = root.ctx().clone();
+
+        self.frames_rendered = self.frames_rendered.saturating_add(1);
+        if self.frames_rendered >= 45
+            && let Some(path) = self.screenshot_out.take()
+        {
+            ctx.request_screenshot(move |img| {
+                let mut raw = Vec::with_capacity(img.pixels.len() * 4);
+                for p in &img.pixels {
+                    raw.push(p.r());
+                    raw.push(p.g());
+                    raw.push(p.b());
+                    raw.push(p.a());
+                }
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = image::save_buffer(
+                    &path,
+                    &raw,
+                    img.size[0] as u32,
+                    img.size[1] as u32,
+                    image::ExtendedColorType::Rgba8,
+                );
+                std::process::exit(0);
+            });
+        }
+
         self.apply_theme(&ctx);
         let p = self.palette(&ctx);
 
@@ -564,6 +596,7 @@ fn main() -> eframe::Result<()> {
     let mut width = 1180.0;
     let mut height = 760.0;
     let mut auto_close_ms = None;
+    let mut screenshot_out = None;
 
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
@@ -607,6 +640,10 @@ fn main() -> eframe::Result<()> {
                 }
                 i += 2;
             }
+            "--screenshot-out" if i + 1 < args.len() => {
+                screenshot_out = Some(std::path::PathBuf::from(&args[i + 1]));
+                i += 2;
+            }
             _ => {
                 i += 1;
             }
@@ -632,6 +669,7 @@ fn main() -> eframe::Result<()> {
             if let Some(ms) = auto_close_ms {
                 app.auto_close = Some((Instant::now(), std::time::Duration::from_millis(ms)));
             }
+            app.screenshot_out = screenshot_out;
             Ok(Box::new(app))
         }),
     )

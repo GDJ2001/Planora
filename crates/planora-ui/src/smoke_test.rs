@@ -232,6 +232,8 @@ pub fn create_test_app(theme: Theme, page: Page) -> App {
         benchmarks_state: crate::views::benchmarks::BenchmarksViewState::default(),
         capabilities_state: crate::views::capabilities::CapabilitiesViewState::default(),
         auto_close: None,
+        screenshot_out: None,
+        frames_rendered: 0,
     }
 }
 
