@@ -14,7 +14,7 @@ interprocess.workspace = true
 libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_System_Services", "Win32_Foundation", "Win32_System_Threading", "Win32_System_SystemInformation"] }
+windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_System_Services", "Win32_Foundation", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_System_Pipes", "Win32_Storage_FileSystem"] }
 widestring = "1.2"
 
 [[bin]]

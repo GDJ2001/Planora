@@ -231,7 +231,13 @@ pub fn background_worker(
             },
         };
 
-        if planora_helper::send_request(&mut stream, &handshake_req).is_err() {
+        if planora_helper::send_request_deadline(
+            &mut stream,
+            &handshake_req,
+            Instant::now() + planora_helper::HANDSHAKE_TIMEOUT,
+        )
+        .is_err()
+        {
             thread::sleep(reconnect_backoff);
             reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_millis(2000));
             continue;
@@ -300,12 +306,13 @@ pub fn background_worker(
         // Fetch topology and capabilities on connect with REQUEST_TIMEOUT
         next_request_id = next_request_id.wrapping_add(1);
         let topo_req_id = next_request_id;
-        let _ = planora_helper::send_request(
+        let _ = planora_helper::send_request_deadline(
             &mut stream,
             &Request {
                 request_id: topo_req_id,
                 command: Command::Topology,
             },
+            Instant::now() + planora_helper::REQUEST_TIMEOUT,
         );
         if let Ok(ResponseEnvelope {
             request_id,
@@ -320,12 +327,13 @@ pub fn background_worker(
 
         next_request_id = next_request_id.wrapping_add(1);
         let caps_req_id = next_request_id;
-        let _ = planora_helper::send_request(
+        let _ = planora_helper::send_request_deadline(
             &mut stream,
             &Request {
                 request_id: caps_req_id,
                 command: Command::Capabilities,
             },
+            Instant::now() + planora_helper::REQUEST_TIMEOUT,
         );
         if let Ok(ResponseEnvelope {
             request_id,
@@ -341,12 +349,13 @@ pub fn background_worker(
         // Fetch initial snapshot immediately so Live state has fresh data right away
         next_request_id = next_request_id.wrapping_add(1);
         let init_req_id = next_request_id;
-        let _ = planora_helper::send_request(
+        let _ = planora_helper::send_request_deadline(
             &mut stream,
             &Request {
                 request_id: init_req_id,
                 command: Command::Snapshot,
             },
+            Instant::now() + planora_helper::REQUEST_TIMEOUT,
         );
         if let Ok(ResponseEnvelope {
             request_id,
@@ -375,7 +384,13 @@ pub fn background_worker(
                     request_id: cur_req_id,
                     command: cmd,
                 };
-                if planora_helper::send_request(&mut stream, &req).is_err() {
+                if planora_helper::send_request_deadline(
+                    &mut stream,
+                    &req,
+                    Instant::now() + planora_helper::REQUEST_TIMEOUT,
+                )
+                .is_err()
+                {
                     connection_healthy = false;
                     break;
                 }
@@ -428,7 +443,13 @@ pub fn background_worker(
                             request_id: cur_req_id,
                             command: cmd,
                         };
-                        if planora_helper::send_request(&mut stream, &req).is_err() {
+                        if planora_helper::send_request_deadline(
+                            &mut stream,
+                            &req,
+                            Instant::now() + planora_helper::REQUEST_TIMEOUT,
+                        )
+                        .is_err()
+                        {
                             let mut shared = state.lock().unwrap();
                             shared.state = Some(AppState::Reconnecting);
                             break;
@@ -471,7 +492,13 @@ pub fn background_worker(
                 request_id: sample_req_id,
                 command: Command::Snapshot,
             };
-            if planora_helper::send_request(&mut stream, &sample_cmd).is_err() {
+            if planora_helper::send_request_deadline(
+                &mut stream,
+                &sample_cmd,
+                Instant::now() + planora_helper::REQUEST_TIMEOUT,
+            )
+            .is_err()
+            {
                 let mut shared = state.lock().unwrap();
                 shared.state = Some(AppState::Reconnecting);
                 break;
@@ -666,12 +693,13 @@ mod tests {
         });
 
         let mut client = Stream::connect(name).unwrap();
-        planora_helper::send_request(
+        planora_helper::send_request_deadline(
             &mut client,
             &Request {
                 request_id: 1,
                 command: Command::Snapshot,
             },
+            Instant::now() + Duration::from_secs(2),
         )
         .unwrap();
 

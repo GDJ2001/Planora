@@ -12,6 +12,7 @@ pub struct HardwareViewState {
     pub canvas_pan: Vec2,
     pub canvas_zoom: f32,
     pub selected_core_id: Option<u16>,
+    pub initial_fit_done: bool,
 }
 
 impl Default for HardwareViewState {
@@ -21,6 +22,7 @@ impl Default for HardwareViewState {
             canvas_pan: Vec2::ZERO,
             canvas_zoom: 1.0,
             selected_core_id: None,
+            initial_fit_done: false,
         }
     }
 }
@@ -73,7 +75,7 @@ pub fn render_hardware_view(
             }
             if ui.small_button("Reset View").clicked() {
                 state.canvas_pan = Vec2::ZERO;
-                state.canvas_zoom = 1.0;
+                state.initial_fit_done = false; // Trigger recalculation of fit zoom
             }
         }
     });
@@ -167,7 +169,6 @@ fn render_canvas_view(ui: &mut egui::Ui, t: &Topology, state: &mut HardwareViewS
         egui::StrokeKind::Inside,
     );
 
-    let zoom = state.canvas_zoom;
     let num_cores = t.cores.len().max(1);
     let cols = if num_cores <= 4 {
         num_cores
@@ -178,24 +179,49 @@ fn render_canvas_view(ui: &mut egui::Ui, t: &Topology, state: &mut HardwareViewS
     };
     let rows = num_cores.div_ceil(cols);
 
-    let core_w = 124.0 * zoom;
-    let core_h = 72.0 * zoom;
-    let gap_x = 14.0 * zoom;
-    let gap_y = 14.0 * zoom;
+    let core_w_base = 124.0;
+    let core_h_base = 72.0;
+    let gap_x_base = 14.0;
+    let gap_y_base = 14.0;
+    let pkg_pad_base = 16.0;
+    let header_h_base = 32.0;
+
+    let unscaled_grid_w = cols as f32 * core_w_base + (cols.saturating_sub(1)) as f32 * gap_x_base;
+    let unscaled_grid_h = rows as f32 * core_h_base + (rows.saturating_sub(1)) as f32 * gap_y_base;
+    let unscaled_pkg_w = unscaled_grid_w + 2.0 * pkg_pad_base;
+    let unscaled_pkg_h = unscaled_grid_h + 2.0 * pkg_pad_base + header_h_base;
+
+    // Auto-fit graph on first load or Reset View
+    if !state.initial_fit_done {
+        let avail_w = (canvas_rect.width() - 48.0).max(100.0);
+        let avail_h = (canvas_rect.height() - 56.0).max(100.0);
+        let fit_zoom = (avail_w / unscaled_pkg_w)
+            .min(avail_h / unscaled_pkg_h)
+            .clamp(0.65, 1.75);
+        state.canvas_zoom = fit_zoom;
+        state.canvas_pan = Vec2::ZERO;
+        state.initial_fit_done = true;
+    }
+
+    let zoom = state.canvas_zoom;
+    let core_w = core_w_base * zoom;
+    let core_h = core_h_base * zoom;
+    let gap_x = gap_x_base * zoom;
+    let gap_y = gap_y_base * zoom;
+    let pkg_pad = pkg_pad_base * zoom;
+    let header_h = header_h_base * zoom;
 
     let grid_w = cols as f32 * core_w + (cols.saturating_sub(1)) as f32 * gap_x;
     let grid_h = rows as f32 * core_h + (rows.saturating_sub(1)) as f32 * gap_y;
+    let pkg_w = grid_w + 2.0 * pkg_pad;
+    let pkg_h = grid_h + 2.0 * pkg_pad + header_h;
 
-    let base_origin_x = canvas_rect.min.x + ((canvas_rect.width() - grid_w) / 2.0).max(24.0);
-    let base_origin_y = canvas_rect.min.y + ((canvas_rect.height() - grid_h) / 2.0).max(36.0);
-    let origin = Pos2::new(base_origin_x, base_origin_y) + state.canvas_pan;
+    let base_origin_x = canvas_rect.min.x + ((canvas_rect.width() - pkg_w) / 2.0).max(16.0);
+    let base_origin_y = canvas_rect.min.y + ((canvas_rect.height() - pkg_h) / 2.0).max(20.0);
+    let pkg_origin = Pos2::new(base_origin_x, base_origin_y) + state.canvas_pan;
 
     // Package boundary
-    let pkg_pad = 14.0 * zoom;
-    let pkg_rect = Rect::from_min_size(
-        origin - Vec2::splat(pkg_pad),
-        Vec2::new(grid_w + 2.0 * pkg_pad, grid_h + 2.0 * pkg_pad),
-    );
+    let pkg_rect = Rect::from_min_size(pkg_origin, Vec2::new(pkg_w, pkg_h));
     painter.rect_filled(
         pkg_rect,
         CornerRadius::same(6),
@@ -207,6 +233,9 @@ fn render_canvas_view(ui: &mut egui::Ui, t: &Topology, state: &mut HardwareViewS
         Stroke::new(1.0, p.border_control),
         egui::StrokeKind::Inside,
     );
+
+    // Dedicated package header band
+    let header_rect = Rect::from_min_size(pkg_rect.min, Vec2::new(pkg_w, header_h));
     let pkg_id_str = t
         .cores
         .first()
@@ -222,11 +251,11 @@ fn render_canvas_view(ui: &mut egui::Ui, t: &Topology, state: &mut HardwareViewS
         pkg_name
     };
     painter.text(
-        pkg_rect.left_top() + Vec2::new(8.0, 4.0),
-        egui::Align2::LEFT_TOP,
+        header_rect.left_center() + Vec2::new(12.0 * zoom, 0.0),
+        egui::Align2::LEFT_CENTER,
         pkg_label,
-        egui::FontId::proportional(11.5 * zoom),
-        p.secondary,
+        egui::FontId::proportional((12.5 * zoom).clamp(10.0, 18.0)),
+        p.text,
     );
 
     // Canvas Legend in top right
@@ -240,6 +269,12 @@ fn render_canvas_view(ui: &mut egui::Ui, t: &Topology, state: &mut HardwareViewS
         p.secondary,
     );
 
+    // Core grid origin separated from the header band
+    let grid_origin = Pos2::new(
+        pkg_rect.min.x + pkg_pad,
+        pkg_rect.min.y + header_h + pkg_pad,
+    );
+
     let click_pos = if response.clicked() {
         response.interact_pointer_pos()
     } else {
@@ -249,7 +284,8 @@ fn render_canvas_view(ui: &mut egui::Ui, t: &Topology, state: &mut HardwareViewS
     for (i, core) in t.cores.iter().enumerate() {
         let col_idx = (i % cols) as f32;
         let row_idx = (i / cols) as f32;
-        let core_pos = origin + Vec2::new(col_idx * (core_w + gap_x), row_idx * (core_h + gap_y));
+        let core_pos =
+            grid_origin + Vec2::new(col_idx * (core_w + gap_x), row_idx * (core_h + gap_y));
         let core_rect = Rect::from_min_size(core_pos, Vec2::new(core_w, core_h));
 
         if let Some(pos) = click_pos
@@ -334,5 +370,32 @@ fn render_canvas_view(ui: &mut egui::Ui, t: &Topology, state: &mut HardwareViewS
                     }
                 }
             });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_package_header_does_not_overlap_core_nodes() {
+        for zoom in [0.5, 0.8, 1.0, 1.5, 2.0] {
+            let pkg_pad = 12.0 * zoom;
+            let header_h = 32.0 * zoom;
+            let origin_y = 100.0;
+
+            let title_pos_y = origin_y + 8.0 * zoom;
+            let title_bottom_y = title_pos_y + 15.0 * zoom; // label font size ~14-15px
+            let grid_origin_y = origin_y + header_h + pkg_pad; // top of Core #0/#1
+
+            assert!(
+                grid_origin_y > title_bottom_y,
+                "Core grid top ({grid_origin_y}) must be strictly below package title bottom ({title_bottom_y}) at zoom {zoom}"
+            );
+            assert!(
+                grid_origin_y - title_bottom_y >= 8.0 * zoom,
+                "Clearance between package title and core grid must be >= {}px, got {}",
+                8.0 * zoom,
+                grid_origin_y - title_bottom_y
+            );
+        }
     }
 }

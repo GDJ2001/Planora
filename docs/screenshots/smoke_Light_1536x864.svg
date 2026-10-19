@@ -4,6 +4,7 @@
     .mono { font-family: "JetBrains Mono", Consolas, monospace; }
   </style>
   <rect width="100%" height="100%" fill="rgb(244, 247, 251)"/>
+  <text x="1520.0" y="18.0" fill="rgba(15, 23, 42, 0.45)" font-size="10.0" font-weight="600" text-anchor="end">SIMULATED SAMPLE DATA - FIXTURE PREVIEW</text>
   <rect x="0.0" y="0.0" width="207.0" height="864.0" rx="0" fill="rgb(244, 247, 251)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
   <rect x="20.0" y="16.0" width="168.0" height="55.9" rx="0" fill="rgb(255, 255, 255)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
   <line x1="8.0" y1="93.9" x2="199.0" y2="93.9" stroke="rgb(203, 213, 225)" stroke-width="1.0"/>
@@ -53,240 +54,238 @@
   <line x1="26.9" y1="317.3" x2="25.9" y2="315.5" stroke="rgb(82, 98, 122)" stroke-width="2.5"/>
   <line x1="31.1" y1="317.3" x2="32.2" y2="315.5" stroke="rgb(82, 98, 122)" stroke-width="2.5"/>
   <text x="46.0" y="326.1" fill="rgb(82, 98, 122)" font-size="16.0">Settings</text>
-  <text x="8.0" y="847.3" fill="rgb(20, 33, 61)" font-size="15.0">▲ Stale (3.1s ago)</text>
+  <text x="8.0" y="847.3" fill="rgb(20, 33, 61)" font-size="15.0">▲ Stale (2.8s ago)</text>
   <line x1="8.0" y1="829.0" x2="199.0" y2="829.0" stroke="rgb(203, 213, 225)" stroke-width="1.0"/>
   <line x1="207.5" y1="0.0" x2="207.5" y2="864.0" stroke="rgb(203, 213, 225)" stroke-width="1.0"/>
-  <rect x="208.0" y="0.0" width="1475.2" height="864.0" rx="0" fill="rgb(244, 247, 251)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <rect x="216.0" y="8.0" width="1459.2" height="946.0" rx="0" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <rect x="1408.0" y="8.0" width="120.0" height="24.0" rx="12" fill="rgb(233, 239, 247)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <rect x="1408.0" y="8.0" width="120.0" height="24.0" rx="12" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <text x="1430.0" y="24.5" fill="rgb(180, 83, 9)" font-size="14.0">Stale (3.1s ago)</text>
-  <rect x="1340.2" y="10.0" width="59.8" height="20.0" rx="8" fill="rgb(230, 230, 230)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <text x="1348.2" y="24.8" fill="rgb(60, 60, 60)" font-size="15.0">Pause ⏸</text>
-  <text x="1332.2" y="24.2" fill="rgb(20, 33, 61)" font-size="13.0" class="mono">100 ms</text>
+  <rect x="208.0" y="0.0" width="1328.0" height="864.0" rx="0" fill="rgb(244, 247, 251)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="216.0" y="8.0" width="1312.0" height="942.0" rx="0" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
   <text x="216.0" y="27.2" fill="rgb(20, 33, 61)" font-size="21.0">System Overview</text>
   <text x="216.0" y="47.5" fill="rgb(20, 33, 61)" font-size="14.0">Comprehensive real-time micro-architectural telemetry and resource breakdown</text>
+  <rect x="1408.0" y="17.0" width="120.0" height="24.0" rx="12" fill="rgb(233, 239, 247)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="1408.0" y="17.0" width="120.0" height="24.0" rx="12" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <text x="1430.0" y="33.5" fill="rgb(180, 83, 9)" font-size="14.0">Stale (2.8s ago)</text>
+  <rect x="1340.2" y="19.0" width="59.8" height="20.0" rx="8" fill="rgb(230, 230, 230)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <text x="1348.2" y="33.8" fill="rgb(60, 60, 60)" font-size="15.0">Pause ⏸</text>
+  <text x="1332.2" y="33.2" fill="rgb(20, 33, 61)" font-size="13.0" class="mono">100 ms</text>
   <line x1="216.0" y1="66.0" x2="1528.0" y2="66.0" stroke="rgb(203, 213, 225)" stroke-width="1.0"/>
-  <rect x="216.0" y="84.0" width="314.0" height="126.0" rx="8" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <rect x="235.0" y="104.0" width="10.1" height="10.1" rx="2" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(37, 99, 235)" stroke-width="1.5"/>
-  <line x1="238.5" y1="101.0" x2="238.5" y2="104.0" stroke="rgb(37, 99, 235)" stroke-width="1.5"/>
-  <line x1="238.5" y1="114.0" x2="238.5" y2="117.0" stroke="rgb(37, 99, 235)" stroke-width="1.5"/>
-  <line x1="232.0" y1="107.5" x2="235.0" y2="107.5" stroke="rgb(37, 99, 235)" stroke-width="1.5"/>
-  <line x1="245.0" y1="107.5" x2="248.0" y2="107.5" stroke="rgb(37, 99, 235)" stroke-width="1.5"/>
-  <line x1="241.5" y1="101.0" x2="241.5" y2="104.0" stroke="rgb(37, 99, 235)" stroke-width="1.5"/>
-  <line x1="241.5" y1="114.0" x2="241.5" y2="117.0" stroke="rgb(37, 99, 235)" stroke-width="1.5"/>
-  <line x1="232.0" y1="110.5" x2="235.0" y2="110.5" stroke="rgb(37, 99, 235)" stroke-width="1.5"/>
-  <line x1="245.0" y1="110.5" x2="248.0" y2="110.5" stroke="rgb(37, 99, 235)" stroke-width="1.5"/>
-  <text x="265.0" y="113.8" fill="rgb(20, 33, 61)" font-size="15.0">CPU</text>
-  <text x="309.4" y="119.5" fill="rgb(20, 33, 61)" font-size="25.0">34.8%</text>
-  <rect x="392.3" y="99.0" width="122.7" height="6.0" rx="3" fill="rgb(233, 239, 247)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <rect x="392.3" y="99.0" width="42.7" height="6.0" rx="3" fill="rgb(37, 99, 235)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <rect x="546.0" y="84.0" width="314.0" height="126.0" rx="8" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <rect x="563.2" y="105.0" width="13.7" height="7.9" rx="2" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(14, 116, 144)" stroke-width="1.5"/>
-  <rect x="565.5" y="107.0" width="3.0" height="3.9" rx="1" fill="rgb(14, 116, 144)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <rect x="569.5" y="107.0" width="3.0" height="3.9" rx="1" fill="rgb(14, 116, 144)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <rect x="573.4" y="107.0" width="3.0" height="3.9" rx="1" fill="rgb(14, 116, 144)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <text x="595.0" y="113.8" fill="rgb(20, 33, 61)" font-size="15.0">Memory</text>
-  <text x="663.4" y="117.0" fill="rgb(20, 33, 61)" font-size="22.0">11.0 / 16.0 GiB</text>
-  <rect x="807.9" y="99.0" width="37.1" height="6.0" rx="3" fill="rgb(233, 239, 247)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <rect x="807.9" y="99.0" width="25.5" height="6.0" rx="3" fill="rgb(14, 116, 144)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <rect x="876.0" y="84.0" width="357.3" height="126.0" rx="8" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <rect x="893.7" y="104.5" width="12.6" height="4.0" rx="3" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(180, 83, 9)" stroke-width="1.5"/>
-  <rect x="893.7" y="109.9" width="12.6" height="4.0" rx="3" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(180, 83, 9)" stroke-width="1.5"/>
-  <text x="925.0" y="113.8" fill="rgb(20, 33, 61)" font-size="15.0">Disk</text>
-  <text x="967.2" y="117.0" fill="rgb(20, 33, 61)" font-size="22.0">5.4 MiB/s</text>
-  <text x="1061.3" y="113.5" fill="rgb(20, 33, 61)" font-size="14.0">R: 4.3 MiB/s · W: 1.1 MiB/s</text>
-  <rect x="1249.3" y="84.0" width="414.0" height="126.0" rx="8" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <line x1="1270.9" y1="114.4" x2="1270.9" y2="103.6" stroke="rgb(190, 24, 93)" stroke-width="1.5"/>
-  <line x1="1267.9" y1="106.6" x2="1270.9" y2="103.6" stroke="rgb(190, 24, 93)" stroke-width="1.5"/>
-  <line x1="1273.9" y1="106.6" x2="1270.9" y2="103.6" stroke="rgb(190, 24, 93)" stroke-width="1.5"/>
-  <line x1="1275.7" y1="103.6" x2="1275.7" y2="114.4" stroke="rgb(190, 24, 93)" stroke-width="1.5"/>
-  <line x1="1272.7" y1="111.4" x2="1275.7" y2="114.4" stroke="rgb(190, 24, 93)" stroke-width="1.5"/>
-  <line x1="1278.7" y1="111.4" x2="1275.7" y2="114.4" stroke="rgb(190, 24, 93)" stroke-width="1.5"/>
-  <text x="1298.3" y="113.8" fill="rgb(20, 33, 61)" font-size="15.0">Network</text>
-  <text x="1366.6" y="117.0" fill="rgb(20, 33, 61)" font-size="22.0">947.3 KiB/s</text>
-  <text x="1477.1" y="113.5" fill="rgb(20, 33, 61)" font-size="14.0">↓: 830.1 KiB/s · ↑: 117.2 KiB/s</text>
-  <rect x="216.0" y="227.0" width="151.7" height="42.0" rx="8" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <rect x="233.4" y="244.4" width="11.2" height="7.2" rx="2" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(124, 58, 237)" stroke-width="1.5"/>
-  <text x="255.0" y="252.8" fill="rgb(20, 33, 61)" font-size="15.0">GPU:</text>
-  <text x="291.1" y="252.5" fill="rgb(20, 33, 61)" font-size="14.0">Unavailable</text>
-  <rect x="387.7" y="227.0" width="169.3" height="42.0" rx="8" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <text x="402.7" y="252.8" fill="rgb(20, 33, 61)" font-size="15.0">Package Power:</text>
-  <text x="501.8" y="252.8" fill="rgb(20, 33, 61)" font-size="15.0">28.4 W</text>
-  <rect x="216.0" y="290.0" width="721.6" height="226.0" rx="8" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <text x="229.0" y="317.8" fill="rgb(20, 33, 61)" font-size="15.0">CPU Utilization</text>
-  <rect x="869.3" y="305.5" width="47.3" height="15.0" rx="8" fill="rgb(230, 230, 230)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <text x="877.3" y="317.8" fill="rgb(60, 60, 60)" font-size="15.0">Table</text>
-  <rect x="810.8" y="303.0" width="34.6" height="20.0" rx="8" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="1"/>
-  <text x="818.8" y="317.8" fill="rgb(60, 60, 60)" font-size="15.0">5m</text>
-  <rect x="758.5" y="303.0" width="36.2" height="20.0" rx="8" fill="rgb(233, 239, 247)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <text x="766.5" y="317.8" fill="rgb(37, 99, 235)" font-size="15.0">60s</text>
-  <rect x="706.3" y="303.0" width="36.2" height="20.0" rx="8" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="1"/>
-  <text x="714.3" y="317.8" fill="rgb(60, 60, 60)" font-size="15.0">30s</text>
-  <text x="248.1" y="345.5" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">100%</text>
-  <text x="253.8" y="376.5" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">75%</text>
-  <text x="253.8" y="407.5" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">50%</text>
-  <text x="253.8" y="438.5" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">25%</text>
-  <text x="259.6" y="469.5" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">0%</text>
-  <rect x="291.0" y="334.0" width="633.6" height="140.0" rx="4" fill="rgb(233, 239, 247)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <rect x="291.0" y="334.0" width="633.6" height="140.0" rx="4" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <line x1="291.0" y1="342.0" x2="924.6" y2="342.0" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
-  <line x1="291.0" y1="373.0" x2="924.6" y2="373.0" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
-  <line x1="291.0" y1="404.0" x2="924.6" y2="404.0" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
-  <line x1="291.0" y1="435.0" x2="924.6" y2="435.0" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
-  <line x1="291.0" y1="466.0" x2="924.6" y2="466.0" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
-  <text x="290.2" y="468.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">-60s</text>
-  <text x="494.7" y="468.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">-40s</text>
-  <text x="699.2" y="468.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">-20s</text>
-  <text x="909.2" y="468.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">0s</text>
-  <rect x="836.6" y="340.0" width="82.0" height="18.0" rx="4" fill="rgb(233, 239, 247)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <rect x="836.6" y="340.0" width="82.0" height="18.0" rx="4" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(180, 83, 9)" stroke-width="1"/>
-  <text x="848.2" y="353.2" fill="rgb(180, 83, 9)" font-size="13.0">Data Frozen</text>
-  <rect x="229.0" y="483.0" width="20.0" height="20.0" rx="0" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <rect x="230.0" y="486.0" width="14.0" height="14.0" rx="4" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <polyline points="233.0,493.0 237.0,497.0 241.0,489.0" stroke="rgb(60, 60, 60)" stroke-width="1.0" fill="rgba(0, 0, 0, 0.000)"/>
-  <text x="291.0" y="497.2" fill="rgb(20, 33, 61)" font-size="13.0">System CPU</text>
-  <rect x="953.6" y="290.0" width="721.6" height="226.0" rx="8" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <text x="966.6" y="317.8" fill="rgb(20, 33, 61)" font-size="15.0">Memory Usage</text>
-  <rect x="1496.2" y="303.0" width="36.2" height="20.0" rx="8" fill="rgb(233, 239, 247)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <text x="1504.2" y="317.8" fill="rgb(37, 99, 235)" font-size="15.0">60s</text>
-  <rect x="1443.9" y="303.0" width="36.2" height="20.0" rx="8" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="1"/>
-  <text x="1451.9" y="317.8" fill="rgb(60, 60, 60)" font-size="15.0">30s</text>
-  <text x="985.8" y="345.5" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">100%</text>
-  <text x="991.5" y="376.5" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">75%</text>
-  <text x="991.5" y="407.5" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">50%</text>
-  <text x="991.5" y="438.5" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">25%</text>
-  <text x="997.2" y="469.5" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">0%</text>
-  <rect x="1028.6" y="334.0" width="633.6" height="140.0" rx="4" fill="rgb(233, 239, 247)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <rect x="1028.6" y="334.0" width="633.6" height="140.0" rx="4" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <line x1="1028.6" y1="342.0" x2="1662.2" y2="342.0" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
-  <line x1="1028.6" y1="373.0" x2="1662.2" y2="373.0" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
-  <line x1="1028.6" y1="404.0" x2="1662.2" y2="404.0" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
-  <line x1="1028.6" y1="435.0" x2="1662.2" y2="435.0" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
-  <line x1="1028.6" y1="466.0" x2="1662.2" y2="466.0" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
-  <text x="1027.8" y="468.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">-60s</text>
-  <text x="1232.3" y="468.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">-40s</text>
-  <text x="1436.9" y="468.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">-20s</text>
-  <text x="1646.8" y="468.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">0s</text>
-  <rect x="1574.2" y="340.0" width="82.0" height="18.0" rx="4" fill="rgb(233, 239, 247)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <rect x="1574.2" y="340.0" width="82.0" height="18.0" rx="4" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(180, 83, 9)" stroke-width="1"/>
-  <text x="1585.8" y="353.2" fill="rgb(180, 83, 9)" font-size="13.0">Data Frozen</text>
-  <rect x="966.6" y="483.0" width="20.0" height="20.0" rx="0" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <rect x="967.6" y="486.0" width="14.0" height="14.0" rx="4" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <polyline points="970.6,493.0 974.6,497.0 978.6,489.0" stroke="rgb(60, 60, 60)" stroke-width="1.0" fill="rgba(0, 0, 0, 0.000)"/>
-  <text x="1028.6" y="497.2" fill="rgb(20, 33, 61)" font-size="13.0">Memory Used</text>
-  <rect x="216.0" y="535.0" width="721.6" height="226.0" rx="8" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <text x="229.0" y="562.8" fill="rgb(20, 33, 61)" font-size="15.0">Disk Throughput</text>
-  <rect x="869.3" y="550.5" width="47.3" height="15.0" rx="8" fill="rgb(230, 230, 230)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <text x="877.3" y="562.8" fill="rgb(60, 60, 60)" font-size="15.0">Table</text>
-  <rect x="810.8" y="548.0" width="34.6" height="20.0" rx="8" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="1"/>
-  <text x="818.8" y="562.8" fill="rgb(60, 60, 60)" font-size="15.0">5m</text>
-  <rect x="758.5" y="548.0" width="36.2" height="20.0" rx="8" fill="rgb(233, 239, 247)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <text x="766.5" y="562.8" fill="rgb(37, 99, 235)" font-size="15.0">60s</text>
-  <rect x="706.3" y="548.0" width="36.2" height="20.0" rx="8" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="1"/>
-  <text x="714.3" y="562.8" fill="rgb(60, 60, 60)" font-size="15.0">30s</text>
-  <text x="219.5" y="590.5" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">4.9 MiB/s</text>
-  <text x="219.5" y="632.7" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">3.3 MiB/s</text>
-  <text x="219.5" y="673.6" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">1.6 MiB/s</text>
-  <text x="242.4" y="714.5" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">0 B/s</text>
-  <rect x="291.0" y="579.0" width="633.6" height="140.0" rx="4" fill="rgb(233, 239, 247)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <rect x="291.0" y="579.0" width="633.6" height="140.0" rx="4" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <line x1="291.0" y1="587.0" x2="924.6" y2="587.0" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
-  <line x1="291.0" y1="629.2" x2="924.6" y2="629.2" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
-  <line x1="291.0" y1="670.1" x2="924.6" y2="670.1" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
-  <line x1="291.0" y1="711.0" x2="924.6" y2="711.0" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
-  <text x="290.2" y="713.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">-60s</text>
-  <text x="494.7" y="713.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">-40s</text>
-  <text x="699.2" y="713.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">-20s</text>
-  <text x="909.2" y="713.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">0s</text>
-  <rect x="836.6" y="585.0" width="82.0" height="18.0" rx="4" fill="rgb(233, 239, 247)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <rect x="836.6" y="585.0" width="82.0" height="18.0" rx="4" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(180, 83, 9)" stroke-width="1"/>
-  <text x="848.2" y="598.2" fill="rgb(180, 83, 9)" font-size="13.0">Data Frozen</text>
-  <rect x="229.0" y="728.0" width="20.0" height="20.0" rx="0" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <rect x="230.0" y="731.0" width="14.0" height="14.0" rx="4" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <polyline points="233.0,738.0 237.0,742.0 241.0,734.0" stroke="rgb(60, 60, 60)" stroke-width="1.0" fill="rgba(0, 0, 0, 0.000)"/>
-  <text x="291.0" y="742.2" fill="rgb(20, 33, 61)" font-size="13.0">Read</text>
-  <rect x="347.0" y="728.0" width="20.0" height="20.0" rx="0" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <rect x="348.0" y="731.0" width="14.0" height="14.0" rx="4" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <polyline points="351.0,738.0 355.0,742.0 359.0,734.0" stroke="rgb(60, 60, 60)" stroke-width="1.0" fill="rgba(0, 0, 0, 0.000)"/>
-  <text x="409.0" y="742.2" fill="rgb(20, 33, 61)" font-size="13.0">Write</text>
-  <rect x="953.6" y="535.0" width="721.6" height="226.0" rx="8" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <text x="966.6" y="562.8" fill="rgb(20, 33, 61)" font-size="15.0">Network Activity</text>
-  <rect x="1496.2" y="548.0" width="36.2" height="20.0" rx="8" fill="rgb(233, 239, 247)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <text x="1504.2" y="562.8" fill="rgb(37, 99, 235)" font-size="15.0">60s</text>
-  <rect x="1443.9" y="548.0" width="36.2" height="20.0" rx="8" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="1"/>
-  <text x="1451.9" y="562.8" fill="rgb(60, 60, 60)" font-size="15.0">30s</text>
-  <text x="945.7" y="590.5" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">954.6 KiB/s</text>
-  <text x="945.7" y="632.7" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">630.0 KiB/s</text>
-  <text x="945.7" y="673.6" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">315.0 KiB/s</text>
-  <text x="980.0" y="714.5" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">0 B/s</text>
-  <rect x="1028.6" y="579.0" width="633.6" height="140.0" rx="4" fill="rgb(233, 239, 247)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <rect x="1028.6" y="579.0" width="633.6" height="140.0" rx="4" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <line x1="1028.6" y1="587.0" x2="1662.2" y2="587.0" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
-  <line x1="1028.6" y1="629.2" x2="1662.2" y2="629.2" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
-  <line x1="1028.6" y1="670.1" x2="1662.2" y2="670.1" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
-  <line x1="1028.6" y1="711.0" x2="1662.2" y2="711.0" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
-  <text x="1027.8" y="713.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">-60s</text>
-  <text x="1232.3" y="713.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">-40s</text>
-  <text x="1436.9" y="713.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">-20s</text>
-  <text x="1646.8" y="713.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">0s</text>
-  <rect x="1574.2" y="585.0" width="82.0" height="18.0" rx="4" fill="rgb(233, 239, 247)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <rect x="1574.2" y="585.0" width="82.0" height="18.0" rx="4" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(180, 83, 9)" stroke-width="1"/>
-  <text x="1585.8" y="598.2" fill="rgb(180, 83, 9)" font-size="13.0">Data Frozen</text>
-  <rect x="966.6" y="728.0" width="20.0" height="20.0" rx="0" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <rect x="967.6" y="731.0" width="14.0" height="14.0" rx="4" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <polyline points="970.6,738.0 974.6,742.0 978.6,734.0" stroke="rgb(60, 60, 60)" stroke-width="1.0" fill="rgba(0, 0, 0, 0.000)"/>
-  <text x="1028.6" y="742.2" fill="rgb(20, 33, 61)" font-size="13.0">Receive (↓)</text>
-  <rect x="1113.7" y="728.0" width="20.0" height="20.0" rx="0" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <rect x="1114.7" y="731.0" width="14.0" height="14.0" rx="4" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <polyline points="1117.7,738.0 1121.7,742.0 1125.7,734.0" stroke="rgb(60, 60, 60)" stroke-width="1.0" fill="rgba(0, 0, 0, 0.000)"/>
-  <text x="1175.7" y="742.2" fill="rgb(20, 33, 61)" font-size="13.0">Transmit (↑)</text>
-  <rect x="216.0" y="784.0" width="1459.2" height="170.0" rx="8" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <text x="231.0" y="816.2" fill="rgb(20, 33, 61)" font-size="21.0">Top Active Processes</text>
-  <rect x="421.8" y="799.5" width="81.8" height="20.0" rx="8" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="1"/>
-  <text x="429.8" y="814.3" fill="rgb(60, 60, 60)" font-size="15.0">Top by CPU</text>
-  <rect x="511.6" y="799.5" width="105.8" height="20.0" rx="8" fill="rgb(233, 239, 247)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <text x="519.6" y="814.3" fill="rgb(37, 99, 235)" font-size="15.0">Top by Memory</text>
-  <rect x="1530.3" y="799.5" width="130.0" height="20.0" rx="8" fill="rgb(230, 230, 230)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
-  <text x="1538.3" y="814.3" fill="rgb(60, 60, 60)" font-size="15.0">View all processes →</text>
-  <rect x="231.0" y="831.0" width="1429.2" height="32.0" rx="0" fill="rgb(233, 239, 247)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <text x="239.0" y="851.5" fill="rgb(20, 33, 61)" font-size="14.0">Process Name</text>
-  <text x="1237.8" y="851.5" fill="rgb(20, 33, 61)" font-size="14.0">PID</text>
-  <text x="1336.7" y="851.5" fill="rgb(20, 33, 61)" font-size="14.0">CPU</text>
-  <text x="1408.8" y="851.5" fill="rgb(20, 33, 61)" font-size="14.0">Memory ▼</text>
-  <text x="1522.8" y="851.5" fill="rgb(20, 33, 61)" font-size="14.0">Disk R</text>
-  <text x="1612.1" y="851.5" fill="rgb(20, 33, 61)" font-size="14.0">Disk W</text>
-  <text x="239.0" y="893.8" fill="rgb(20, 33, 61)" font-size="15.0">chrome.exe</text>
-  <text x="1227.3" y="893.5" fill="rgb(82, 98, 122)" font-size="14.0" class="mono">1042</text>
-  <rect x="1346.6" y="880.0" width="12.6" height="18.0" rx="2" fill="rgba(7, 20, 47, 0.200)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <text x="1323.1" y="893.5" fill="rgb(20, 33, 61)" font-size="14.0" class="mono">14.5%</text>
-  <rect x="1432.1" y="880.0" width="30.2" height="18.0" rx="2" fill="rgba(3, 23, 29, 0.200)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <text x="1404.4" y="893.5" fill="rgb(20, 33, 61)" font-size="14.0" class="mono">1.39 GiB</text>
-  <text x="1475.8" y="893.5" fill="rgb(82, 98, 122)" font-size="14.0" class="mono">100.0 KiB/s</text>
-  <text x="1576.0" y="893.5" fill="rgb(82, 98, 122)" font-size="14.0" class="mono">50.0 KiB/s</text>
-  <text x="239.0" y="921.8" fill="rgb(20, 33, 61)" font-size="15.0">Code.exe</text>
-  <text x="1227.3" y="921.5" fill="rgb(82, 98, 122)" font-size="14.0" class="mono">3280</text>
-  <rect x="1351.9" y="908.0" width="7.3" height="18.0" rx="2" fill="rgba(7, 20, 47, 0.200)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <text x="1330.3" y="921.5" fill="rgb(20, 33, 61)" font-size="14.0" class="mono">8.4%</text>
-  <rect x="1441.4" y="908.0" width="20.8" height="18.0" rx="2" fill="rgba(3, 23, 29, 0.200)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <text x="1397.2" y="921.5" fill="rgb(20, 33, 61)" font-size="14.0" class="mono">980.0 MiB</text>
-  <text x="1475.8" y="921.5" fill="rgb(82, 98, 122)" font-size="14.0" class="mono">100.0 KiB/s</text>
-  <text x="1576.0" y="921.5" fill="rgb(82, 98, 122)" font-size="14.0" class="mono">50.0 KiB/s</text>
-  <text x="239.0" y="949.8" fill="rgb(20, 33, 61)" font-size="15.0">rust-analyzer.exe</text>
-  <text x="1227.3" y="949.5" fill="rgb(82, 98, 122)" font-size="14.0" class="mono">8912</text>
-  <rect x="1354.4" y="936.0" width="4.9" height="18.0" rx="2" fill="rgba(7, 20, 47, 0.200)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <text x="1330.3" y="949.5" fill="rgb(20, 33, 61)" font-size="14.0" class="mono">5.6%</text>
-  <rect x="1449.1" y="936.0" width="13.2" height="18.0" rx="2" fill="rgba(3, 23, 29, 0.200)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <text x="1397.2" y="949.5" fill="rgb(20, 33, 61)" font-size="14.0" class="mono">620.0 MiB</text>
-  <text x="1475.8" y="949.5" fill="rgb(82, 98, 122)" font-size="14.0" class="mono">100.0 KiB/s</text>
-  <text x="1576.0" y="949.5" fill="rgb(82, 98, 122)" font-size="14.0" class="mono">50.0 KiB/s</text>
-  <text x="239.0" y="977.8" fill="rgb(20, 33, 61)" font-size="15.0">slack.exe</text>
-  <text x="1220.1" y="977.5" fill="rgb(82, 98, 122)" font-size="14.0" class="mono">18400</text>
-  <text x="1330.3" y="977.5" fill="rgb(20, 33, 61)" font-size="14.0" class="mono">0.5%</text>
-  <rect x="1453.5" y="964.0" width="8.7" height="18.0" rx="2" fill="rgba(3, 23, 29, 0.200)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <text x="1397.2" y="977.5" fill="rgb(20, 33, 61)" font-size="14.0" class="mono">410.0 MiB</text>
-  <text x="1475.8" y="977.5" fill="rgb(82, 98, 122)" font-size="14.0" class="mono">100.0 KiB/s</text>
-  <text x="1576.0" y="977.5" fill="rgb(82, 98, 122)" font-size="14.0" class="mono">50.0 KiB/s</text>
-  <rect x="1535.2" y="8.0" width="0.8" height="848.0" rx="8" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
-  <rect x="1535.2" y="8.0" width="0.8" height="760.2" rx="8" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="216.0" y="84.0" width="313.0" height="122.0" rx="8" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <rect x="233.0" y="102.0" width="10.1" height="10.1" rx="2" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(37, 99, 235)" stroke-width="1.5"/>
+  <line x1="236.5" y1="99.0" x2="236.5" y2="102.0" stroke="rgb(37, 99, 235)" stroke-width="1.5"/>
+  <line x1="236.5" y1="112.0" x2="236.5" y2="115.0" stroke="rgb(37, 99, 235)" stroke-width="1.5"/>
+  <line x1="230.0" y1="105.5" x2="233.0" y2="105.5" stroke="rgb(37, 99, 235)" stroke-width="1.5"/>
+  <line x1="243.0" y1="105.5" x2="246.0" y2="105.5" stroke="rgb(37, 99, 235)" stroke-width="1.5"/>
+  <line x1="239.5" y1="99.0" x2="239.5" y2="102.0" stroke="rgb(37, 99, 235)" stroke-width="1.5"/>
+  <line x1="239.5" y1="112.0" x2="239.5" y2="115.0" stroke="rgb(37, 99, 235)" stroke-width="1.5"/>
+  <line x1="230.0" y1="108.5" x2="233.0" y2="108.5" stroke="rgb(37, 99, 235)" stroke-width="1.5"/>
+  <line x1="243.0" y1="108.5" x2="246.0" y2="108.5" stroke="rgb(37, 99, 235)" stroke-width="1.5"/>
+  <text x="263.0" y="111.8" fill="rgb(20, 33, 61)" font-size="15.0">CPU</text>
+  <text x="229.0" y="144.5" fill="rgb(20, 33, 61)" font-size="25.0">34.8%</text>
+  <rect x="229.0" y="158.0" width="287.0" height="6.0" rx="3" fill="rgb(233, 239, 247)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="229.0" y="158.0" width="99.9" height="6.0" rx="3" fill="rgb(37, 99, 235)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="545.0" y="84.0" width="313.0" height="122.0" rx="8" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <rect x="560.2" y="103.0" width="13.7" height="7.9" rx="2" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(14, 116, 144)" stroke-width="1.5"/>
+  <rect x="562.5" y="105.0" width="3.0" height="3.9" rx="1" fill="rgb(14, 116, 144)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="566.5" y="105.0" width="3.0" height="3.9" rx="1" fill="rgb(14, 116, 144)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="570.4" y="105.0" width="3.0" height="3.9" rx="1" fill="rgb(14, 116, 144)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <text x="592.0" y="111.8" fill="rgb(20, 33, 61)" font-size="15.0">Memory</text>
+  <text x="558.0" y="141.2" fill="rgb(20, 33, 61)" font-size="21.0">11.0 / 16.0 GiB</text>
+  <rect x="558.0" y="154.0" width="287.0" height="6.0" rx="3" fill="rgb(233, 239, 247)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="558.0" y="154.0" width="197.3" height="6.0" rx="3" fill="rgb(14, 116, 144)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="874.0" y="84.0" width="313.0" height="122.0" rx="8" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <rect x="889.7" y="102.5" width="12.6" height="4.0" rx="3" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(180, 83, 9)" stroke-width="1.5"/>
+  <rect x="889.7" y="107.9" width="12.6" height="4.0" rx="3" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(180, 83, 9)" stroke-width="1.5"/>
+  <text x="921.0" y="111.8" fill="rgb(20, 33, 61)" font-size="15.0">Disk</text>
+  <text x="887.0" y="140.0" fill="rgb(20, 33, 61)" font-size="22.0">5.4 MiB/s</text>
+  <text x="887.0" y="157.7" fill="rgb(20, 33, 61)" font-size="13.0">R: 4.3 MiB/s · W: 1.1 MiB/s</text>
+  <rect x="887.0" y="167.0" width="287.0" height="24.0" rx="3" fill="rgb(233, 239, 247)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="1203.0" y="84.0" width="313.0" height="122.0" rx="8" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <line x1="1222.6" y1="112.4" x2="1222.6" y2="101.6" stroke="rgb(190, 24, 93)" stroke-width="1.5"/>
+  <line x1="1219.6" y1="104.6" x2="1222.6" y2="101.6" stroke="rgb(190, 24, 93)" stroke-width="1.5"/>
+  <line x1="1225.6" y1="104.6" x2="1222.6" y2="101.6" stroke="rgb(190, 24, 93)" stroke-width="1.5"/>
+  <line x1="1227.4" y1="101.6" x2="1227.4" y2="112.4" stroke="rgb(190, 24, 93)" stroke-width="1.5"/>
+  <line x1="1224.4" y1="109.4" x2="1227.4" y2="112.4" stroke="rgb(190, 24, 93)" stroke-width="1.5"/>
+  <line x1="1230.4" y1="109.4" x2="1227.4" y2="112.4" stroke="rgb(190, 24, 93)" stroke-width="1.5"/>
+  <text x="1250.0" y="111.8" fill="rgb(20, 33, 61)" font-size="15.0">Network</text>
+  <text x="1216.0" y="140.0" fill="rgb(20, 33, 61)" font-size="22.0">947.3 KiB/s</text>
+  <text x="1216.0" y="157.7" fill="rgb(20, 33, 61)" font-size="13.0">↓: 830.1 KiB/s · ↑: 117.2 KiB/s</text>
+  <rect x="1216.0" y="167.0" width="287.0" height="24.0" rx="3" fill="rgb(233, 239, 247)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="216.0" y="223.0" width="151.7" height="42.0" rx="8" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <rect x="233.4" y="240.4" width="11.2" height="7.2" rx="2" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(124, 58, 237)" stroke-width="1.5"/>
+  <text x="255.0" y="248.8" fill="rgb(20, 33, 61)" font-size="15.0">GPU:</text>
+  <text x="291.1" y="248.5" fill="rgb(20, 33, 61)" font-size="14.0">Unavailable</text>
+  <rect x="387.7" y="223.0" width="169.3" height="42.0" rx="8" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <text x="402.7" y="248.8" fill="rgb(20, 33, 61)" font-size="15.0">Package Power:</text>
+  <text x="501.8" y="248.8" fill="rgb(20, 33, 61)" font-size="15.0">28.4 W</text>
+  <rect x="216.0" y="286.0" width="644.0" height="226.0" rx="8" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <text x="229.0" y="313.8" fill="rgb(20, 33, 61)" font-size="15.0">CPU Utilization</text>
+  <rect x="799.7" y="301.5" width="47.3" height="15.0" rx="8" fill="rgb(230, 230, 230)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <text x="807.7" y="313.8" fill="rgb(60, 60, 60)" font-size="15.0">Table</text>
+  <rect x="741.1" y="299.0" width="34.6" height="20.0" rx="8" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="1"/>
+  <text x="749.1" y="313.8" fill="rgb(60, 60, 60)" font-size="15.0">5m</text>
+  <rect x="688.9" y="299.0" width="36.2" height="20.0" rx="8" fill="rgb(233, 239, 247)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <text x="696.9" y="313.8" fill="rgb(37, 99, 235)" font-size="15.0">60s</text>
+  <rect x="636.7" y="299.0" width="36.2" height="20.0" rx="8" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="1"/>
+  <text x="644.7" y="313.8" fill="rgb(60, 60, 60)" font-size="15.0">30s</text>
+  <text x="248.1" y="341.5" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">100%</text>
+  <text x="253.8" y="372.5" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">75%</text>
+  <text x="253.8" y="403.5" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">50%</text>
+  <text x="253.8" y="434.5" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">25%</text>
+  <text x="259.6" y="465.5" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">0%</text>
+  <rect x="291.0" y="330.0" width="554.0" height="140.0" rx="4" fill="rgb(233, 239, 247)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="291.0" y="330.0" width="554.0" height="140.0" rx="4" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <line x1="291.0" y1="338.0" x2="845.0" y2="338.0" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
+  <line x1="291.0" y1="369.0" x2="845.0" y2="369.0" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
+  <line x1="291.0" y1="400.0" x2="845.0" y2="400.0" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
+  <line x1="291.0" y1="431.0" x2="845.0" y2="431.0" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
+  <line x1="291.0" y1="462.0" x2="845.0" y2="462.0" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
+  <text x="290.2" y="464.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">-60s</text>
+  <text x="468.2" y="464.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">-40s</text>
+  <text x="646.2" y="464.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">-20s</text>
+  <text x="829.6" y="464.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">0s</text>
+  <rect x="229.0" y="479.0" width="20.0" height="20.0" rx="0" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="230.0" y="482.0" width="14.0" height="14.0" rx="4" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <polyline points="233.0,489.0 237.0,493.0 241.0,485.0" stroke="rgb(60, 60, 60)" stroke-width="1.0" fill="rgba(0, 0, 0, 0.000)"/>
+  <text x="291.0" y="493.2" fill="rgb(20, 33, 61)" font-size="13.0">System CPU</text>
+  <rect x="876.0" y="286.0" width="644.0" height="226.0" rx="8" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <text x="889.0" y="313.8" fill="rgb(20, 33, 61)" font-size="15.0">Memory Usage</text>
+  <rect x="1459.7" y="301.5" width="47.3" height="15.0" rx="8" fill="rgb(230, 230, 230)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <text x="1467.7" y="313.8" fill="rgb(60, 60, 60)" font-size="15.0">Table</text>
+  <rect x="1401.1" y="299.0" width="34.6" height="20.0" rx="8" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="1"/>
+  <text x="1409.1" y="313.8" fill="rgb(60, 60, 60)" font-size="15.0">5m</text>
+  <rect x="1348.9" y="299.0" width="36.2" height="20.0" rx="8" fill="rgb(233, 239, 247)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <text x="1356.9" y="313.8" fill="rgb(37, 99, 235)" font-size="15.0">60s</text>
+  <rect x="1296.7" y="299.0" width="36.2" height="20.0" rx="8" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="1"/>
+  <text x="1304.7" y="313.8" fill="rgb(60, 60, 60)" font-size="15.0">30s</text>
+  <text x="908.1" y="341.5" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">100%</text>
+  <text x="913.8" y="372.5" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">75%</text>
+  <text x="913.8" y="403.5" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">50%</text>
+  <text x="913.8" y="434.5" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">25%</text>
+  <text x="919.6" y="465.5" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">0%</text>
+  <rect x="951.0" y="330.0" width="554.0" height="140.0" rx="4" fill="rgb(233, 239, 247)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="951.0" y="330.0" width="554.0" height="140.0" rx="4" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <line x1="951.0" y1="338.0" x2="1505.0" y2="338.0" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
+  <line x1="951.0" y1="369.0" x2="1505.0" y2="369.0" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
+  <line x1="951.0" y1="400.0" x2="1505.0" y2="400.0" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
+  <line x1="951.0" y1="431.0" x2="1505.0" y2="431.0" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
+  <line x1="951.0" y1="462.0" x2="1505.0" y2="462.0" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
+  <text x="950.2" y="464.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">-60s</text>
+  <text x="1128.2" y="464.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">-40s</text>
+  <text x="1306.2" y="464.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">-20s</text>
+  <text x="1489.6" y="464.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">0s</text>
+  <rect x="889.0" y="479.0" width="20.0" height="20.0" rx="0" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="890.0" y="482.0" width="14.0" height="14.0" rx="4" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <polyline points="893.0,489.0 897.0,493.0 901.0,485.0" stroke="rgb(60, 60, 60)" stroke-width="1.0" fill="rgba(0, 0, 0, 0.000)"/>
+  <text x="951.0" y="493.2" fill="rgb(20, 33, 61)" font-size="13.0">Memory Used</text>
+  <rect x="216.0" y="531.0" width="644.0" height="226.0" rx="8" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <text x="229.0" y="558.8" fill="rgb(20, 33, 61)" font-size="15.0">Disk Throughput</text>
+  <rect x="799.7" y="546.5" width="47.3" height="15.0" rx="8" fill="rgb(230, 230, 230)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <text x="807.7" y="558.8" fill="rgb(60, 60, 60)" font-size="15.0">Table</text>
+  <rect x="741.1" y="544.0" width="34.6" height="20.0" rx="8" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="1"/>
+  <text x="749.1" y="558.8" fill="rgb(60, 60, 60)" font-size="15.0">5m</text>
+  <rect x="688.9" y="544.0" width="36.2" height="20.0" rx="8" fill="rgb(233, 239, 247)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <text x="696.9" y="558.8" fill="rgb(37, 99, 235)" font-size="15.0">60s</text>
+  <rect x="636.7" y="544.0" width="36.2" height="20.0" rx="8" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="1"/>
+  <text x="644.7" y="558.8" fill="rgb(60, 60, 60)" font-size="15.0">30s</text>
+  <text x="219.5" y="586.5" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">4.9 MiB/s</text>
+  <text x="219.5" y="628.7" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">3.3 MiB/s</text>
+  <text x="219.5" y="669.6" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">1.6 MiB/s</text>
+  <text x="242.4" y="710.5" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">0 B/s</text>
+  <rect x="291.0" y="575.0" width="554.0" height="140.0" rx="4" fill="rgb(233, 239, 247)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="291.0" y="575.0" width="554.0" height="140.0" rx="4" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <line x1="291.0" y1="583.0" x2="845.0" y2="583.0" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
+  <line x1="291.0" y1="625.2" x2="845.0" y2="625.2" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
+  <line x1="291.0" y1="666.1" x2="845.0" y2="666.1" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
+  <line x1="291.0" y1="707.0" x2="845.0" y2="707.0" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
+  <text x="290.2" y="709.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">-60s</text>
+  <text x="468.2" y="709.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">-40s</text>
+  <text x="646.2" y="709.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">-20s</text>
+  <text x="829.6" y="709.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">0s</text>
+  <rect x="229.0" y="724.0" width="20.0" height="20.0" rx="0" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="230.0" y="727.0" width="14.0" height="14.0" rx="4" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <polyline points="233.0,734.0 237.0,738.0 241.0,730.0" stroke="rgb(60, 60, 60)" stroke-width="1.0" fill="rgba(0, 0, 0, 0.000)"/>
+  <text x="291.0" y="738.2" fill="rgb(20, 33, 61)" font-size="13.0">Read</text>
+  <rect x="347.0" y="724.0" width="20.0" height="20.0" rx="0" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="348.0" y="727.0" width="14.0" height="14.0" rx="4" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <polyline points="351.0,734.0 355.0,738.0 359.0,730.0" stroke="rgb(60, 60, 60)" stroke-width="1.0" fill="rgba(0, 0, 0, 0.000)"/>
+  <text x="409.0" y="738.2" fill="rgb(20, 33, 61)" font-size="13.0">Write</text>
+  <rect x="876.0" y="531.0" width="644.0" height="226.0" rx="8" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <text x="889.0" y="558.8" fill="rgb(20, 33, 61)" font-size="15.0">Network Activity</text>
+  <rect x="1459.7" y="546.5" width="47.3" height="15.0" rx="8" fill="rgb(230, 230, 230)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <text x="1467.7" y="558.8" fill="rgb(60, 60, 60)" font-size="15.0">Table</text>
+  <rect x="1401.1" y="544.0" width="34.6" height="20.0" rx="8" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="1"/>
+  <text x="1409.1" y="558.8" fill="rgb(60, 60, 60)" font-size="15.0">5m</text>
+  <rect x="1348.9" y="544.0" width="36.2" height="20.0" rx="8" fill="rgb(233, 239, 247)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <text x="1356.9" y="558.8" fill="rgb(37, 99, 235)" font-size="15.0">60s</text>
+  <rect x="1296.7" y="544.0" width="36.2" height="20.0" rx="8" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="1"/>
+  <text x="1304.7" y="558.8" fill="rgb(60, 60, 60)" font-size="15.0">30s</text>
+  <text x="868.1" y="586.5" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">954.6 KiB/s</text>
+  <text x="868.1" y="628.7" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">630.0 KiB/s</text>
+  <text x="868.1" y="669.6" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">315.0 KiB/s</text>
+  <text x="902.4" y="710.5" fill="rgb(82, 98, 122)" font-size="11.0" class="mono">0 B/s</text>
+  <rect x="951.0" y="575.0" width="554.0" height="140.0" rx="4" fill="rgb(233, 239, 247)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="951.0" y="575.0" width="554.0" height="140.0" rx="4" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <line x1="951.0" y1="583.0" x2="1505.0" y2="583.0" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
+  <line x1="951.0" y1="625.2" x2="1505.0" y2="625.2" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
+  <line x1="951.0" y1="666.1" x2="1505.0" y2="666.1" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
+  <line x1="951.0" y1="707.0" x2="1505.0" y2="707.0" stroke="rgb(203, 213, 225)" stroke-width="0.5"/>
+  <text x="950.2" y="709.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">-60s</text>
+  <text x="1128.2" y="709.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">-40s</text>
+  <text x="1306.2" y="709.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">-20s</text>
+  <text x="1489.6" y="709.2" fill="rgb(82, 98, 122)" font-size="10.0" class="mono">0s</text>
+  <rect x="889.0" y="724.0" width="20.0" height="20.0" rx="0" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="890.0" y="727.0" width="14.0" height="14.0" rx="4" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <polyline points="893.0,734.0 897.0,738.0 901.0,730.0" stroke="rgb(60, 60, 60)" stroke-width="1.0" fill="rgba(0, 0, 0, 0.000)"/>
+  <text x="951.0" y="738.2" fill="rgb(20, 33, 61)" font-size="13.0">Receive (↓)</text>
+  <rect x="1036.1" y="724.0" width="20.0" height="20.0" rx="0" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="1037.1" y="727.0" width="14.0" height="14.0" rx="4" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <polyline points="1040.1,734.0 1044.1,738.0 1048.1,730.0" stroke="rgb(60, 60, 60)" stroke-width="1.0" fill="rgba(0, 0, 0, 0.000)"/>
+  <text x="1098.1" y="738.2" fill="rgb(20, 33, 61)" font-size="13.0">Transmit (↑)</text>
+  <rect x="216.0" y="780.0" width="1312.0" height="170.0" rx="8" fill="rgb(255, 255, 255)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <text x="231.0" y="812.2" fill="rgb(20, 33, 61)" font-size="21.0">Top Active Processes</text>
+  <rect x="421.8" y="795.5" width="81.8" height="20.0" rx="8" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="1"/>
+  <text x="429.8" y="810.3" fill="rgb(60, 60, 60)" font-size="15.0">Top by CPU</text>
+  <rect x="511.6" y="795.5" width="105.8" height="20.0" rx="8" fill="rgb(233, 239, 247)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <text x="519.6" y="810.3" fill="rgb(37, 99, 235)" font-size="15.0">Top by Memory</text>
+  <rect x="1383.0" y="795.5" width="130.0" height="20.0" rx="8" fill="rgb(230, 230, 230)" stroke="rgb(203, 213, 225)" stroke-width="1"/>
+  <text x="1391.0" y="810.3" fill="rgb(60, 60, 60)" font-size="15.0">View all processes →</text>
+  <rect x="231.0" y="827.0" width="1282.0" height="32.0" rx="0" fill="rgb(233, 239, 247)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <text x="239.0" y="847.5" fill="rgb(20, 33, 61)" font-size="14.0">Process Name</text>
+  <text x="1090.5" y="847.5" fill="rgb(20, 33, 61)" font-size="14.0">PID</text>
+  <text x="1189.4" y="847.5" fill="rgb(20, 33, 61)" font-size="14.0">CPU</text>
+  <text x="1261.5" y="847.5" fill="rgb(20, 33, 61)" font-size="14.0">Memory ▼</text>
+  <text x="1375.5" y="847.5" fill="rgb(20, 33, 61)" font-size="14.0">Disk R</text>
+  <text x="1464.9" y="847.5" fill="rgb(20, 33, 61)" font-size="14.0">Disk W</text>
+  <text x="239.0" y="889.8" fill="rgb(20, 33, 61)" font-size="15.0">chrome.exe</text>
+  <text x="1080.1" y="889.5" fill="rgb(82, 98, 122)" font-size="14.0" class="mono">1042</text>
+  <rect x="1199.4" y="876.0" width="12.6" height="18.0" rx="2" fill="rgba(7, 20, 47, 0.200)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <text x="1175.9" y="889.5" fill="rgb(20, 33, 61)" font-size="14.0" class="mono">14.5%</text>
+  <rect x="1284.8" y="876.0" width="30.2" height="18.0" rx="2" fill="rgba(3, 23, 29, 0.200)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <text x="1257.2" y="889.5" fill="rgb(20, 33, 61)" font-size="14.0" class="mono">1.39 GiB</text>
+  <text x="1328.5" y="889.5" fill="rgb(82, 98, 122)" font-size="14.0" class="mono">100.0 KiB/s</text>
+  <text x="1428.8" y="889.5" fill="rgb(82, 98, 122)" font-size="14.0" class="mono">50.0 KiB/s</text>
+  <text x="239.0" y="917.8" fill="rgb(20, 33, 61)" font-size="15.0">Code.exe</text>
+  <text x="1080.1" y="917.5" fill="rgb(82, 98, 122)" font-size="14.0" class="mono">3280</text>
+  <rect x="1204.7" y="904.0" width="7.3" height="18.0" rx="2" fill="rgba(7, 20, 47, 0.200)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <text x="1183.1" y="917.5" fill="rgb(20, 33, 61)" font-size="14.0" class="mono">8.4%</text>
+  <rect x="1294.2" y="904.0" width="20.8" height="18.0" rx="2" fill="rgba(3, 23, 29, 0.200)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <text x="1250.0" y="917.5" fill="rgb(20, 33, 61)" font-size="14.0" class="mono">980.0 MiB</text>
+  <text x="1328.5" y="917.5" fill="rgb(82, 98, 122)" font-size="14.0" class="mono">100.0 KiB/s</text>
+  <text x="1428.8" y="917.5" fill="rgb(82, 98, 122)" font-size="14.0" class="mono">50.0 KiB/s</text>
+  <text x="239.0" y="945.8" fill="rgb(20, 33, 61)" font-size="15.0">rust-analyzer.exe</text>
+  <text x="1080.1" y="945.5" fill="rgb(82, 98, 122)" font-size="14.0" class="mono">8912</text>
+  <rect x="1207.1" y="932.0" width="4.9" height="18.0" rx="2" fill="rgba(7, 20, 47, 0.200)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <text x="1183.1" y="945.5" fill="rgb(20, 33, 61)" font-size="14.0" class="mono">5.6%</text>
+  <rect x="1301.8" y="932.0" width="13.2" height="18.0" rx="2" fill="rgba(3, 23, 29, 0.200)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <text x="1250.0" y="945.5" fill="rgb(20, 33, 61)" font-size="14.0" class="mono">620.0 MiB</text>
+  <text x="1328.5" y="945.5" fill="rgb(82, 98, 122)" font-size="14.0" class="mono">100.0 KiB/s</text>
+  <text x="1428.8" y="945.5" fill="rgb(82, 98, 122)" font-size="14.0" class="mono">50.0 KiB/s</text>
+  <text x="239.0" y="973.8" fill="rgb(20, 33, 61)" font-size="15.0">slack.exe</text>
+  <text x="1072.9" y="973.5" fill="rgb(82, 98, 122)" font-size="14.0" class="mono">18400</text>
+  <text x="1183.1" y="973.5" fill="rgb(20, 33, 61)" font-size="14.0" class="mono">0.5%</text>
+  <rect x="1306.3" y="960.0" width="8.7" height="18.0" rx="2" fill="rgba(3, 23, 29, 0.200)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <text x="1250.0" y="973.5" fill="rgb(20, 33, 61)" font-size="14.0" class="mono">410.0 MiB</text>
+  <text x="1328.5" y="973.5" fill="rgb(82, 98, 122)" font-size="14.0" class="mono">100.0 KiB/s</text>
+  <text x="1428.8" y="973.5" fill="rgb(82, 98, 122)" font-size="14.0" class="mono">50.0 KiB/s</text>
+  <rect x="1527.2" y="8.0" width="0.8" height="848.0" rx="8" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="1527.2" y="8.0" width="0.8" height="763.4" rx="8" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
 </svg>

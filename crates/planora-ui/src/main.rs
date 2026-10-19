@@ -58,6 +58,7 @@ pub struct App {
     hardware_state: HardwareViewState,
     benchmarks_state: BenchmarksViewState,
     capabilities_state: CapabilitiesViewState,
+    auto_close: Option<(Instant, std::time::Duration)>,
 }
 
 impl App {
@@ -93,6 +94,7 @@ impl App {
             hardware_state: HardwareViewState::default(),
             benchmarks_state: BenchmarksViewState::default(),
             capabilities_state: CapabilitiesViewState::default(),
+            auto_close: None,
         }
     }
 
@@ -107,6 +109,11 @@ impl App {
     }
 
     pub fn render_ui(&mut self, root: &mut egui::Ui) {
+        if let Some((start, dur)) = self.auto_close
+            && start.elapsed() >= dur
+        {
+            root.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        }
         let ctx = root.ctx().clone();
         self.apply_theme(&ctx);
         let p = self.palette(&ctx);
@@ -545,13 +552,70 @@ fn main() -> eframe::Result<()> {
         let out_dir = std::env::args()
             .nth(2)
             .unwrap_or_else(|| "docs/screenshots".into());
-        let _ = smoke_test::run_smoke_suite(std::path::Path::new(&out_dir), true);
+        if let Err(e) = smoke_test::run_smoke_suite(std::path::Path::new(&out_dir), true) {
+            eprintln!("Visual smoke suite failed: {e}");
+            std::process::exit(1);
+        }
         return Ok(());
+    }
+
+    let mut initial_page = Page::Overview;
+    let mut initial_theme = None;
+    let mut width = 1180.0;
+    let mut height = 760.0;
+    let mut auto_close_ms = None;
+
+    let args: Vec<String> = std::env::args().collect();
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--view" if i + 1 < args.len() => {
+                initial_page = match args[i + 1].to_lowercase().as_str() {
+                    "overview" => Page::Overview,
+                    "processes" => Page::Processes,
+                    "hardware" => Page::Hardware,
+                    "benchmarks" => Page::Benchmarks,
+                    "capabilities" => Page::Capabilities,
+                    "settings" => Page::Settings,
+                    _ => Page::Overview,
+                };
+                i += 2;
+            }
+            "--theme" if i + 1 < args.len() => {
+                initial_theme = match args[i + 1].to_lowercase().as_str() {
+                    "dark" => Some(theme::Theme::Dark),
+                    "light" => Some(theme::Theme::Light),
+                    _ => None,
+                };
+                i += 2;
+            }
+            "--width" if i + 1 < args.len() => {
+                if let Ok(w) = args[i + 1].parse::<f32>() {
+                    width = w;
+                }
+                i += 2;
+            }
+            "--height" if i + 1 < args.len() => {
+                if let Ok(h) = args[i + 1].parse::<f32>() {
+                    height = h;
+                }
+                i += 2;
+            }
+            "--auto-close-ms" if i + 1 < args.len() => {
+                if let Ok(ms) = args[i + 1].parse::<u64>() {
+                    auto_close_ms = Some(ms);
+                }
+                i += 2;
+            }
+            _ => {
+                i += 1;
+            }
+        }
     }
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1180.0, 760.0])
+            .with_inner_size([width, height])
             .with_min_inner_size([1024.0, 640.0])
             .with_title("Planora"),
         ..Default::default()
@@ -559,7 +623,17 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Planora",
         options,
-        Box::new(|cc| Ok(Box::new(App::new(cc)))),
+        Box::new(move |cc| {
+            let mut app = App::new(cc);
+            app.page = initial_page;
+            if let Some(th) = initial_theme {
+                app.settings.theme = th;
+            }
+            if let Some(ms) = auto_close_ms {
+                app.auto_close = Some((Instant::now(), std::time::Duration::from_millis(ms)));
+            }
+            Ok(Box::new(app))
+        }),
     )
 }
 

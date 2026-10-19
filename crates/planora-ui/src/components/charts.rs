@@ -139,7 +139,10 @@ pub fn render_chart_panel(
                 // Interactive Chart Canvas
                 let y_axis_w = 46.0;
                 let canvas_h = 140.0;
-                let canvas_w = (ui.available_width() - y_axis_w - 8.0).max(100.0);
+                let spacing_x = ui.spacing().item_spacing.x;
+                let canvas_w = (ui.available_width() - y_axis_w - spacing_x - 2.0)
+                    .floor()
+                    .max(80.0);
 
                 let gap_thresh = Duration::from_millis(2500);
 

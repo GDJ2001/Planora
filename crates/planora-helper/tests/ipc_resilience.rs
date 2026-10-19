@@ -377,3 +377,212 @@ fn test_ipc_recovery_after_disconnect() {
 
     server_handle.join().unwrap();
 }
+
+#[test]
+fn test_ipc_partial_one_byte_header_timeout() {
+    use std::io::Write;
+    let name = test_socket_name("partial-header").unwrap();
+    let listener = ListenerOptions::new()
+        .name(name.clone())
+        .create_sync()
+        .unwrap();
+
+    let server_handle = thread::spawn(move || {
+        let mut stream = listener.accept().unwrap();
+        // Server sends only ONE byte of the 4-byte length prefix and stalls
+        stream.write_all(&[0x05]).unwrap();
+        stream.flush().unwrap();
+        thread::sleep(Duration::from_millis(1500));
+    });
+
+    let mut client = Stream::connect(name).unwrap();
+    let start = Instant::now();
+    let res = receive_response_timeout(&mut client, Duration::from_millis(300));
+    let elapsed = start.elapsed();
+
+    assert!(res.is_err(), "1-byte header should timeout");
+    assert_eq!(res.unwrap_err().kind(), ErrorKind::TimedOut);
+    assert!(
+        elapsed >= Duration::from_millis(250) && elapsed < Duration::from_millis(1000),
+        "Deadline must be respected (elapsed: {elapsed:?})"
+    );
+
+    server_handle.join().unwrap();
+}
+
+#[test]
+fn test_ipc_truncated_body_timeout() {
+    use std::io::Write;
+    let name = test_socket_name("truncated-body").unwrap();
+    let listener = ListenerOptions::new()
+        .name(name.clone())
+        .create_sync()
+        .unwrap();
+
+    let server_handle = thread::spawn(move || {
+        let mut stream = listener.accept().unwrap();
+        // Server sends 4-byte header specifying 64 bytes of body, but sends only 10 bytes and stalls
+        let body_len = 64u32;
+        stream.write_all(&body_len.to_le_bytes()).unwrap();
+        stream.write_all(&[b'X'; 10]).unwrap();
+        stream.flush().unwrap();
+        thread::sleep(Duration::from_millis(1500));
+    });
+
+    let mut client = Stream::connect(name).unwrap();
+    let start = Instant::now();
+    let res = receive_response_timeout(&mut client, Duration::from_millis(300));
+    let elapsed = start.elapsed();
+
+    assert!(res.is_err(), "Truncated body must timeout");
+    assert_eq!(res.unwrap_err().kind(), ErrorKind::TimedOut);
+    assert!(
+        elapsed >= Duration::from_millis(250) && elapsed < Duration::from_millis(1000),
+        "Deadline must be respected (elapsed: {elapsed:?})"
+    );
+
+    server_handle.join().unwrap();
+}
+
+#[test]
+fn test_ipc_delayed_chunks_crossing_deadline() {
+    use std::io::Write;
+    let name = test_socket_name("delayed-chunks").unwrap();
+    let listener = ListenerOptions::new()
+        .name(name.clone())
+        .create_sync()
+        .unwrap();
+
+    let server_handle = thread::spawn(move || {
+        let mut stream = listener.accept().unwrap();
+        let body_len = 30u32;
+        stream.write_all(&body_len.to_le_bytes()).unwrap();
+        stream.write_all(&[b'A'; 10]).unwrap();
+        stream.flush().unwrap();
+        // Delay exceeds client's 250ms deadline before sending remaining chunks
+        thread::sleep(Duration::from_millis(400));
+        let _ = stream.write_all(&[b'B'; 20]);
+    });
+
+    let mut client = Stream::connect(name).unwrap();
+    let start = Instant::now();
+    let res = receive_response_timeout(&mut client, Duration::from_millis(250));
+    let elapsed = start.elapsed();
+
+    assert!(
+        res.is_err(),
+        "Delayed chunks must abort upon exceeding deadline"
+    );
+    assert_eq!(res.unwrap_err().kind(), ErrorKind::TimedOut);
+    assert!(
+        elapsed >= Duration::from_millis(200) && elapsed < Duration::from_millis(800),
+        "Deadline must abort near target (elapsed: {elapsed:?})"
+    );
+
+    server_handle.join().unwrap();
+}
+
+#[test]
+fn test_ipc_oversized_frame_rejected() {
+    use std::io::Write;
+    let name = test_socket_name("oversized").unwrap();
+    let listener = ListenerOptions::new()
+        .name(name.clone())
+        .create_sync()
+        .unwrap();
+
+    let server_handle = thread::spawn(move || {
+        let mut stream = listener.accept().unwrap();
+        // Send a frame length of 9 MiB (> 8 MiB limit)
+        let oversize = 9 * 1024 * 1024u32;
+        stream.write_all(&oversize.to_le_bytes()).unwrap();
+        stream.flush().unwrap();
+    });
+
+    let mut client = Stream::connect(name).unwrap();
+    let res = receive_response_timeout(&mut client, Duration::from_millis(500));
+    assert!(res.is_err(), "Oversize response must be rejected");
+    assert_eq!(res.unwrap_err().kind(), ErrorKind::InvalidData);
+
+    server_handle.join().unwrap();
+}
+
+#[test]
+fn test_ipc_repeated_failure_and_clean_recovery() {
+    use std::io::Write;
+    let name = test_socket_name("repeated-recovery").unwrap();
+    let listener = ListenerOptions::new()
+        .name(name.clone())
+        .create_sync()
+        .unwrap();
+
+    let server_handle = thread::spawn(move || {
+        // 3 faulty connections in a row
+        for i in 1..=3 {
+            let mut stream = listener.accept().unwrap();
+            match i {
+                1 => {
+                    // Send 1 byte and close
+                    let _ = stream.write_all(&[0x01]);
+                }
+                2 => {
+                    // Sleep and close without sending
+                    thread::sleep(Duration::from_millis(50));
+                }
+                _ => {
+                    // Send garbage header
+                    let _ = stream.write_all(&[0xFF, 0xFF, 0xFF, 0x7F]);
+                }
+            }
+        }
+
+        // 4th connection: healthy helper
+        let mut healthy_stream = listener.accept().unwrap();
+        let req = receive_request(&mut healthy_stream).unwrap();
+        send_response(
+            &mut healthy_stream,
+            &ResponseEnvelope {
+                request_id: req.request_id,
+                response: Response::Hello {
+                    version: PROTOCOL_VERSION,
+                    session_id: 888,
+                    helper_authorized: true,
+                },
+            },
+        )
+        .unwrap();
+    });
+
+    // Client attempts 3 faulty connections
+    for _ in 1..=3 {
+        let mut client = Stream::connect(name.clone()).unwrap();
+        let _ = receive_response_timeout(&mut client, Duration::from_millis(200));
+        // Client drops stream
+    }
+
+    // 4th attempt: connects successfully and recovers
+    let mut client = Stream::connect(name).unwrap();
+    send_request(
+        &mut client,
+        &Request {
+            request_id: 42,
+            command: Command::Hello {
+                version: PROTOCOL_VERSION,
+            },
+        },
+    )
+    .unwrap();
+
+    let resp = receive_response_timeout(&mut client, HANDSHAKE_TIMEOUT).unwrap();
+    assert_eq!(resp.request_id, 42);
+    assert!(matches!(
+        resp.response,
+        Response::Hello {
+            session_id: 888,
+            helper_authorized: true,
+            ..
+        }
+    ));
+
+    server_handle.join().unwrap();
+}

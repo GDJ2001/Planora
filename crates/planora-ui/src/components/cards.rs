@@ -30,8 +30,8 @@ fn draw_sparklines_two_series(
     range: HistoryRange,
     bg: Color32,
 ) {
-    let (rect, _) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), egui::Sense::hover());
+    let w = ui.available_width().max(40.0);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(w, 24.0), egui::Sense::hover());
     let painter = ui.painter();
     painter.rect_filled(rect, CornerRadius::same(3), bg);
 
@@ -84,7 +84,7 @@ pub fn render_summary_cards(
     now: Instant,
     p: Palette,
 ) {
-    let available_w = ui.available_width();
+    let available_w = (ui.available_width() - 4.0).max(100.0);
     let gap = 16.0;
 
     let columns = calculate_columns(available_w);
@@ -92,19 +92,24 @@ pub fn render_summary_cards(
 
     let card_frame =
         |ui: &mut egui::Ui, width: f32, add_contents: Box<dyn FnOnce(&mut egui::Ui)>| {
-            egui::Frame::group(ui.style())
-                .fill(p.surface)
-                .stroke(Stroke::new(1.0, p.border))
-                .corner_radius(CornerRadius::same(CORNER_RADIUS as u8))
-                .inner_margin(egui::Margin::same(14))
-                .show(ui, |ui| {
-                    // Inner width subtracts 2 * 14.0 margin + 2.0 border strokes
-                    let inner_w = (width - 30.0).max(60.0);
-                    ui.set_max_width(inner_w);
-                    ui.set_width(inner_w);
-                    ui.set_min_height(96.0);
-                    add_contents(ui);
-                });
+            ui.allocate_ui_with_layout(
+                Vec2::new(width, 0.0),
+                egui::Layout::top_down(egui::Align::LEFT),
+                |ui| {
+                    egui::Frame::group(ui.style())
+                        .fill(p.surface)
+                        .stroke(Stroke::new(1.0, p.border))
+                        .corner_radius(CornerRadius::same(CORNER_RADIUS as u8))
+                        .inner_margin(egui::Margin::same(12))
+                        .show(ui, |ui| {
+                            let inner_w = (width - 26.0).max(60.0);
+                            ui.set_max_width(inner_w);
+                            ui.set_width(inner_w);
+                            ui.set_min_height(96.0);
+                            add_contents(ui);
+                        });
+                },
+            );
         };
 
     let draw_card1_cpu = |ui: &mut egui::Ui, w: f32| {
@@ -148,12 +153,17 @@ pub fn render_summary_cards(
                     frame.memory_used_bytes.value,
                     frame.memory_total_bytes.value,
                 );
-                ui.label(
-                    egui::RichText::new(mem_str)
-                        .size(19.0)
-                        .strong()
-                        .color(p.text),
-                );
+                let mem_full = format!("{mem_str} ({:.1}%)", mem_pct.unwrap_or(0.0));
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(&mem_str)
+                            .size(18.0)
+                            .strong()
+                            .color(p.text),
+                    )
+                    .truncate(),
+                )
+                .on_hover_text(mem_full);
                 ui.add_space(6.0);
                 draw_mini_bar(ui, mem_pct.unwrap_or(0.0), p.memory, p.surface_raised);
             }),
@@ -174,25 +184,30 @@ pub fn render_summary_cards(
                 ui.add_space(2.0);
                 let r_rate = frame.disk_read_bytes_per_sec.value;
                 let w_rate = frame.disk_write_bytes_per_sec.value;
-                ui.label(
-                    egui::RichText::new(format_rate(
-                        r_rate.zip(w_rate).map(|(r, w)| r.saturating_add(w) as f32),
-                    ))
-                    .size(19.0)
-                    .strong()
-                    .color(p.text),
+                let total_rate_str =
+                    format_rate(r_rate.zip(w_rate).map(|(r, w)| r.saturating_add(w) as f32));
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(&total_rate_str)
+                            .size(19.0)
+                            .strong()
+                            .color(p.text),
+                    )
+                    .truncate(),
+                )
+                .on_hover_text(format!("Combined Disk Rate: {total_rate_str}"));
+
+                let sub_text = format!(
+                    "R: {} · W: {}",
+                    format_rate(r_rate.map(|r| r as f32)),
+                    format_rate(w_rate.map(|w| w as f32))
                 );
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "R: {} · W: {}",
-                            format_rate(r_rate.map(|r| r as f32)),
-                            format_rate(w_rate.map(|w| w as f32))
-                        ))
-                        .size(12.0)
-                        .color(p.secondary),
-                    );
-                });
+                ui.add(
+                    egui::Label::new(egui::RichText::new(&sub_text).size(11.5).color(p.secondary))
+                        .truncate(),
+                )
+                .on_hover_text(&sub_text);
+
                 ui.add_space(4.0);
                 draw_sparklines_two_series(
                     ui,
@@ -222,25 +237,30 @@ pub fn render_summary_cards(
                 ui.add_space(2.0);
                 let rx = frame.network_rx_bytes_per_sec.value;
                 let tx = frame.network_tx_bytes_per_sec.value;
-                ui.label(
-                    egui::RichText::new(format_rate(
-                        rx.zip(tx).map(|(rx, tx)| rx.saturating_add(tx) as f32),
-                    ))
-                    .size(19.0)
-                    .strong()
-                    .color(p.text),
+                let total_net_str =
+                    format_rate(rx.zip(tx).map(|(rx, tx)| rx.saturating_add(tx) as f32));
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(&total_net_str)
+                            .size(19.0)
+                            .strong()
+                            .color(p.text),
+                    )
+                    .truncate(),
+                )
+                .on_hover_text(format!("Combined Network Rate: {total_net_str}"));
+
+                let sub_text = format!(
+                    "↓: {} · ↑: {}",
+                    format_rate(rx.map(|rx| rx as f32)),
+                    format_rate(tx.map(|tx| tx as f32))
                 );
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "↓: {} · ↑: {}",
-                            format_rate(rx.map(|rx| rx as f32)),
-                            format_rate(tx.map(|tx| tx as f32))
-                        ))
-                        .size(12.0)
-                        .color(p.secondary),
-                    );
-                });
+                ui.add(
+                    egui::Label::new(egui::RichText::new(&sub_text).size(11.5).color(p.secondary))
+                        .truncate(),
+                )
+                .on_hover_text(&sub_text);
+
                 ui.add_space(4.0);
                 draw_sparklines_two_series(
                     ui,
@@ -377,9 +397,13 @@ pub fn calculate_columns(available_w: f32) -> usize {
 pub fn calculate_card_width(available_w: f32, gap: f32, columns: usize) -> f32 {
     let stroke_safety = 2.0;
     match columns {
-        4 => (((available_w - 3.0 * gap) / 4.0) - stroke_safety).max(120.0),
-        2 => (((available_w - gap) / 2.0) - stroke_safety).max(120.0),
-        _ => (available_w - stroke_safety).max(120.0),
+        4 => (((available_w - 3.0 * gap) / 4.0) - stroke_safety)
+            .floor()
+            .max(100.0),
+        2 => (((available_w - gap) / 2.0) - stroke_safety)
+            .floor()
+            .max(100.0),
+        _ => (available_w - stroke_safety).floor().max(100.0),
     }
 }
 

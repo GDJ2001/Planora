@@ -231,6 +231,7 @@ pub fn create_test_app(theme: Theme, page: Page) -> App {
         hardware_state: crate::views::hardware::HardwareViewState::default(),
         benchmarks_state: crate::views::benchmarks::BenchmarksViewState::default(),
         capabilities_state: crate::views::capabilities::CapabilitiesViewState::default(),
+        auto_close: None,
     }
 }
 
@@ -292,6 +293,11 @@ fn xml_escape(s: &str) -> String {
 }
 
 pub fn shapes_to_svg(width: f32, height: f32, bg: Color32, shapes: &[ClippedShape]) -> String {
+    let banner_fill = if bg.r() < 128 {
+        "rgba(255, 255, 255, 0.45)"
+    } else {
+        "rgba(15, 23, 42, 0.45)"
+    };
     let mut svg = format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
   <style>
@@ -299,8 +305,10 @@ pub fn shapes_to_svg(width: f32, height: f32, bg: Color32, shapes: &[ClippedShap
     .mono {{ font-family: "JetBrains Mono", Consolas, monospace; }}
   </style>
   <rect width="100%" height="100%" fill="{}"/>
+  <text x="{:.1}" y="18.0" fill="{banner_fill}" font-size="10.0" font-weight="600" text-anchor="end">SIMULATED SAMPLE DATA - FIXTURE PREVIEW</text>
 "#,
-        color_to_css(bg)
+        color_to_css(bg),
+        width - 16.0
     );
 
     fn recurse_shape(shape: &Shape, out: &mut String) {
@@ -385,6 +393,40 @@ pub fn shapes_to_svg(width: f32, height: f32, bg: Color32, shapes: &[ClippedShap
 
     svg.push_str("</svg>\n");
     svg
+}
+
+pub fn assert_shapes_bounds(
+    shapes: &[ClippedShape],
+    viewport_w: f32,
+    _viewport_h: f32,
+    context: &str,
+) -> Result<(), String> {
+    fn check_shape(s: &Shape, viewport_w: f32, context: &str) -> Result<(), String> {
+        match s {
+            Shape::Rect(r)
+                if r.rect.min.x >= 0.0
+                    && r.rect.width() > 0.0
+                    && r.rect.max.x > viewport_w + 6.0 =>
+            {
+                return Err(format!(
+                    "[{context}] Rect ({:?}) max.x ({:.1}) exceeds viewport width ({:.1})",
+                    r.rect, r.rect.max.x, viewport_w
+                ));
+            }
+            Shape::Vec(inner) => {
+                for item in inner {
+                    check_shape(item, viewport_w, context)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    for clipped in shapes {
+        check_shape(&clipped.shape, viewport_w, context)?;
+    }
+    Ok(())
 }
 
 pub fn run_smoke_fast_check() -> Result<(), String> {
@@ -519,39 +561,52 @@ pub fn run_smoke_suite(out_dir: &Path, capture_png: bool) -> Result<(), String> 
 
             if capture_png {
                 let edge_path = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe";
-                if Path::new(edge_path).exists() {
-                    let png_filename = format!("smoke_{theme_name}_{w}x{h}.png");
-                    let png_path = out_dir.join(&png_filename);
-
-                    let abs_svg_path = if svg_path.is_absolute() {
-                        svg_path.clone()
-                    } else {
-                        std::env::current_dir().unwrap_or_default().join(&svg_path)
-                    };
-                    let abs_png_path = if png_path.is_absolute() {
-                        png_path.clone()
-                    } else {
-                        std::env::current_dir().unwrap_or_default().join(&png_path)
-                    };
-
-                    let url = format!("file:///{}", abs_svg_path.display()).replace('\\', "/");
-                    let screenshot_arg = format!("--screenshot={}", abs_png_path.display());
-
-                    let status = std::process::Command::new(edge_path)
-                        .args([
-                            "--headless",
-                            "--disable-gpu",
-                            &format!("--window-size={w},{h}"),
-                            &screenshot_arg,
-                            &url,
-                        ])
-                        .status();
-
-                    if status.map(|s| s.success()).unwrap_or(false) && png_path.exists() {
-                        assert_image_validity(&png_path, w as u32, h as u32)?;
-                        println!("  └── Captured & Verified PNG: {png_filename}");
-                    }
+                if !Path::new(edge_path).exists() {
+                    return Err(format!(
+                        "Microsoft Edge not found at {edge_path} for PNG capture"
+                    ));
                 }
+                let png_filename = format!("smoke_{theme_name}_{w}x{h}.png");
+                let png_path = out_dir.join(&png_filename);
+
+                let abs_svg_path = if svg_path.is_absolute() {
+                    svg_path.clone()
+                } else {
+                    std::env::current_dir().unwrap_or_default().join(&svg_path)
+                };
+                let abs_png_path = if png_path.is_absolute() {
+                    png_path.clone()
+                } else {
+                    std::env::current_dir().unwrap_or_default().join(&png_path)
+                };
+
+                let url = format!("file:///{}", abs_svg_path.display()).replace('\\', "/");
+                let screenshot_arg = format!("--screenshot={}", abs_png_path.display());
+
+                let status = std::process::Command::new(edge_path)
+                    .args([
+                        "--headless",
+                        "--disable-gpu",
+                        &format!("--window-size={w},{h}"),
+                        &screenshot_arg,
+                        &url,
+                    ])
+                    .status()
+                    .map_err(|e| format!("Failed to spawn Edge: {e}"))?;
+
+                if !status.success() {
+                    return Err(format!(
+                        "Edge exited with failure status {status:?} for {png_filename}"
+                    ));
+                }
+                if !png_path.exists() {
+                    return Err(format!(
+                        "Expected screenshot file {} was not created",
+                        png_path.display()
+                    ));
+                }
+                assert_image_validity(&png_path, w as u32, h as u32)?;
+                println!("  └── Captured & Verified PNG: {png_filename}");
             }
         }
     }
@@ -579,39 +634,52 @@ pub fn run_smoke_suite(out_dir: &Path, capture_png: bool) -> Result<(), String> 
 
             if capture_png {
                 let edge_path = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe";
-                if Path::new(edge_path).exists() {
-                    let png_filename = format!("smoke_{view_name}_{theme_name}_1180x790.png");
-                    let png_path = out_dir.join(&png_filename);
-
-                    let abs_svg_path = if svg_path.is_absolute() {
-                        svg_path.clone()
-                    } else {
-                        std::env::current_dir().unwrap_or_default().join(&svg_path)
-                    };
-                    let abs_png_path = if png_path.is_absolute() {
-                        png_path.clone()
-                    } else {
-                        std::env::current_dir().unwrap_or_default().join(&png_path)
-                    };
-
-                    let url = format!("file:///{}", abs_svg_path.display()).replace('\\', "/");
-                    let screenshot_arg = format!("--screenshot={}", abs_png_path.display());
-
-                    let status = std::process::Command::new(edge_path)
-                        .args([
-                            "--headless",
-                            "--disable-gpu",
-                            "--window-size=1180,790",
-                            &screenshot_arg,
-                            &url,
-                        ])
-                        .status();
-
-                    if status.map(|s| s.success()).unwrap_or(false) && png_path.exists() {
-                        assert_image_validity(&png_path, 1180, 790)?;
-                        println!("Rendered & Verified view PNG: {png_filename}");
-                    }
+                if !Path::new(edge_path).exists() {
+                    return Err(format!(
+                        "Microsoft Edge not found at {edge_path} for PNG capture"
+                    ));
                 }
+                let png_filename = format!("smoke_{view_name}_{theme_name}_1180x790.png");
+                let png_path = out_dir.join(&png_filename);
+
+                let abs_svg_path = if svg_path.is_absolute() {
+                    svg_path.clone()
+                } else {
+                    std::env::current_dir().unwrap_or_default().join(&svg_path)
+                };
+                let abs_png_path = if png_path.is_absolute() {
+                    png_path.clone()
+                } else {
+                    std::env::current_dir().unwrap_or_default().join(&png_path)
+                };
+
+                let url = format!("file:///{}", abs_svg_path.display()).replace('\\', "/");
+                let screenshot_arg = format!("--screenshot={}", abs_png_path.display());
+
+                let status = std::process::Command::new(edge_path)
+                    .args([
+                        "--headless",
+                        "--disable-gpu",
+                        "--window-size=1180,790",
+                        &screenshot_arg,
+                        &url,
+                    ])
+                    .status()
+                    .map_err(|e| format!("Failed to spawn Edge: {e}"))?;
+
+                if !status.success() {
+                    return Err(format!(
+                        "Edge exited with failure status {status:?} for {png_filename}"
+                    ));
+                }
+                if !png_path.exists() {
+                    return Err(format!(
+                        "Expected screenshot file {} was not created",
+                        png_path.display()
+                    ));
+                }
+                assert_image_validity(&png_path, 1180, 790)?;
+                println!("Rendered & Verified view PNG: {png_filename}");
             }
         }
     }

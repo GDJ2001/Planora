@@ -104,16 +104,23 @@ pub fn receive_response(stream: &mut impl Read) -> io::Result<ResponseEnvelope> 
     serde_json::from_slice(&data).map_err(io::Error::other)
 }
 
+/// Read exact bytes with absolute deadline enforcement on Stream without accumulating blocked threads.
 #[cfg(windows)]
-pub fn wait_for_bytes_windows(stream: &Stream, needed: usize, deadline: Instant) -> io::Result<()> {
+pub fn read_exact_deadline(
+    stream: &mut Stream,
+    buf: &mut [u8],
+    deadline: Instant,
+) -> io::Result<()> {
     use std::os::windows::io::{AsHandle, AsRawHandle};
+    use windows_sys::Win32::Storage::FileSystem::ReadFile;
     use windows_sys::Win32::System::Pipes::PeekNamedPipe;
 
     let raw_handle = match stream {
         Stream::NamedPipe(pipe) => pipe.as_handle().as_raw_handle(),
     };
 
-    loop {
+    let mut total_read = 0;
+    while total_read < buf.len() {
         let mut avail: u32 = 0;
         let ok = unsafe {
             PeekNamedPipe(
@@ -126,27 +133,158 @@ pub fn wait_for_bytes_windows(stream: &Stream, needed: usize, deadline: Instant)
             )
         };
         if ok == 0 {
-            let err = io::Error::last_os_error();
-            return Err(err);
+            return Err(io::Error::last_os_error());
         }
-        if (avail as usize) >= needed {
-            return Ok(());
+        if avail == 0 {
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "IPC receive deadline exceeded",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+            continue;
         }
-        if Instant::now() >= deadline {
+
+        let to_read = (buf.len() - total_read).min(avail as usize) as u32;
+        let mut bytes_read: u32 = 0;
+        let ok = unsafe {
+            ReadFile(
+                raw_handle as _,
+                buf[total_read..].as_mut_ptr() as _,
+                to_read,
+                &mut bytes_read,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if bytes_read == 0 {
             return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "IPC receive deadline exceeded",
+                io::ErrorKind::UnexpectedEof,
+                "IPC peer disconnected",
             ));
         }
-        std::thread::sleep(Duration::from_millis(5));
+        total_read += bytes_read as usize;
     }
+    Ok(())
+}
+
+/// Write all bytes with absolute deadline enforcement on Stream without accumulating blocked threads.
+#[cfg(windows)]
+pub fn write_all_deadline(stream: &mut Stream, data: &[u8], deadline: Instant) -> io::Result<()> {
+    use std::os::windows::io::{AsHandle, AsRawHandle};
+    use windows_sys::Win32::Foundation::{ERROR_NO_DATA, ERROR_PIPE_BUSY};
+    use windows_sys::Win32::Storage::FileSystem::WriteFile;
+    use windows_sys::Win32::System::Pipes::{PIPE_NOWAIT, PIPE_WAIT, SetNamedPipeHandleState};
+
+    let raw_handle = match stream {
+        Stream::NamedPipe(pipe) => pipe.as_handle().as_raw_handle(),
+    };
+
+    let nowait_mode = PIPE_NOWAIT;
+    let ok = unsafe {
+        SetNamedPipeHandleState(
+            raw_handle as _,
+            &nowait_mode,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    struct RestorePipeMode(isize);
+    impl Drop for RestorePipeMode {
+        fn drop(&mut self) {
+            let wait_mode = PIPE_WAIT;
+            unsafe {
+                SetNamedPipeHandleState(
+                    self.0 as _,
+                    &wait_mode,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                );
+            }
+        }
+    }
+    let _restore = RestorePipeMode(raw_handle as isize);
+
+    let mut total_written = 0;
+    while total_written < data.len() {
+        let chunk_len = (data.len() - total_written).min(65536) as u32;
+        let mut written: u32 = 0;
+        let ok = unsafe {
+            WriteFile(
+                raw_handle as _,
+                data[total_written..].as_ptr() as _,
+                chunk_len,
+                &mut written,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok != 0 {
+            total_written += written as usize;
+        } else {
+            let err = io::Error::last_os_error();
+            let raw_code = err.raw_os_error().unwrap_or(0) as u32;
+            if raw_code == ERROR_NO_DATA || raw_code == ERROR_PIPE_BUSY {
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "IPC send deadline exceeded",
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            } else {
+                return Err(err);
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
-pub fn wait_for_bytes_unix(stream: &Stream, deadline: Instant) -> io::Result<()> {
+fn set_nonblocking_unix(fd: std::os::unix::io::RawFd, nonblocking: bool) -> io::Result<()> {
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        if flags < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let new_flags = if nonblocking {
+            flags | libc::O_NONBLOCK
+        } else {
+            flags & !libc::O_NONBLOCK
+        };
+        if libc::fcntl(fd, libc::F_SETFL, new_flags) < 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+pub fn read_exact_deadline(
+    stream: &mut Stream,
+    buf: &mut [u8],
+    deadline: Instant,
+) -> io::Result<()> {
     use std::os::unix::io::AsRawFd;
     let fd = stream.as_raw_fd();
-    loop {
+    set_nonblocking_unix(fd, true)?;
+
+    struct RestoreSocketMode(std::os::unix::io::RawFd);
+    impl Drop for RestoreSocketMode {
+        fn drop(&mut self) {
+            let _ = set_nonblocking_unix(self.0, false);
+        }
+    }
+    let _restore = RestoreSocketMode(fd);
+
+    let mut total_read = 0;
+    while total_read < buf.len() {
         let now = Instant::now();
         if now >= deadline {
             return Err(io::Error::new(
@@ -155,51 +293,193 @@ pub fn wait_for_bytes_unix(stream: &Stream, deadline: Instant) -> io::Result<()>
             ));
         }
         let remaining = deadline.saturating_duration_since(now);
-        let timeout_ms = remaining.as_millis().min(i32::MAX as u128) as i32;
+        let timeout_ms = (remaining.as_millis().min(i32::MAX as u128) as i32).max(1);
 
         let mut pfd = libc::pollfd {
             fd,
             events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
             revents: 0,
         };
-        let res = unsafe { libc::poll(&mut pfd, 1, timeout_ms.max(1)) };
+        let res = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
         if res < 0 {
             let err = io::Error::last_os_error();
             if err.kind() == io::ErrorKind::Interrupted {
                 continue;
             }
             return Err(err);
-        } else if res == 0 {
+        }
+        if res == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "IPC receive deadline exceeded",
             ));
+        }
+
+        let n = unsafe {
+            libc::read(
+                fd,
+                buf[total_read..].as_mut_ptr() as *mut libc::c_void,
+                buf.len() - total_read,
+            )
+        };
+        if n > 0 {
+            total_read += n as usize;
+        } else if n == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "IPC peer disconnected",
+            ));
         } else {
-            if (pfd.revents & (libc::POLLERR | libc::POLLHUP)) != 0
-                && (pfd.revents & libc::POLLIN) == 0
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "IPC pipe disconnected",
-                ));
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::WouldBlock || err.kind() == io::ErrorKind::Interrupted {
+                continue;
             }
-            return Ok(());
+            return Err(err);
         }
     }
+    Ok(())
 }
 
-/// Receive a response with deadline enforcement on the Stream without accumulating blocked threads.
+#[cfg(unix)]
+pub fn write_all_deadline(stream: &mut Stream, data: &[u8], deadline: Instant) -> io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+    let fd = stream.as_raw_fd();
+    set_nonblocking_unix(fd, true)?;
+
+    struct RestoreSocketMode(std::os::unix::io::RawFd);
+    impl Drop for RestoreSocketMode {
+        fn drop(&mut self) {
+            let _ = set_nonblocking_unix(self.0, false);
+        }
+    }
+    let _restore = RestoreSocketMode(fd);
+
+    let mut total_written = 0;
+    while total_written < data.len() {
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "IPC send deadline exceeded",
+            ));
+        }
+        let remaining = deadline.saturating_duration_since(now);
+        let timeout_ms = (remaining.as_millis().min(i32::MAX as u128) as i32).max(1);
+
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLOUT | libc::POLLHUP | libc::POLLERR,
+            revents: 0,
+        };
+        let res = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
+        if res < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
+        }
+        if res == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "IPC send deadline exceeded",
+            ));
+        }
+
+        let n = unsafe {
+            libc::write(
+                fd,
+                data[total_written..].as_ptr() as *const libc::c_void,
+                data.len() - total_written,
+            )
+        };
+        if n > 0 {
+            total_written += n as usize;
+        } else if n == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "IPC write returned zero",
+            ));
+        } else {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::WouldBlock || err.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
+        }
+    }
+    Ok(())
+}
+
+/// Send a request with deadline enforcement on the Stream.
+pub fn send_request_deadline(
+    stream: &mut Stream,
+    req: &Request,
+    deadline: Instant,
+) -> io::Result<()> {
+    let data = serde_json::to_vec(req).map_err(io::Error::other)?;
+    if data.len() > MAX_REQUEST_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "request size ({} bytes) exceeds limit of {} bytes",
+                data.len(),
+                MAX_REQUEST_SIZE
+            ),
+        ));
+    }
+    let mut frame = Vec::with_capacity(4 + data.len());
+    frame.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    frame.extend_from_slice(&data);
+    write_all_deadline(stream, &frame, deadline)
+}
+
+/// Receive a request with deadline enforcement on the Stream.
+pub fn receive_request_deadline(stream: &mut Stream, deadline: Instant) -> io::Result<Request> {
+    let mut length = [0u8; 4];
+    read_exact_deadline(stream, &mut length, deadline)?;
+    let len = u32::from_le_bytes(length) as usize;
+    if len > MAX_REQUEST_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("request size ({len} bytes) exceeds limit of {MAX_REQUEST_SIZE} bytes"),
+        ));
+    }
+    let mut data = vec![0u8; len];
+    read_exact_deadline(stream, &mut data, deadline)?;
+    serde_json::from_slice(&data).map_err(io::Error::other)
+}
+
+/// Send a response with deadline enforcement on the Stream.
+pub fn send_response_deadline(
+    stream: &mut Stream,
+    resp: &ResponseEnvelope,
+    deadline: Instant,
+) -> io::Result<()> {
+    let data = serde_json::to_vec(resp).map_err(io::Error::other)?;
+    if data.len() > MAX_RESPONSE_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "response size ({} bytes) exceeds limit of {} bytes",
+                data.len(),
+                MAX_RESPONSE_SIZE
+            ),
+        ));
+    }
+    let mut frame = Vec::with_capacity(4 + data.len());
+    frame.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    frame.extend_from_slice(&data);
+    write_all_deadline(stream, &frame, deadline)
+}
+
+/// Receive a response with deadline enforcement on the Stream.
 pub fn receive_response_deadline(
     stream: &mut Stream,
     deadline: Instant,
 ) -> io::Result<ResponseEnvelope> {
-    #[cfg(windows)]
-    wait_for_bytes_windows(stream, 4, deadline)?;
-    #[cfg(unix)]
-    wait_for_bytes_unix(stream, deadline)?;
-
     let mut length = [0u8; 4];
-    stream.read_exact(&mut length)?;
+    read_exact_deadline(stream, &mut length, deadline)?;
     let len = u32::from_le_bytes(length) as usize;
     if len > MAX_RESPONSE_SIZE {
         return Err(io::Error::new(
@@ -207,18 +487,40 @@ pub fn receive_response_deadline(
             format!("response size ({len} bytes) exceeds limit of {MAX_RESPONSE_SIZE} bytes"),
         ));
     }
-
-    #[cfg(windows)]
-    wait_for_bytes_windows(stream, len, deadline)?;
-    #[cfg(unix)]
-    wait_for_bytes_unix(stream, deadline)?;
-
     let mut data = vec![0u8; len];
-    stream.read_exact(&mut data)?;
+    read_exact_deadline(stream, &mut data, deadline)?;
     serde_json::from_slice(&data).map_err(io::Error::other)
 }
 
-/// Receive a response with a timeout duration.
+pub fn send_request_timeout(
+    stream: &mut Stream,
+    req: &Request,
+    timeout: Duration,
+) -> io::Result<()> {
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(|| Instant::now() + Duration::from_secs(60));
+    send_request_deadline(stream, req, deadline)
+}
+
+pub fn receive_request_timeout(stream: &mut Stream, timeout: Duration) -> io::Result<Request> {
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(|| Instant::now() + Duration::from_secs(60));
+    receive_request_deadline(stream, deadline)
+}
+
+pub fn send_response_timeout(
+    stream: &mut Stream,
+    resp: &ResponseEnvelope,
+    timeout: Duration,
+) -> io::Result<()> {
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(|| Instant::now() + Duration::from_secs(60));
+    send_response_deadline(stream, resp, deadline)
+}
+
 pub fn receive_response_timeout(
     stream: &mut Stream,
     timeout: Duration,
@@ -236,7 +538,7 @@ pub fn transact(command: &Command) -> io::Result<Response> {
 
     // Perform handshake with HANDSHAKE_TIMEOUT deadline
     let handshake_id = REQUEST_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    send_request(
+    send_request_deadline(
         &mut stream,
         &Request {
             request_id: handshake_id,
@@ -244,6 +546,7 @@ pub fn transact(command: &Command) -> io::Result<Response> {
                 version: PROTOCOL_VERSION,
             },
         },
+        Instant::now() + HANDSHAKE_TIMEOUT,
     )?;
 
     let handshake_env = receive_response_timeout(&mut stream, HANDSHAKE_TIMEOUT)?;
@@ -286,12 +589,13 @@ pub fn transact(command: &Command) -> io::Result<Response> {
 
     // Send payload command with REQUEST_TIMEOUT deadline
     let req_id = REQUEST_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    send_request(
+    send_request_deadline(
         &mut stream,
         &Request {
             request_id: req_id,
             command: command.clone(),
         },
+        Instant::now() + REQUEST_TIMEOUT,
     )?;
 
     let resp_env = receive_response_timeout(&mut stream, REQUEST_TIMEOUT)?;

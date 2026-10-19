@@ -4,7 +4,10 @@ use planora_core::{
     BenchmarkState, Capability, Command, DiagnosticEntry, ErrorCode, PROTOCOL_VERSION,
     ProcessIdentity, Response, ResponseEnvelope, TelemetryFrame,
 };
-use planora_helper::{caller_id, listener, peer_authorized, receive_request, send_response};
+use planora_helper::{
+    HANDSHAKE_TIMEOUT, REQUEST_TIMEOUT, caller_id, listener, peer_authorized,
+    receive_request_deadline, send_response_deadline,
+};
 use planora_telemetry::Sampler;
 use std::{
     collections::{HashMap, VecDeque},
@@ -687,47 +690,64 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
                 ErrorCode::Internal,
                 format!("connection established from caller {cid}"),
             );
-            let mut authenticated = false;
+            // 1. Initial handshake with strict HANDSHAKE_TIMEOUT
+            let handshake_deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+            let initial_req = match receive_request_deadline(&mut stream, handshake_deadline) {
+                Ok(r) => r,
+                Err(e) => {
+                    state.diagnostics.log(
+                        0,
+                        ErrorCode::Unauthorized,
+                        format!("handshake failed or timed out: {e}"),
+                    );
+                    return;
+                }
+            };
 
+            let authenticated = matches!(
+                initial_req.command,
+                Command::Hello { version } if version == PROTOCOL_VERSION
+            );
+            let resp = if authenticated {
+                Response::Hello {
+                    version: PROTOCOL_VERSION,
+                    session_id: state.session_id,
+                    helper_authorized: true,
+                }
+            } else {
+                Response::Error {
+                    code: ErrorCode::Unauthorized,
+                    message: "protocol handshake required with matching version".into(),
+                }
+            };
+
+            let env = ResponseEnvelope {
+                request_id: initial_req.request_id,
+                response: resp,
+            };
+            let handshake_resp_deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+            if send_response_deadline(&mut stream, &env, handshake_resp_deadline).is_err()
+                || !authenticated
+            {
+                return;
+            }
+
+            // 2. Active request loop with 30-second idle deadline per request
+            const CLIENT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
             while !STOP.load(Ordering::Relaxed) {
-                let Ok(request) = receive_request(&mut stream) else {
+                let req_deadline = Instant::now() + CLIENT_IDLE_TIMEOUT;
+                let Ok(request) = receive_request_deadline(&mut stream, req_deadline) else {
                     break;
                 };
 
-                if !authenticated {
-                    authenticated = matches!(
-                        request.command,
-                        Command::Hello { version } if version == PROTOCOL_VERSION
-                    );
-                    let resp = if authenticated {
-                        Response::Hello {
-                            version: PROTOCOL_VERSION,
-                            session_id: state.session_id,
-                            helper_authorized: true,
-                        }
-                    } else {
-                        Response::Error {
-                            code: ErrorCode::Unauthorized,
-                            message: "protocol handshake required with matching version".into(),
-                        }
-                    };
-
-                    let env = ResponseEnvelope {
-                        request_id: request.request_id,
-                        response: resp,
-                    };
-                    if send_response(&mut stream, &env).is_err() || !authenticated {
-                        break;
-                    }
-                } else {
-                    let resp = dispatch(request.command, request.request_id, &state);
-                    let env = ResponseEnvelope {
-                        request_id: request.request_id,
-                        response: resp,
-                    };
-                    if send_response(&mut stream, &env).is_err() {
-                        break;
-                    }
+                let resp = dispatch(request.command, request.request_id, &state);
+                let env = ResponseEnvelope {
+                    request_id: request.request_id,
+                    response: resp,
+                };
+                let resp_deadline = Instant::now() + REQUEST_TIMEOUT;
+                if send_response_deadline(&mut stream, &env, resp_deadline).is_err() {
+                    break;
                 }
             }
 

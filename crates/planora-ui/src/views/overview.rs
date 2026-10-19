@@ -57,7 +57,7 @@ pub fn render_overview_view(
     ui.add_space(18.0);
 
     // 4. 4 Chart Panels in 2-column responsive grid (collapsing to 1-column if < 780px)
-    let available_w = ui.available_width();
+    let available_w = (ui.available_width() - 4.0).max(100.0);
     let chart_gap = 16.0;
     let chart_cols = calculate_chart_columns(available_w);
     let chart_w = calculate_chart_width(available_w, chart_gap, chart_cols);
@@ -349,9 +349,11 @@ pub fn calculate_chart_columns(available_w: f32) -> usize {
 pub fn calculate_chart_width(available_w: f32, gap: f32, columns: usize) -> f32 {
     let stroke_safety = 2.0;
     if columns == 2 {
-        (((available_w - gap) / 2.0) - stroke_safety).max(100.0)
+        (((available_w - gap) / 2.0) - stroke_safety)
+            .floor()
+            .max(100.0)
     } else {
-        (available_w - stroke_safety).max(100.0)
+        (available_w - stroke_safety).floor().max(100.0)
     }
 }
 
