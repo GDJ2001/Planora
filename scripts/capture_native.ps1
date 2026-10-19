@@ -25,6 +25,8 @@ using System.Runtime.InteropServices;
 public static class PlanoraDpi {
     [DllImport("user32.dll")]
     public static extern uint GetDpiForSystem();
+    [DllImport("user32.dll")]
+    public static extern bool SetCursorPos(int x, int y);
 }
 '@
 $systemDpi = [PlanoraDpi]::GetDpiForSystem()
@@ -51,6 +53,7 @@ function Capture-NativeWindow {
     }
 
     $arguments = "--view $View --theme $Theme --width $Width --height $Height --auto-close-ms 30000 --screenshot-out `"$filePath`""
+    [PlanoraDpi]::SetCursorPos(0, 0) | Out-Null
     $proc = Start-Process -FilePath $BinPath -ArgumentList $arguments -PassThru -Wait -WindowStyle Normal
     if ($proc.ExitCode -ne 0) {
         throw "Native capture failed ($fileName): process exit code $($proc.ExitCode)"

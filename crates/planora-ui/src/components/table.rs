@@ -234,6 +234,11 @@ pub fn render_process_table(
     p: Palette,
 ) {
     let layout = ProcessColumnLayout::compute(ui.available_width(), &state.columns);
+    let max_visible_memory = rows
+        .iter()
+        .filter_map(|process| process.memory_bytes.value)
+        .max()
+        .unwrap_or(1);
 
     // Keyboard navigation (Up/Down)
     let mut sel_idx = None;
@@ -568,28 +573,25 @@ pub fn render_process_table(
                                 }
                             }
 
-                            // CPU with subtle in-cell bar
+                            // CPU uses a thin rail below the number so the bar never
+                            // crosses tabular digits at compact row heights.
                             if layout.show_cpu {
                                 let (cpu_rect, cpu_resp) = ui.allocate_exact_size(
                                     Vec2::new(layout.col_cpu_w, cell_h),
                                     egui::Sense::click(),
                                 );
                                 if let Some(cpu_pct) = process.cpu_percent.value {
-                                    // Subtle in-cell bar behind number
                                     let bar_w = (cpu_rect.width() - 8.0)
                                         * (cpu_pct.clamp(0.0, 100.0) / 100.0);
                                     if bar_w > 1.0 {
                                         let bar_rect = Rect::from_min_size(
-                                            Pos2::new(
-                                                cpu_rect.max.x - 4.0 - bar_w,
-                                                cpu_rect.min.y + 2.0,
-                                            ),
-                                            Vec2::new(bar_w, cpu_rect.height() - 4.0),
+                                            Pos2::new(cpu_rect.min.x + 4.0, cpu_rect.max.y - 3.0),
+                                            Vec2::new(bar_w, 2.0),
                                         );
                                         ui.painter().rect_filled(
                                             bar_rect,
-                                            CornerRadius::same(2),
-                                            p.cpu.linear_multiply(0.20),
+                                            CornerRadius::same(1),
+                                            p.cpu.linear_multiply(0.7),
                                         );
                                     }
                                 }
@@ -605,29 +607,24 @@ pub fn render_process_table(
                                 }
                             }
 
-                            // Memory with subtle in-cell bar
+                            // The memory rail compares rows in the current result set.
                             if layout.show_memory {
                                 let (mem_rect, mem_resp) = ui.allocate_exact_size(
                                     Vec2::new(layout.col_mem_w, cell_h),
                                     egui::Sense::click(),
                                 );
                                 if let Some(mem_bytes) = process.memory_bytes.value {
-                                    // Subtle in-cell bar
-                                    let max_ref = (1024.0 * 1024.0 * 1024.0 * 4.0) as f32; // 4 GiB scale
                                     let bar_w = (mem_rect.width() - 8.0)
-                                        * ((mem_bytes as f32) / max_ref).clamp(0.0, 1.0);
+                                        * ((mem_bytes as f64) / (max_visible_memory as f64)) as f32;
                                     if bar_w > 1.0 {
                                         let bar_rect = Rect::from_min_size(
-                                            Pos2::new(
-                                                mem_rect.max.x - 4.0 - bar_w,
-                                                mem_rect.min.y + 2.0,
-                                            ),
-                                            Vec2::new(bar_w, mem_rect.height() - 4.0),
+                                            Pos2::new(mem_rect.min.x + 4.0, mem_rect.max.y - 3.0),
+                                            Vec2::new(bar_w, 2.0),
                                         );
                                         ui.painter().rect_filled(
                                             bar_rect,
-                                            CornerRadius::same(2),
-                                            p.memory.linear_multiply(0.20),
+                                            CornerRadius::same(1),
+                                            p.memory.linear_multiply(0.7),
                                         );
                                     }
                                 }
@@ -638,12 +635,19 @@ pub fn render_process_table(
                                 ui.painter().text(
                                     Pos2::new(mem_rect.max.x - 4.0, mem_rect.center().y),
                                     egui::Align2::RIGHT_CENTER,
-                                    mem_text,
+                                    &mem_text,
                                     egui::FontId::monospace(12.0),
                                     p.text,
                                 );
                                 if mem_resp.clicked() {
                                     *selected_identity = Some(process.identity.clone());
+                                }
+                                if process.memory_bytes.value.is_some() {
+                                    mem_resp.on_hover_text(format!(
+                                        "{mem_text} · bar relative to the largest visible process"
+                                    ));
+                                } else {
+                                    mem_resp.on_hover_text("Memory unavailable");
                                 }
                             }
 
