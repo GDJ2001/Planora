@@ -2,7 +2,7 @@
 
 **Audited:** 2026-10-18  
 **Compared against:** the development plan supplied in the project discussion and the `main` source tree at `6a32804`. The repository includes the hwviz DOCX, but its complete binary text was not independently extracted for this audit.  
-**Status:** implementation in progress; **not ready for release**.
+**Status:** implementation in progress; **not ready for public release**. This audit is a historical baseline; see the [0.1.5 release evidence](release-evidence-0.1.5.md) for current local checks.
 
 ## Overall estimate
 

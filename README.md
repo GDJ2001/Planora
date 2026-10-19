@@ -6,7 +6,7 @@
 
 Planora is a Rust 2024 desktop resource monitor and hardware visualizer. Its native interface uses `eframe`/`egui` 0.37 and the [Planora design tokens](assets/design-tokens.json). The workspace targets Windows 10/11 x86-64, Linux x86-64, and Apple Silicon macOS 13+; it does not include a browser edition.
 
-The current implementation includes system and process telemetry, topology discovery, an overview, process search/sort and inspector, a hardware canvas, resource charts, explicit cancellable probes, and affinity editing on Windows and Linux. Monitoring requires a locally authorized privileged helper. Measurements that lack a supported source are shown as **Unavailable** with a reason. See [development status and verification](docs/development-status.md) and [implementation audit status](docs/implementation-status.md) for platform-specific limits and release gates.
+The current implementation includes system and process telemetry, topology discovery, an overview, process search/sort and inspector, a hardware canvas, resource charts, explicit cancellable probes, and Windows process-affinity editing. Monitoring requires a locally authorized privileged helper. Measurements that lack a supported source are shown as **Unavailable** with a reason. See [development status and verification](docs/development-status.md) and [implementation audit status](docs/implementation-status.md) for platform-specific limits and release gates.
 
 ## Build and test
 
@@ -33,12 +33,12 @@ The in-memory UI smoke test runs with `cargo test --workspace --locked`. The opt
 
 ## Packages and authorization
 
-- **Windows:** After committing the source, run [Build-Planora.ps1](packaging/windows/Build-Planora.ps1). It builds both release binaries, derives the MSI version from Cargo, validates the MSI, and writes a SHA-256 manifest. The installed `PlanoraHelper` service starts on demand after an administrator runs [Authorize-Planora.ps1](packaging/windows/Authorize-Planora.ps1) for the intended user. Its named pipe is `planora-v2`, restricted by a SID-specific ACL (`FILE_GENERIC_READ | FILE_GENERIC_WRITE`). Use [capture_native.ps1](scripts/capture_native.ps1) after installation to capture native Windows UI evidence from the installed binary.
+- **Windows:** After committing the source, run [Build-Planora.ps1](packaging/windows/Build-Planora.ps1). It builds both release binaries, derives the MSI version from Cargo, validates the MSI, and writes a SHA-256 manifest. The installed `PlanoraHelper` service starts on demand after an administrator runs [Authorize-Planora.ps1](packaging/windows/Authorize-Planora.ps1) for the intended user, including after a major MSI upgrade resets its authorization. Its named pipe is `planora-v2`, restricted by a SID-specific ACL (`FILE_GENERIC_READ | FILE_GENERIC_WRITE`). Use [capture_native.ps1](scripts/capture_native.ps1) after installation to capture native Windows UI evidence from the installed binary.
 - **Ubuntu 24.04:** After a release build, run [build-deb.sh](packaging/linux/build-deb.sh). The package installs the systemd service and polkit authorization action. The local socket is `/run/planora/planora-v2.sock` with mode `0660` restricted to the `planora-users` group; the helper runs with `CAP_PERFMON` rather than broad `CAP_SYS_ADMIN`.
 - **Fedora:** After a release build, run [build-rpm.sh](packaging/linux/build-rpm.sh). The RPM uses the same helper and authorization model.
 - **Apple Silicon macOS:** Run [build-package.sh](packaging/macos/build-package.sh) on a Mac. The package includes an SMAppService LaunchDaemon in the app bundle. Its installer records the exact console-user UID for local IPC access; the user must still approve daemon registration through macOS. The app ZIP alone has no authorized helper. The package is unsigned by default and has signing/notarization hooks.
 
-These package recipes produce development artifacts. Installation, upgrade, removal, first launch, and helper cleanup still need native-platform verification. The Windows MSI passed WiX validation and administrative-image extraction; Debian and RPM payloads were built under Ubuntu WSL. Those checks are not install tests.
+The Windows 0.1.5 MSI was upgraded and smoke-tested on this machine; [release evidence](docs/release-evidence-0.1.5.md) records hashes, live snapshots, and installed native captures. Debian and RPM packages were built under Ubuntu WSL but have not been installed on their target distributions. Windows uninstall cleanup, other display scaling modes, and Apple Silicon macOS remain unverified release gates.
 
 ## Repository
 

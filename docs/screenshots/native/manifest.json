@@ -1,0 +1,261 @@
+{
+  "capturedAt": "2026-10-20T03:39:19.1945802+05:30",
+  "source": "installed native eframe GPU framebuffer",
+  "binaryPath": "C:\\Program Files\\Planora\\planora.exe",
+  "binarySha256": "EC38AFCA79BAA14F38C087DCF27C5B777E5822FDCC322504009BE0B43C5F410D",
+  "build": {
+    "gitCommit": "27680c1",
+    "profile": "release",
+    "protocolVersion": 2,
+    "target": "x86_64-pc-windows-msvc",
+    "version": "0.1.5"
+  },
+  "windowsVersion": "Microsoft Windows NT 10.0.26300.0",
+  "systemReportedDpi": 96,
+  "systemReportedScalePercent": 100,
+  "effectiveCaptureScalePercent": 125,
+  "captures": [
+    {
+      "file": "native_overview_dark_1024x640.png",
+      "view": "overview",
+      "theme": "dark",
+      "requestedLogicalSize": "1024x640",
+      "actualPixelSize": "1280x800",
+      "estimatedPixelScale": 1.25,
+      "sha256": "47618504CE390A45F965A926B96E14ED716240708C1DFA272C4B6C1D53709D7E",
+      "automaticCheck": "passed: new PNG, zero exit, decoded dimensions, requested-size scaling",
+      "visualReview": "passed: manually inspected for clipping, overlap, and legibility"
+    },
+    {
+      "file": "native_overview_light_1024x640.png",
+      "view": "overview",
+      "theme": "light",
+      "requestedLogicalSize": "1024x640",
+      "actualPixelSize": "1280x800",
+      "estimatedPixelScale": 1.25,
+      "sha256": "7CD3BD3E20A301BDE68DC016DD4BC86F5782DB41056EDC54F6E9F3CB60292E34",
+      "automaticCheck": "passed: new PNG, zero exit, decoded dimensions, requested-size scaling",
+      "visualReview": "pending"
+    },
+    {
+      "file": "native_overview_dark_1180x790.png",
+      "view": "overview",
+      "theme": "dark",
+      "requestedLogicalSize": "1180x790",
+      "actualPixelSize": "1475x988",
+      "estimatedPixelScale": 1.25,
+      "sha256": "6DA9D4127C5E17D514E52DE29133DF99CAEF8C42AF8BDCDC54FC0B70673C61F2",
+      "automaticCheck": "passed: new PNG, zero exit, decoded dimensions, requested-size scaling",
+      "visualReview": "pending"
+    },
+    {
+      "file": "native_overview_light_1180x790.png",
+      "view": "overview",
+      "theme": "light",
+      "requestedLogicalSize": "1180x790",
+      "actualPixelSize": "1475x988",
+      "estimatedPixelScale": 1.25,
+      "sha256": "8A65F22BB097307A29444EF20BCCCFC0BD0039072BAF09AC4B2C563D5A211EE3",
+      "automaticCheck": "passed: new PNG, zero exit, decoded dimensions, requested-size scaling",
+      "visualReview": "pending"
+    },
+    {
+      "file": "native_overview_dark_1366x768.png",
+      "view": "overview",
+      "theme": "dark",
+      "requestedLogicalSize": "1366x768",
+      "actualPixelSize": "1708x960",
+      "estimatedPixelScale": 1.25,
+      "sha256": "36B9478A370C1C92BFD48E71382D2987BA232ED9B1F974C0F2FEC827E301C406",
+      "automaticCheck": "passed: new PNG, zero exit, decoded dimensions, requested-size scaling",
+      "visualReview": "pending"
+    },
+    {
+      "file": "native_overview_light_1366x768.png",
+      "view": "overview",
+      "theme": "light",
+      "requestedLogicalSize": "1366x768",
+      "actualPixelSize": "1708x960",
+      "estimatedPixelScale": 1.25,
+      "sha256": "5E77082E056946E00F1D12DFA7CB26D7CA5CFBECC6F449EE5F3080ADFCE87A1F",
+      "automaticCheck": "passed: new PNG, zero exit, decoded dimensions, requested-size scaling",
+      "visualReview": "pending"
+    },
+    {
+      "file": "native_overview_dark_1536x864.png",
+      "view": "overview",
+      "theme": "dark",
+      "requestedLogicalSize": "1536x864",
+      "actualPixelSize": "1920x1080",
+      "estimatedPixelScale": 1.25,
+      "sha256": "D3A26BB5364C5A49BCEC1107C456D9F23A363B6CEDF2A057F439FF1500769A66",
+      "automaticCheck": "passed: new PNG, zero exit, decoded dimensions, requested-size scaling",
+      "visualReview": "passed: manually inspected for clipping, overlap, and legibility"
+    },
+    {
+      "file": "native_overview_light_1536x864.png",
+      "view": "overview",
+      "theme": "light",
+      "requestedLogicalSize": "1536x864",
+      "actualPixelSize": "1920x1080",
+      "estimatedPixelScale": 1.25,
+      "sha256": "791B6D110FA84315B78CB26D8B42C624C0FB35D24F35702E400A55763654B843",
+      "automaticCheck": "passed: new PNG, zero exit, decoded dimensions, requested-size scaling",
+      "visualReview": "pending"
+    },
+    {
+      "file": "native_overview_dark_1920x1080.png",
+      "view": "overview",
+      "theme": "dark",
+      "requestedLogicalSize": "1920x1080",
+      "actualPixelSize": "2400x1350",
+      "estimatedPixelScale": 1.25,
+      "sha256": "31190CA59BAE3D3FAB76D32E2C6685A05646F7FE9EBEB80C58C68E54BDC4DE55",
+      "automaticCheck": "passed: new PNG, zero exit, decoded dimensions, requested-size scaling",
+      "visualReview": "pending"
+    },
+    {
+      "file": "native_overview_light_1920x1080.png",
+      "view": "overview",
+      "theme": "light",
+      "requestedLogicalSize": "1920x1080",
+      "actualPixelSize": "2400x1350",
+      "estimatedPixelScale": 1.25,
+      "sha256": "29446B24CF03634D953267608142CC2DCDFF2297C1846B8A671F3D62A20799A0",
+      "automaticCheck": "passed: new PNG, zero exit, decoded dimensions, requested-size scaling",
+      "visualReview": "pending"
+    },
+    {
+      "file": "native_processes_dark_1180x790.png",
+      "view": "processes",
+      "theme": "dark",
+      "requestedLogicalSize": "1180x790",
+      "actualPixelSize": "1475x988",
+      "estimatedPixelScale": 1.25,
+      "sha256": "68CDCA9911811DE2E9EC4E320D995B9D3E993C2AF6E054A661EA54BEAC9890E5",
+      "automaticCheck": "passed: new PNG, zero exit, decoded dimensions, requested-size scaling",
+      "visualReview": "pending"
+    },
+    {
+      "file": "native_processes_light_1180x790.png",
+      "view": "processes",
+      "theme": "light",
+      "requestedLogicalSize": "1180x790",
+      "actualPixelSize": "1475x988",
+      "estimatedPixelScale": 1.25,
+      "sha256": "309F4D80CBC3933A24C49937E98491FBF41662B0A5E7C48C2B895606BF3E8C9A",
+      "automaticCheck": "passed: new PNG, zero exit, decoded dimensions, requested-size scaling",
+      "visualReview": "passed: manually inspected for clipping, overlap, and legibility"
+    },
+    {
+      "file": "native_hardware_dark_1180x790.png",
+      "view": "hardware",
+      "theme": "dark",
+      "requestedLogicalSize": "1180x790",
+      "actualPixelSize": "1475x988",
+      "estimatedPixelScale": 1.25,
+      "sha256": "EC3D4C5A4657250E646979231C0EE48C034D996E1C38C59B80B9F6857E4D2383",
+      "automaticCheck": "passed: new PNG, zero exit, decoded dimensions, requested-size scaling",
+      "visualReview": "pending"
+    },
+    {
+      "file": "native_hardware_light_1180x790.png",
+      "view": "hardware",
+      "theme": "light",
+      "requestedLogicalSize": "1180x790",
+      "actualPixelSize": "1475x988",
+      "estimatedPixelScale": 1.25,
+      "sha256": "7961EB5697EA9884524EB8781F96EF8E49DE57B70F71C05A23C1F783A5ED3C27",
+      "automaticCheck": "passed: new PNG, zero exit, decoded dimensions, requested-size scaling",
+      "visualReview": "passed: manually inspected for clipping, overlap, and legibility"
+    },
+    {
+      "file": "native_benchmarks_dark_1180x790.png",
+      "view": "benchmarks",
+      "theme": "dark",
+      "requestedLogicalSize": "1180x790",
+      "actualPixelSize": "1475x988",
+      "estimatedPixelScale": 1.25,
+      "sha256": "4B2E90B722ABCE747D88D5B90CB4B8D18E28A8B44BF0277CD588F31196513F6D",
+      "automaticCheck": "passed: new PNG, zero exit, decoded dimensions, requested-size scaling",
+      "visualReview": "passed: manually inspected for clipping, overlap, and legibility"
+    },
+    {
+      "file": "native_benchmarks_light_1180x790.png",
+      "view": "benchmarks",
+      "theme": "light",
+      "requestedLogicalSize": "1180x790",
+      "actualPixelSize": "1475x988",
+      "estimatedPixelScale": 1.25,
+      "sha256": "EBA5EE905F5111D0B739A22E23726F1E7101340DF2B9FDBCF0F6776EE04BF9BB",
+      "automaticCheck": "passed: new PNG, zero exit, decoded dimensions, requested-size scaling",
+      "visualReview": "pending"
+    },
+    {
+      "file": "native_capabilities_dark_1180x790.png",
+      "view": "capabilities",
+      "theme": "dark",
+      "requestedLogicalSize": "1180x790",
+      "actualPixelSize": "1475x988",
+      "estimatedPixelScale": 1.25,
+      "sha256": "60B5411DC08341D7D9D3F89A17FB198D487F6A59948AC8211149A4FDDFC76A94",
+      "automaticCheck": "passed: new PNG, zero exit, decoded dimensions, requested-size scaling",
+      "visualReview": "pending"
+    },
+    {
+      "file": "native_capabilities_light_1180x790.png",
+      "view": "capabilities",
+      "theme": "light",
+      "requestedLogicalSize": "1180x790",
+      "actualPixelSize": "1475x988",
+      "estimatedPixelScale": 1.25,
+      "sha256": "6E230807F695D02290FC8A904B776C8CA54111F9148187F9372957AEE88B6DE9",
+      "automaticCheck": "passed: new PNG, zero exit, decoded dimensions, requested-size scaling",
+      "visualReview": "passed: manually inspected for clipping, overlap, and legibility"
+    },
+    {
+      "file": "native_settings_dark_1180x790.png",
+      "view": "settings",
+      "theme": "dark",
+      "requestedLogicalSize": "1180x790",
+      "actualPixelSize": "1475x988",
+      "estimatedPixelScale": 1.25,
+      "sha256": "E4DDD602C50F7844D74476295309F66EDCD566AB40162365109D5555B9E009C7",
+      "automaticCheck": "passed: new PNG, zero exit, decoded dimensions, requested-size scaling",
+      "visualReview": "pending"
+    },
+    {
+      "file": "native_settings_light_1180x790.png",
+      "view": "settings",
+      "theme": "light",
+      "requestedLogicalSize": "1180x790",
+      "actualPixelSize": "1475x988",
+      "estimatedPixelScale": 1.25,
+      "sha256": "740EFE289A26E9A8C628AB841F815136FE796E7C84FEE3C07953DE121546707A",
+      "automaticCheck": "passed: new PNG, zero exit, decoded dimensions, requested-size scaling",
+      "visualReview": "passed: manually inspected for clipping, overlap, and legibility"
+    },
+    {
+      "file": "native_processes_dark_1536x864.png",
+      "view": "processes",
+      "theme": "dark",
+      "requestedLogicalSize": "1536x864",
+      "actualPixelSize": "1920x1080",
+      "estimatedPixelScale": 1.25,
+      "sha256": "8F60BF3D9C4DE121675DB09E18E7A9BE7A36943A72A814F45418538C8A9B7186",
+      "automaticCheck": "passed: new PNG, zero exit, decoded dimensions, requested-size scaling",
+      "visualReview": "passed: manually inspected for clipping, overlap, and legibility"
+    },
+    {
+      "file": "native_processes_light_1536x864.png",
+      "view": "processes",
+      "theme": "light",
+      "requestedLogicalSize": "1536x864",
+      "actualPixelSize": "1920x1080",
+      "estimatedPixelScale": 1.25,
+      "sha256": "C0370ECF2A47DC725DC8767110F7DCC6EF7682544BA5CD12317573190B6B5754",
+      "automaticCheck": "passed: new PNG, zero exit, decoded dimensions, requested-size scaling",
+      "visualReview": "pending"
+    }
+  ]
+}

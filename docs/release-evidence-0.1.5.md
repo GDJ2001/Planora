@@ -1,0 +1,17 @@
+# Planora 0.1.5 verification record
+
+The Windows application binaries and MSI were built from committed source `27680c1` with Rust 1.95.0. The local, unsigned release files are in `dist/`; that directory is not tracked by Git. The later RPM script adjustment only normalizes line endings in the spec at packaging time and does not change the application binaries.
+
+| Check | Observed result |
+| --- | --- |
+| Windows source checks | `cargo fmt --all -- --check`, `cargo test --workspace --locked`, and `cargo clippy --workspace --all-targets --locked -- -D warnings` passed. The IPC resilience suite contains 13 passing tests, including large responses, partial frames, stalled writes, and recovery. |
+| Windows MSI | `Planora-0.1.5-x64.msi` passed `wix msi validate`; ProductVersion is `0.1.5`; SHA-256 `354F37C3E6062A1F15856324649FC778409BCC917B04C8634F8164E733C4AA07`. |
+| Installed Windows build | Upgrade returned MSI exit code 0. Registry version is `0.1.5`; installed `planora.exe --build-info` reports release commit `27680c1`. Installed UI SHA-256 `EC38AFCA79BAA14F38C087DCF27C5B777E5822FDCC322504009BE0B43C5F410D` and helper SHA-256 `D23525B48C6D850B187B7D5182097995FA4B84A4C7BBA6FC359F49A433F9B6B2`, both matching the MSI manifest. The helper was explicitly reauthorized after upgrade and is running. |
+| Live Windows IPC | The installed 0.1.4 helper completed 300 consecutive fresh snapshots over 305.94 seconds. Version 0.1.5 changes only package metadata and UI presentation; its newly installed helper completed eight consecutive fresh snapshots in a short smoke run. |
+| Native Windows UI | [Capture manifest](screenshots/native/manifest.json) records 22 installed `eframe` GPU-framebuffer images, both themes, five Overview sizes from 1024 × 640 to 1920 × 1080 logical pixels, and the other main views. Effective capture scaling measured from PNG dimensions was 125%. Representative images were manually inspected for text overlap, clipping, legibility, and unavailable states. The process-table mini-bars no longer cross measurement text. |
+| Ubuntu package | Ubuntu 24.04 WSL built `planora_0.1.5_amd64.deb`, package version `0.1.5`, SHA-256 `6c08bb4ddf1e4fdebe01029f79e73c38cdb9de08b3f7a1614a4822fe0b0e6096`. Its release UI reports source commit `27680c1`. The package contains the UI, helper, systemd unit, and icon assets. This is a package build and inspection, not an installation on an independent Ubuntu machine. |
+| Fedora package | `planora-0.1.5-1.x86_64.rpm` built under Ubuntu WSL after normalizing the spec's Windows CRLF endings; RPM metadata reports `planora 0.1.5 x86_64`, SHA-256 `f0020223de9c6d052a26f6f47a74c89f37bc9414bba34d24dda141ff6bbc9980`. It has not been installed on Fedora. |
+
+The requested Windows uninstall/cleanup check was attempted, but the administrator prompt was canceled before removal began. Planora 0.1.5 remains installed and its service remains running. Windows scaling modes other than the observed effective 125% have not been tested. Linux installation/service behavior, Fedora native behavior, Apple Silicon build and installation, signing/notarization, and public distribution licensing remain separate release gates. Previous GitHub Actions runs failed before any job steps began; they provide no build or test evidence for this release.
+
+The [remaining-issues plan](remaining-issues-plan.md) describes the original acceptance targets. This record distinguishes completed local checks from checks requiring another host or an approved uninstall/reinstall cycle.
