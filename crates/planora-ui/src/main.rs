@@ -673,11 +673,20 @@ fn main() -> eframe::Result<()> {
         }
     }
 
+    let capture_mode = screenshot_out.is_some();
+    // Native capture must honor the requested size, independent of the user's
+    // saved window geometry. Give every image an isolated, empty state file.
+    let capture_state_path = screenshot_out
+        .as_ref()
+        .map(|path| path.with_extension("capture.ron"));
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([width, height])
             .with_min_inner_size([1024.0, 640.0])
+            .with_clamp_size_to_monitor_size(!capture_mode)
             .with_title("Planora"),
+        persist_window: !capture_mode,
+        persistence_path: capture_state_path,
         ..Default::default()
     };
     eframe::run_native(

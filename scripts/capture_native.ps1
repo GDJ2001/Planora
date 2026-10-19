@@ -29,11 +29,12 @@ public static class PlanoraDpi {
 '@
 $systemDpi = [PlanoraDpi]::GetDpiForSystem()
 $captures = [System.Collections.Generic.List[object]]::new()
+$referenceScale = $null
 
 Write-Host "Capturing native Planora $($buildInfo.version) ($($buildInfo.gitCommit))"
 Write-Host "Binary: $BinPath"
 Write-Host "SHA-256: $binHash"
-Write-Host "System DPI: $systemDpi ($([math]::Round($systemDpi / 96 * 100))%)"
+Write-Host "System-reported DPI: $systemDpi; effective capture scaling is measured from each PNG"
 
 function Capture-NativeWindow {
     param(
@@ -72,6 +73,16 @@ function Capture-NativeWindow {
     if ($actualWidth -lt 100 -or $actualHeight -lt 100) {
         throw "Native capture failed ($fileName): implausible dimensions ${actualWidth}x${actualHeight}"
     }
+    $scaleX = $actualWidth / $Width
+    $scaleY = $actualHeight / $Height
+    if ([math]::Abs($scaleX - $scaleY) -gt 0.02 * (($scaleX + $scaleY) / 2)) {
+        throw "Native capture failed ($fileName): requested ${Width}x${Height}, captured ${actualWidth}x${actualHeight}; width/height scales disagree"
+    }
+    if ($null -eq $script:referenceScale) {
+        $script:referenceScale = ($scaleX + $scaleY) / 2
+    } elseif ([math]::Abs($scaleX - $script:referenceScale) -gt 0.03 * $script:referenceScale) {
+        throw "Native capture failed ($fileName): capture scale changed from $($script:referenceScale) to $scaleX; requested size may have been overridden"
+    }
 
     $script:captures.Add([pscustomobject]@{
         file = $fileName
@@ -79,8 +90,9 @@ function Capture-NativeWindow {
         theme = $Theme
         requestedLogicalSize = "${Width}x${Height}"
         actualPixelSize = "${actualWidth}x${actualHeight}"
+        estimatedPixelScale = [math]::Round(($scaleX + $scaleY) / 2, 3)
         sha256 = (Get-FileHash -LiteralPath $filePath -Algorithm SHA256).Hash
-        automaticCheck = 'passed: new PNG, zero exit, decoded dimensions'
+        automaticCheck = 'passed: new PNG, zero exit, decoded dimensions, requested-size scaling'
         visualReview = 'pending'
     })
     Write-Host "  ${fileName}: ${actualWidth}x${actualHeight} pixels"
@@ -112,8 +124,9 @@ $manifest = [pscustomobject]@{
     binarySha256 = $binHash
     build = $buildInfo
     windowsVersion = [System.Environment]::OSVersion.VersionString
-    systemDpi = $systemDpi
-    systemScalePercent = [math]::Round($systemDpi / 96 * 100)
+    systemReportedDpi = $systemDpi
+    systemReportedScalePercent = [math]::Round($systemDpi / 96 * 100)
+    effectiveCaptureScalePercent = [math]::Round($referenceScale * 100)
     captures = $captures.ToArray()
 }
 $manifestPath = Join-Path $OutDir 'manifest.json'
