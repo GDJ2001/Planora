@@ -38,7 +38,7 @@ The in-memory UI smoke test runs with `cargo test --workspace --locked`. The opt
 - **Fedora:** After a release build, run [build-rpm.sh](packaging/linux/build-rpm.sh). The RPM uses the same helper and authorization model.
 - **Apple Silicon macOS:** Run [build-package.sh](packaging/macos/build-package.sh) on a Mac. The package includes an SMAppService LaunchDaemon in the app bundle. Its installer records the exact console-user UID for local IPC access; the user must still approve daemon registration through macOS. The app ZIP alone has no authorized helper. The package is unsigned by default and has signing/notarization hooks.
 
-The Windows 0.1.5 MSI was upgraded and smoke-tested on this machine; [release evidence](docs/release-evidence-0.1.5.md) records hashes, live snapshots, and installed native captures. Debian and RPM packages were built under Ubuntu WSL but have not been installed on their target distributions. Windows uninstall cleanup, other display scaling modes, and Apple Silicon macOS remain unverified release gates.
+The Windows 0.1.5 MSI was upgraded, uninstalled, reinstalled, and smoke-tested on this machine; [release evidence](docs/release-evidence-0.1.5.md) records hashes, live snapshots, and installed native captures. Debian and RPM packages were built under Ubuntu WSL but have not been installed on their target distributions. Other Windows display scaling modes and Apple Silicon macOS remain unverified release gates.
 
 ## Repository
 
