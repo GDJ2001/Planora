@@ -20,14 +20,13 @@ jobs:
       - shell: pwsh
         run: |
           dotnet tool install --global wix --version 5.0.2
-          New-Item -ItemType Directory -Force dist | Out-Null
-          $version = (Get-Content Cargo.toml | Select-String '^version = "(.*)"').Matches.Groups[1].Value
-          wix build packaging/windows/Planora.wxs -arch x64 -d ProjectDir="$PWD" -d SourceDir="$PWD\target\release" -o "dist/Planora-$version-x64.msi"
-          wix msi validate "dist/Planora-$version-x64.msi"
+          ./packaging/windows/Build-Planora.ps1 -SkipBuild
       - uses: actions/upload-artifact@v4
         with:
           name: planora-windows-x64
-          path: dist/*.msi
+          path: |
+            dist/*.msi
+            dist/*.manifest.json
 
   ubuntu:
     runs-on: ubuntu-24.04

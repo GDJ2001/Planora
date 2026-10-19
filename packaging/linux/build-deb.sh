@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-version="${PLANORA_VERSION:-0.1.2}"
+version="${PLANORA_VERSION:-$(cargo pkgid --manifest-path "$root/Cargo.toml" -p planora-ui | sed 's/.*[#@]//')}"
+release_dir="${CARGO_TARGET_DIR:-$root/target}/release"
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
-install -Dm755 "$root/target/release/planora" "$stage/usr/bin/planora"
-install -Dm755 "$root/target/release/planora-helper" "$stage/usr/libexec/planora/planora-helper"
+install -Dm755 "$release_dir/planora" "$stage/usr/bin/planora"
+install -Dm755 "$release_dir/planora-helper" "$stage/usr/libexec/planora/planora-helper"
 install -Dm755 "$root/packaging/linux/authorize-user" "$stage/usr/libexec/planora/authorize-user"
 install -Dm644 "$root/packaging/linux/planora-helper.service" "$stage/usr/lib/systemd/system/planora-helper.service"
 install -Dm644 "$root/packaging/linux/planora.sysusers" "$stage/usr/lib/sysusers.d/planora.conf"

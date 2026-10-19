@@ -9,8 +9,8 @@ use planora_core::{
     ResponseEnvelope, TelemetryFrame,
 };
 use planora_helper::{
-    HANDSHAKE_TIMEOUT, REQUEST_TIMEOUT, receive_request, receive_response_timeout, send_request,
-    send_response,
+    HANDSHAKE_TIMEOUT, REQUEST_TIMEOUT, exchange_request_timeout, receive_request,
+    receive_response_timeout, send_request, send_response, write_all_deadline,
 };
 use std::io::{self, ErrorKind};
 use std::sync::Arc;
@@ -240,22 +240,65 @@ fn test_ipc_mismatched_request_id_detection() {
     let mut client = Stream::connect(name).unwrap();
     let client_req_id = 42;
 
-    send_request(
-        &mut client,
-        &Request {
-            request_id: client_req_id,
-            command: Command::Snapshot,
-        },
-    )
-    .unwrap();
+    let request = Request {
+        request_id: client_req_id,
+        command: Command::Snapshot,
+    };
+    let error = exchange_request_timeout(&mut client, &request, REQUEST_TIMEOUT).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::InvalidData);
 
-    let resp_env = receive_response_timeout(&mut client, REQUEST_TIMEOUT).unwrap();
-    // Validate request ID mismatch detection
-    assert_ne!(
-        resp_env.request_id, client_req_id,
-        "mismatched request ID was accurately detected"
-    );
+    server_handle.join().unwrap();
+}
 
+#[test]
+fn test_ipc_trickle_does_not_extend_absolute_deadline() {
+    use std::io::Write;
+    let name = test_socket_name("trickle").unwrap();
+    let listener = ListenerOptions::new()
+        .name(name.clone())
+        .create_sync()
+        .unwrap();
+
+    let server_handle = thread::spawn(move || {
+        let mut stream = listener.accept().unwrap();
+        stream.write_all(&64u32.to_le_bytes()).unwrap();
+        for _ in 0..18 {
+            thread::sleep(Duration::from_millis(25));
+            if stream.write_all(b"X").is_err() {
+                break;
+            }
+        }
+    });
+
+    let mut client = Stream::connect(name).unwrap();
+    let start = Instant::now();
+    let error = receive_response_timeout(&mut client, Duration::from_millis(200)).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::TimedOut);
+    assert!(start.elapsed() < Duration::from_millis(500));
+    drop(client);
+    server_handle.join().unwrap();
+}
+
+#[test]
+fn test_ipc_blocked_write_respects_deadline() {
+    let name = test_socket_name("blocked-write").unwrap();
+    let listener = ListenerOptions::new()
+        .name(name.clone())
+        .create_sync()
+        .unwrap();
+    let server_handle = thread::spawn(move || {
+        let _stream = listener.accept().unwrap();
+        thread::sleep(Duration::from_millis(500));
+    });
+
+    let mut client = Stream::connect(name).unwrap();
+    let payload = vec![0xA5; 16 * 1024 * 1024];
+    let started = Instant::now();
+    let error = write_all_deadline(&mut client, &payload, started + Duration::from_millis(120))
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::TimedOut);
+    assert!(started.elapsed() < Duration::from_millis(450));
+    drop(client);
     server_handle.join().unwrap();
 }
 

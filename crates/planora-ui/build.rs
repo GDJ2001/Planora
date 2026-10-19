@@ -28,6 +28,23 @@ fn main() {
             );
         }
     }
+    if let Ok(reference) = std::process::Command::new("git")
+        .args(["symbolic-ref", "-q", "HEAD"])
+        .output()
+        && reference.status.success()
+    {
+        let reference = String::from_utf8_lossy(&reference.stdout);
+        if let Ok(path) = std::process::Command::new("git")
+            .args(["rev-parse", "--git-path", reference.trim()])
+            .output()
+            && path.status.success()
+        {
+            println!(
+                "cargo:rerun-if-changed={}",
+                String::from_utf8_lossy(&path.stdout).trim()
+            );
+        }
+    }
 
     let git_commit = std::process::Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])

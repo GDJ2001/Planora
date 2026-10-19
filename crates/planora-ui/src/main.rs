@@ -136,14 +136,23 @@ impl App {
                 if let Some(parent) = path.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }
-                let _ = image::save_buffer(
+                let result = image::save_buffer(
                     &path,
                     &raw,
                     img.size[0] as u32,
                     img.size[1] as u32,
                     image::ExtendedColorType::Rgba8,
                 );
-                std::process::exit(0);
+                match result {
+                    Ok(()) => std::process::exit(0),
+                    Err(error) => {
+                        eprintln!(
+                            "Failed to save native screenshot {}: {error}",
+                            path.display()
+                        );
+                        std::process::exit(1);
+                    }
+                }
             });
         }
 
@@ -580,10 +589,24 @@ impl eframe::App for App {
 }
 
 fn main() -> eframe::Result<()> {
+    if std::env::args().any(|a| a == "--build-info") {
+        let info = state::BUILD_INFO;
+        println!(
+            "{}",
+            serde_json::json!({
+                "version": info.version,
+                "protocolVersion": info.protocol_version,
+                "gitCommit": info.git_commit,
+                "target": info.target,
+                "profile": info.profile,
+            })
+        );
+        return Ok(());
+    }
     if std::env::args().any(|a| a == "--headless-smoke-test") {
         let out_dir = std::env::args()
             .nth(2)
-            .unwrap_or_else(|| "docs/screenshots".into());
+            .unwrap_or_else(|| "dist/fixture-smoke".into());
         if let Err(e) = smoke_test::run_smoke_suite(std::path::Path::new(&out_dir), true) {
             eprintln!("Visual smoke suite failed: {e}");
             std::process::exit(1);

@@ -1,22 +1,14 @@
 use planora_core::{Command, PROTOCOL_VERSION, Request, Response};
-use planora_helper::{
-    HANDSHAKE_TIMEOUT, REQUEST_TIMEOUT, connect, receive_response_timeout, send_request,
-};
+use planora_helper::{HANDSHAKE_TIMEOUT, REQUEST_TIMEOUT, connect, exchange_request_timeout};
 use std::time::{Duration, Instant};
 
 #[test]
 #[ignore = "requires installed PlanoraHelper service and runs for 5 minutes"]
 fn test_live_service_telemetry_sustained() {
-    let mut stream = match connect() {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Skipping live service test: unable to connect ({e})");
-            return;
-        }
-    };
+    let mut stream = connect().expect("Installed PlanoraHelper service must accept connections");
 
     // 1. Handshake
-    send_request(
+    let env = exchange_request_timeout(
         &mut stream,
         &Request {
             request_id: 1,
@@ -24,11 +16,9 @@ fn test_live_service_telemetry_sustained() {
                 version: PROTOCOL_VERSION,
             },
         },
+        HANDSHAKE_TIMEOUT,
     )
-    .expect("Should send handshake to PlanoraHelper");
-
-    let env = receive_response_timeout(&mut stream, HANDSHAKE_TIMEOUT)
-        .expect("Should receive handshake response from PlanoraHelper");
+    .expect("Should complete handshake with PlanoraHelper");
     assert_eq!(env.request_id, 1);
     match env.response {
         Response::Hello {
@@ -53,17 +43,15 @@ fn test_live_service_telemetry_sustained() {
     while start.elapsed() < Duration::from_secs(305) {
         count += 1;
         let req_id = count + 10;
-        send_request(
+        let env = exchange_request_timeout(
             &mut stream,
             &Request {
                 request_id: req_id,
                 command: Command::Snapshot,
             },
+            REQUEST_TIMEOUT,
         )
-        .expect("Should send snapshot request");
-
-        let env = receive_response_timeout(&mut stream, REQUEST_TIMEOUT)
-            .expect("Should receive snapshot response within deadline");
+        .expect("Should complete snapshot exchange within deadline");
         assert_eq!(env.request_id, req_id);
 
         match env.response {

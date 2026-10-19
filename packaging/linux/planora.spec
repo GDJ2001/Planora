@@ -1,5 +1,5 @@
 Name: planora
-Version: 0.1.2
+Version: %{planora_version}
 Release: 1%{?dist}
 Summary: Native hardware visualizer and resource monitor
 License: MIT OR Apache-2.0
@@ -10,8 +10,8 @@ Requires: systemd, polkit
 Planora shows process and system resources with an authorized local helper.
 
 %install
-install -Dm755 %{planora_root}/target/release/planora %{buildroot}/usr/bin/planora
-install -Dm755 %{planora_root}/target/release/planora-helper %{buildroot}/usr/libexec/planora/planora-helper
+install -Dm755 %{planora_release_dir}/planora %{buildroot}/usr/bin/planora
+install -Dm755 %{planora_release_dir}/planora-helper %{buildroot}/usr/libexec/planora/planora-helper
 install -Dm755 %{planora_root}/packaging/linux/authorize-user %{buildroot}/usr/libexec/planora/authorize-user
 install -Dm644 %{planora_root}/packaging/linux/planora-helper.service %{buildroot}/usr/lib/systemd/system/planora-helper.service
 install -Dm644 %{planora_root}/packaging/linux/planora.sysusers %{buildroot}/usr/lib/sysusers.d/planora.conf

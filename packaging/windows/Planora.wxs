@@ -1,5 +1,5 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
-  <Package Name="Planora" Manufacturer="Planora" Version="0.1.2" UpgradeCode="D8D1E733-9195-4B0D-9B9C-23E1B455D8D8" Scope="perMachine">
+  <Package Name="Planora" Manufacturer="Planora" Version="$(var.PlanoraVersion)" UpgradeCode="D8D1E733-9195-4B0D-9B9C-23E1B455D8D8" Scope="perMachine">
     <MajorUpgrade DowngradeErrorMessage="A newer Planora version is already installed." />
     <MediaTemplate EmbedCab="yes" />
     <Icon Id="PlanoraIcon.ico" SourceFile="$(var.ProjectDir)\assets\brand\platforms\windows\planora.ico" />

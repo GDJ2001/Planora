@@ -1,28 +1,39 @@
-# scripts/capture_native.ps1
-# Native Windows screenshot capture runner for Planora using built-in GPU framebuffer capture
-
+# Capture the installed native Windows app. Run after installing the final MSI.
 param(
-    [string]$OutDir = "$PSScriptRoot\..\docs\screenshots\native"
+    [string]$OutDir = "$PSScriptRoot\..\docs\screenshots\native",
+    [string]$BinPath = 'C:\Program Files\Planora\planora.exe'
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = 'Stop'
 
-New-Item -ItemType Directory -Force $OutDir | Out-Null
+if (-not (Test-Path -LiteralPath $BinPath -PathType Leaf)) {
+    throw "Planora executable not found: $BinPath"
+}
+$BinPath = (Resolve-Path -LiteralPath $BinPath).Path
+New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+$OutDir = (Resolve-Path -LiteralPath $OutDir).Path
 
-$binPath = "$PSScriptRoot\..\target\release\planora.exe"
-if (-not (Test-Path $binPath)) {
-    Write-Host "Building release binary..."
-    cargo build --release --bin planora --locked
+$binHash = (Get-FileHash -LiteralPath $BinPath -Algorithm SHA256).Hash
+$buildInfo = (& $BinPath --build-info | ConvertFrom-Json)
+if ($LASTEXITCODE -ne 0 -or -not $buildInfo.version -or -not $buildInfo.gitCommit) {
+    throw "Could not read build identity from $BinPath"
 }
 
-$binHash = (Get-FileHash $binPath -Algorithm SHA256).Hash
+Add-Type -AssemblyName System.Drawing
+Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+public static class PlanoraDpi {
+    [DllImport("user32.dll")]
+    public static extern uint GetDpiForSystem();
+}
+'@
+$systemDpi = [PlanoraDpi]::GetDpiForSystem()
+$captures = [System.Collections.Generic.List[object]]::new()
 
-Write-Host "=========================================================="
-Write-Host "Native Windows Smoke Test & GPU Screenshot Capture"
-Write-Host "Binary: $binPath"
+Write-Host "Capturing native Planora $($buildInfo.version) ($($buildInfo.gitCommit))"
+Write-Host "Binary: $BinPath"
 Write-Host "SHA-256: $binHash"
-Write-Host "Output Directory: $OutDir"
-Write-Host "=========================================================="
+Write-Host "System DPI: $systemDpi ($([math]::Round($systemDpi / 96 * 100))%)"
 
 function Capture-NativeWindow {
     param(
@@ -32,23 +43,49 @@ function Capture-NativeWindow {
         [int]$Height
     )
 
-    $outFileName = "native_${View}_${Theme}_${Width}x${Height}.png"
-    $outFilePath = Join-Path $OutDir $outFileName
-
-    Write-Host "Capturing Native Window: View=$View, Theme=$Theme, Size=${Width}x${Height}..."
-    
-    $proc = Start-Process $binPath -ArgumentList "--view $View --theme $Theme --width $Width --height $Height --screenshot-out `"$outFilePath`"" -PassThru -Wait
-
-    if ((Test-Path $outFilePath) -and ((Get-Item $outFilePath).Length -gt 10000)) {
-        $len = (Get-Item $outFilePath).Length
-        Write-Host "  [PASS] Captured $outFileName ($len bytes, exit code $($proc.ExitCode))" -ForegroundColor Green
-    } else {
-        Write-Host "  [FAIL] Failed to capture $outFileName" -ForegroundColor Red
-        throw "Failed to capture $outFileName"
+    $fileName = "native_${View}_${Theme}_${Width}x${Height}.png"
+    $filePath = Join-Path $OutDir $fileName
+    if (Test-Path -LiteralPath $filePath) {
+        Remove-Item -LiteralPath $filePath -Force
     }
+
+    $arguments = "--view $View --theme $Theme --width $Width --height $Height --auto-close-ms 30000 --screenshot-out `"$filePath`""
+    $proc = Start-Process -FilePath $BinPath -ArgumentList $arguments -PassThru -Wait -WindowStyle Normal
+    if ($proc.ExitCode -ne 0) {
+        throw "Native capture failed ($fileName): process exit code $($proc.ExitCode)"
+    }
+    if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) {
+        throw "Native capture failed ($fileName): no new PNG was written"
+    }
+    $file = Get-Item -LiteralPath $filePath
+    if ($file.Length -lt 10000) {
+        throw "Native capture failed ($fileName): PNG is only $($file.Length) bytes"
+    }
+
+    $image = [System.Drawing.Image]::FromFile($filePath)
+    try {
+        $actualWidth = $image.Width
+        $actualHeight = $image.Height
+    } finally {
+        $image.Dispose()
+    }
+    if ($actualWidth -lt 100 -or $actualHeight -lt 100) {
+        throw "Native capture failed ($fileName): implausible dimensions ${actualWidth}x${actualHeight}"
+    }
+
+    $script:captures.Add([pscustomobject]@{
+        file = $fileName
+        view = $View
+        theme = $Theme
+        requestedLogicalSize = "${Width}x${Height}"
+        actualPixelSize = "${actualWidth}x${actualHeight}"
+        sha256 = (Get-FileHash -LiteralPath $filePath -Algorithm SHA256).Hash
+        automaticCheck = 'passed: new PNG, zero exit, decoded dimensions'
+        visualReview = 'pending'
+    })
+    Write-Host "  ${fileName}: ${actualWidth}x${actualHeight} pixels"
 }
 
-# 1. Resolutions matrix for Overview (both Dark and Light)
 $resolutions = @(
     @{ W = 1024; H = 640 },
     @{ W = 1180; H = 790 },
@@ -56,24 +93,29 @@ $resolutions = @(
     @{ W = 1536; H = 864 },
     @{ W = 1920; H = 1080 }
 )
-
 foreach ($res in $resolutions) {
-    Capture-NativeWindow -View "overview" -Theme "dark" -Width $res.W -Height $res.H
-    Capture-NativeWindow -View "overview" -Theme "light" -Width $res.W -Height $res.H
+    Capture-NativeWindow -View 'overview' -Theme 'dark' -Width $res.W -Height $res.H
+    Capture-NativeWindow -View 'overview' -Theme 'light' -Width $res.W -Height $res.H
 }
 
-# 2. View-specific matrix at 1180x790 (both Dark and Light)
-$views = @("processes", "hardware", "benchmarks", "capabilities", "settings")
-
-foreach ($v in $views) {
-    Capture-NativeWindow -View $v -Theme "dark" -Width 1180 -Height 790
-    Capture-NativeWindow -View $v -Theme "light" -Width 1180 -Height 790
+foreach ($view in @('processes', 'hardware', 'benchmarks', 'capabilities', 'settings')) {
+    Capture-NativeWindow -View $view -Theme 'dark' -Width 1180 -Height 790
+    Capture-NativeWindow -View $view -Theme 'light' -Width 1180 -Height 790
 }
+Capture-NativeWindow -View 'processes' -Theme 'dark' -Width 1536 -Height 864
+Capture-NativeWindow -View 'processes' -Theme 'light' -Width 1536 -Height 864
 
-# 3. Native 1536x864 verification for Processes (both Dark and Light)
-Capture-NativeWindow -View "processes" -Theme "dark" -Width 1536 -Height 864
-Capture-NativeWindow -View "processes" -Theme "light" -Width 1536 -Height 864
-
-Write-Host "=========================================================="
-Write-Host "All native screenshots captured and verified successfully!"
-Write-Host "=========================================================="
+$manifest = [pscustomobject]@{
+    capturedAt = (Get-Date).ToString('o')
+    source = 'installed native eframe GPU framebuffer'
+    binaryPath = $BinPath
+    binarySha256 = $binHash
+    build = $buildInfo
+    windowsVersion = [System.Environment]::OSVersion.VersionString
+    systemDpi = $systemDpi
+    systemScalePercent = [math]::Round($systemDpi / 96 * 100)
+    captures = $captures.ToArray()
+}
+$manifestPath = Join-Path $OutDir 'manifest.json'
+$manifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manifestPath -Encoding utf8
+Write-Host "Captured $($captures.Count) native images. Review each for clipping and overlap. Manifest: $manifestPath"

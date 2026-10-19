@@ -260,7 +260,16 @@ pub fn render_to_svg(app: &mut App, width: f32, height: f32) -> String {
     let mut full_output = ctx.run_ui(raw_input, |ui| {
         app.render_ui(ui);
     });
-    let svg = shapes_to_svg(width, height, p.background, &full_output.shapes);
+    let mut svg = shapes_to_svg(width, height, p.background, &full_output.shapes);
+    // Fixture images must be visibly distinguishable from captures of the native window.
+    let label = format!(
+        "<g><rect x=\"{}\" y=\"{}\" width=\"218\" height=\"20\" rx=\"4\" fill=\"#05255D\"/><text x=\"{}\" y=\"{}\" fill=\"#FFFFFF\" font-family=\"sans-serif\" font-size=\"11\">Sample data / simulated render</text></g>\n",
+        width - 226.0,
+        height - 24.0,
+        width - 221.0,
+        height - 10.0,
+    );
+    svg = svg.replacen("</svg>", &(label + "</svg>"), 1);
     full_output.textures_delta.clear();
     svg
 }
@@ -531,7 +540,8 @@ pub fn assert_image_validity(path: &Path, expected_w: u32, expected_h: u32) -> R
 }
 
 pub fn run_smoke_suite(out_dir: &Path, capture_png: bool) -> Result<(), String> {
-    let _ = fs::create_dir_all(out_dir);
+    fs::create_dir_all(out_dir)
+        .map_err(|error| format!("Could not create {}: {error}", out_dir.display()))?;
 
     let resolutions = [
         (1024, 640),
@@ -557,7 +567,8 @@ pub fn run_smoke_suite(out_dir: &Path, capture_png: bool) -> Result<(), String> 
 
             let svg_filename = format!("smoke_{theme_name}_{w}x{h}.svg");
             let svg_path = out_dir.join(&svg_filename);
-            let _ = fs::write(&svg_path, &svg);
+            fs::write(&svg_path, &svg)
+                .map_err(|error| format!("Could not write {}: {error}", svg_path.display()))?;
 
             println!("Rendered SVG: {svg_filename}");
 
@@ -570,6 +581,11 @@ pub fn run_smoke_suite(out_dir: &Path, capture_png: bool) -> Result<(), String> 
                 }
                 let png_filename = format!("smoke_{theme_name}_{w}x{h}.png");
                 let png_path = out_dir.join(&png_filename);
+                if png_path.exists() {
+                    fs::remove_file(&png_path).map_err(|error| {
+                        format!("Could not remove stale {}: {error}", png_path.display())
+                    })?;
+                }
 
                 let abs_svg_path = if svg_path.is_absolute() {
                     svg_path.clone()
@@ -632,7 +648,8 @@ pub fn run_smoke_suite(out_dir: &Path, capture_png: bool) -> Result<(), String> 
             let svg = render_to_svg(&mut app, 1180.0, 790.0);
             let svg_filename = format!("smoke_{view_name}_{theme_name}_1180x790.svg");
             let svg_path = out_dir.join(&svg_filename);
-            let _ = fs::write(&svg_path, &svg);
+            fs::write(&svg_path, &svg)
+                .map_err(|error| format!("Could not write {}: {error}", svg_path.display()))?;
 
             if capture_png {
                 let edge_path = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe";
@@ -643,6 +660,11 @@ pub fn run_smoke_suite(out_dir: &Path, capture_png: bool) -> Result<(), String> 
                 }
                 let png_filename = format!("smoke_{view_name}_{theme_name}_1180x790.png");
                 let png_path = out_dir.join(&png_filename);
+                if png_path.exists() {
+                    fs::remove_file(&png_path).map_err(|error| {
+                        format!("Could not remove stale {}: {error}", png_path.display())
+                    })?;
+                }
 
                 let abs_svg_path = if svg_path.is_absolute() {
                     svg_path.clone()

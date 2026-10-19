@@ -231,20 +231,9 @@ pub fn background_worker(
             },
         };
 
-        if planora_helper::send_request_deadline(
+        match planora_helper::exchange_request_timeout(
             &mut stream,
             &handshake_req,
-            Instant::now() + planora_helper::HANDSHAKE_TIMEOUT,
-        )
-        .is_err()
-        {
-            thread::sleep(reconnect_backoff);
-            reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_millis(2000));
-            continue;
-        }
-
-        match planora_helper::receive_response_timeout(
-            &mut stream,
             planora_helper::HANDSHAKE_TIMEOUT,
         ) {
             Ok(ResponseEnvelope {
@@ -306,65 +295,80 @@ pub fn background_worker(
         // Fetch topology and capabilities on connect with REQUEST_TIMEOUT
         next_request_id = next_request_id.wrapping_add(1);
         let topo_req_id = next_request_id;
-        let _ = planora_helper::send_request_deadline(
+        let topo_req = Request {
+            request_id: topo_req_id,
+            command: Command::Topology,
+        };
+        let topo_result = planora_helper::exchange_request_timeout(
             &mut stream,
-            &Request {
-                request_id: topo_req_id,
-                command: Command::Topology,
-            },
-            Instant::now() + planora_helper::REQUEST_TIMEOUT,
+            &topo_req,
+            planora_helper::REQUEST_TIMEOUT,
         );
-        if let Ok(ResponseEnvelope {
-            request_id,
-            response: Response::Topology(topo),
-        }) =
-            planora_helper::receive_response_timeout(&mut stream, planora_helper::REQUEST_TIMEOUT)
-            && request_id == topo_req_id
-        {
-            let mut shared = state.lock().unwrap();
-            shared.topology = Some(topo);
+        match topo_result {
+            Ok(ResponseEnvelope {
+                response: Response::Topology(topo),
+                ..
+            }) => state.lock().unwrap().topology = Some(topo),
+            _ => {
+                state.lock().unwrap().state = Some(AppState::Reconnecting);
+                context.request_repaint();
+                thread::sleep(reconnect_backoff);
+                reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_millis(2000));
+                continue;
+            }
         }
 
         next_request_id = next_request_id.wrapping_add(1);
         let caps_req_id = next_request_id;
-        let _ = planora_helper::send_request_deadline(
+        let caps_req = Request {
+            request_id: caps_req_id,
+            command: Command::Capabilities,
+        };
+        let caps_result = planora_helper::exchange_request_timeout(
             &mut stream,
-            &Request {
-                request_id: caps_req_id,
-                command: Command::Capabilities,
-            },
-            Instant::now() + planora_helper::REQUEST_TIMEOUT,
+            &caps_req,
+            planora_helper::REQUEST_TIMEOUT,
         );
-        if let Ok(ResponseEnvelope {
-            request_id,
-            response: Response::Capabilities(caps),
-        }) =
-            planora_helper::receive_response_timeout(&mut stream, planora_helper::REQUEST_TIMEOUT)
-            && request_id == caps_req_id
-        {
-            let mut shared = state.lock().unwrap();
-            shared.capabilities = caps;
+        match caps_result {
+            Ok(ResponseEnvelope {
+                response: Response::Capabilities(caps),
+                ..
+            }) => state.lock().unwrap().capabilities = caps,
+            _ => {
+                state.lock().unwrap().state = Some(AppState::Reconnecting);
+                context.request_repaint();
+                thread::sleep(reconnect_backoff);
+                reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_millis(2000));
+                continue;
+            }
         }
 
         // Fetch initial snapshot immediately so Live state has fresh data right away
         next_request_id = next_request_id.wrapping_add(1);
         let init_req_id = next_request_id;
-        let _ = planora_helper::send_request_deadline(
+        let init_req = Request {
+            request_id: init_req_id,
+            command: Command::Snapshot,
+        };
+        let initial_snapshot = planora_helper::exchange_request_timeout(
             &mut stream,
-            &Request {
-                request_id: init_req_id,
-                command: Command::Snapshot,
-            },
-            Instant::now() + planora_helper::REQUEST_TIMEOUT,
+            &init_req,
+            planora_helper::REQUEST_TIMEOUT,
         );
-        if let Ok(ResponseEnvelope {
-            request_id,
-            response,
-        }) =
-            planora_helper::receive_response_timeout(&mut stream, planora_helper::REQUEST_TIMEOUT)
-            && request_id == init_req_id
-        {
-            handle_response(response, &state);
+        match initial_snapshot {
+            Ok(ResponseEnvelope {
+                response: Response::Snapshot(frame),
+                ..
+            }) => {
+                handle_response(Response::Snapshot(frame), &state);
+            }
+            _ => {
+                state.lock().unwrap().state = Some(AppState::Reconnecting);
+                context.request_repaint();
+                thread::sleep(reconnect_backoff);
+                reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_millis(2000));
+                continue;
+            }
         }
         let mut last_sample_request = Instant::now();
         context.request_repaint();
@@ -384,26 +388,12 @@ pub fn background_worker(
                     request_id: cur_req_id,
                     command: cmd,
                 };
-                if planora_helper::send_request_deadline(
+                match planora_helper::exchange_request_timeout(
                     &mut stream,
                     &req,
-                    Instant::now() + planora_helper::REQUEST_TIMEOUT,
-                )
-                .is_err()
-                {
-                    connection_healthy = false;
-                    break;
-                }
-                match planora_helper::receive_response_timeout(
-                    &mut stream,
                     planora_helper::REQUEST_TIMEOUT,
                 ) {
                     Ok(env) => {
-                        if env.request_id != cur_req_id {
-                            // Request ID mismatch indicates corrupted or interleaved stream
-                            connection_healthy = false;
-                            break;
-                        }
                         if !handle_response(env.response, &state) {
                             connection_healthy = false;
                             break;
@@ -443,27 +433,12 @@ pub fn background_worker(
                             request_id: cur_req_id,
                             command: cmd,
                         };
-                        if planora_helper::send_request_deadline(
+                        match planora_helper::exchange_request_timeout(
                             &mut stream,
                             &req,
-                            Instant::now() + planora_helper::REQUEST_TIMEOUT,
-                        )
-                        .is_err()
-                        {
-                            let mut shared = state.lock().unwrap();
-                            shared.state = Some(AppState::Reconnecting);
-                            break;
-                        }
-                        match planora_helper::receive_response_timeout(
-                            &mut stream,
                             planora_helper::REQUEST_TIMEOUT,
                         ) {
                             Ok(env) => {
-                                if env.request_id != cur_req_id {
-                                    let mut shared = state.lock().unwrap();
-                                    shared.state = Some(AppState::Reconnecting);
-                                    break;
-                                }
                                 handle_response(env.response, &state);
                             }
                             Err(_) => {
@@ -492,27 +467,12 @@ pub fn background_worker(
                 request_id: sample_req_id,
                 command: Command::Snapshot,
             };
-            if planora_helper::send_request_deadline(
+            match planora_helper::exchange_request_timeout(
                 &mut stream,
                 &sample_cmd,
-                Instant::now() + planora_helper::REQUEST_TIMEOUT,
-            )
-            .is_err()
-            {
-                let mut shared = state.lock().unwrap();
-                shared.state = Some(AppState::Reconnecting);
-                break;
-            }
-            match planora_helper::receive_response_timeout(
-                &mut stream,
                 planora_helper::REQUEST_TIMEOUT,
             ) {
                 Ok(env) => {
-                    if env.request_id != sample_req_id {
-                        let mut shared = state.lock().unwrap();
-                        shared.state = Some(AppState::Reconnecting);
-                        break;
-                    }
                     if let Response::Snapshot(frame) = env.response {
                         handle_response(Response::Snapshot(frame), &state);
                     } else {

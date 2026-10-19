@@ -2,16 +2,19 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 target="aarch64-apple-darwin"
-version="${PLANORA_VERSION:-0.1.2}"
+version="${PLANORA_VERSION:-$(cargo pkgid --manifest-path "$root/Cargo.toml" -p planora-ui | sed 's/.*[#@]//')}"
+target_dir="${CARGO_TARGET_DIR:-$root/target}"
 export RUSTUP_TOOLCHAIN=1.95.0
 cargo build --manifest-path "$root/Cargo.toml" --release --target "$target" --bins --locked
-stage="$root/target/package/macos"
+stage="$target_dir/package/macos"
 app="$stage/Applications/Planora.app"
 rm -rf "$stage"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Library/LaunchDaemons" "$root/dist"
-cp "$root/target/$target/release/planora" "$app/Contents/MacOS/planora"
-cp "$root/target/$target/release/planora-helper" "$app/Contents/MacOS/planora-helper"
+cp "$target_dir/$target/release/planora" "$app/Contents/MacOS/planora"
+cp "$target_dir/$target/release/planora-helper" "$app/Contents/MacOS/planora-helper"
 cp "$root/packaging/macos/Info.plist" "$app/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$app/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $version" "$app/Contents/Info.plist"
 cp "$root/packaging/macos/org.planora.helper.plist" "$app/Contents/Library/LaunchDaemons/org.planora.helper.plist"
 cp "$root/assets/brand/platforms/macos/Planora.icns" "$app/Contents/Resources/Planora.icns"
 identity="${PLANORA_SIGN_IDENTITY:--}"

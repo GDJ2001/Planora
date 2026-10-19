@@ -121,6 +121,12 @@ pub fn read_exact_deadline(
 
     let mut total_read = 0;
     while total_read < buf.len() {
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "IPC receive deadline exceeded",
+            ));
+        }
         let mut avail: u32 = 0;
         let ok = unsafe {
             PeekNamedPipe(
@@ -214,6 +220,12 @@ pub fn write_all_deadline(stream: &mut Stream, data: &[u8], deadline: Instant) -
 
     let mut total_written = 0;
     while total_written < data.len() {
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "IPC send deadline exceeded",
+            ));
+        }
         let chunk_len = (data.len() - total_written).min(65536) as u32;
         let mut written: u32 = 0;
         let ok = unsafe {
@@ -226,6 +238,12 @@ pub fn write_all_deadline(stream: &mut Stream, data: &[u8], deadline: Instant) -
             )
         };
         if ok != 0 {
+            if written == 0 {
+                // PIPE_NOWAIT may report a successful zero-byte write when the
+                // peer is not draining the pipe. Keep the absolute deadline.
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            }
             total_written += written as usize;
         } else {
             let err = io::Error::last_os_error();
@@ -266,13 +284,20 @@ fn set_nonblocking_unix(fd: std::os::unix::io::RawFd, nonblocking: bool) -> io::
 }
 
 #[cfg(unix)]
+fn stream_raw_fd(stream: &Stream) -> std::os::unix::io::RawFd {
+    use std::os::unix::io::AsRawFd;
+    match stream {
+        Stream::UdSocket(socket) => socket.inner().as_raw_fd(),
+    }
+}
+
+#[cfg(unix)]
 pub fn read_exact_deadline(
     stream: &mut Stream,
     buf: &mut [u8],
     deadline: Instant,
 ) -> io::Result<()> {
-    use std::os::unix::io::AsRawFd;
-    let fd = stream.as_raw_fd();
+    let fd = stream_raw_fd(stream);
     set_nonblocking_unix(fd, true)?;
 
     struct RestoreSocketMode(std::os::unix::io::RawFd);
@@ -342,8 +367,7 @@ pub fn read_exact_deadline(
 
 #[cfg(unix)]
 pub fn write_all_deadline(stream: &mut Stream, data: &[u8], deadline: Instant) -> io::Result<()> {
-    use std::os::unix::io::AsRawFd;
-    let fd = stream.as_raw_fd();
+    let fd = stream_raw_fd(stream);
     set_nonblocking_unix(fd, true)?;
 
     struct RestoreSocketMode(std::os::unix::io::RawFd);
@@ -531,6 +555,30 @@ pub fn receive_response_timeout(
     receive_response_deadline(stream, deadline)
 }
 
+/// Send one request and receive its matching response within one absolute deadline.
+/// Callers must discard the stream after any error because a partial frame may remain.
+pub fn exchange_request_timeout(
+    stream: &mut Stream,
+    request: &Request,
+    timeout: Duration,
+) -> io::Result<ResponseEnvelope> {
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(|| Instant::now() + Duration::from_secs(60));
+    send_request_deadline(stream, request, deadline)?;
+    let response = receive_response_deadline(stream, deadline)?;
+    if response.request_id != request.request_id {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "request ID mismatch: sent {}, got {}",
+                request.request_id, response.request_id
+            ),
+        ));
+    }
+    Ok(response)
+}
+
 /// Transact a command to the helper over a dedicated local IPC connection with strict deadlines.
 pub fn transact(command: &Command) -> io::Result<Response> {
     static REQUEST_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -538,27 +586,13 @@ pub fn transact(command: &Command) -> io::Result<Response> {
 
     // Perform handshake with HANDSHAKE_TIMEOUT deadline
     let handshake_id = REQUEST_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    send_request_deadline(
-        &mut stream,
-        &Request {
-            request_id: handshake_id,
-            command: Command::Hello {
-                version: PROTOCOL_VERSION,
-            },
+    let handshake = Request {
+        request_id: handshake_id,
+        command: Command::Hello {
+            version: PROTOCOL_VERSION,
         },
-        Instant::now() + HANDSHAKE_TIMEOUT,
-    )?;
-
-    let handshake_env = receive_response_timeout(&mut stream, HANDSHAKE_TIMEOUT)?;
-    if handshake_env.request_id != handshake_id {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "handshake request ID mismatch: sent {handshake_id}, got {}",
-                handshake_env.request_id
-            ),
-        ));
-    }
+    };
+    let handshake_env = exchange_request_timeout(&mut stream, &handshake, HANDSHAKE_TIMEOUT)?;
     match handshake_env.response {
         Response::Hello {
             version,
@@ -589,25 +623,11 @@ pub fn transact(command: &Command) -> io::Result<Response> {
 
     // Send payload command with REQUEST_TIMEOUT deadline
     let req_id = REQUEST_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    send_request_deadline(
-        &mut stream,
-        &Request {
-            request_id: req_id,
-            command: command.clone(),
-        },
-        Instant::now() + REQUEST_TIMEOUT,
-    )?;
-
-    let resp_env = receive_response_timeout(&mut stream, REQUEST_TIMEOUT)?;
-    if resp_env.request_id != req_id {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "request ID mismatch: sent {}, got {}",
-                req_id, resp_env.request_id
-            ),
-        ));
-    }
+    let request = Request {
+        request_id: req_id,
+        command: command.clone(),
+    };
+    let resp_env = exchange_request_timeout(&mut stream, &request, REQUEST_TIMEOUT)?;
 
     Ok(resp_env.response)
 }

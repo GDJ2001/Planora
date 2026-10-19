@@ -6,6 +6,72 @@ use crate::{
 };
 use eframe::egui::{self, CornerRadius, Pos2, Rect, Stroke, Vec2};
 use planora_core::Topology;
+use std::collections::BTreeMap;
+use std::hash::{Hash, Hasher};
+
+const CORE_W: f32 = 124.0;
+const CORE_H: f32 = 72.0;
+const CORE_GAP: f32 = 14.0;
+const PACKAGE_PAD: f32 = 16.0;
+const PACKAGE_HEADER_H: f32 = 32.0;
+const PACKAGE_GAP: f32 = 20.0;
+
+struct PackageGroup {
+    id: Option<u16>,
+    core_indices: Vec<usize>,
+    columns: usize,
+    width: f32,
+    height: f32,
+}
+
+fn package_groups(t: &Topology) -> Vec<PackageGroup> {
+    let mut by_package: BTreeMap<Option<u16>, Vec<usize>> = BTreeMap::new();
+    for (index, core) in t.cores.iter().enumerate() {
+        by_package.entry(core.package_id).or_default().push(index);
+    }
+    by_package
+        .into_iter()
+        .map(|(id, core_indices)| {
+            let count = core_indices.len();
+            let columns = if count <= 4 {
+                count
+            } else if count <= 8 {
+                4
+            } else {
+                8
+            };
+            let rows = count.div_ceil(columns);
+            PackageGroup {
+                id,
+                core_indices,
+                columns,
+                width: columns as f32 * CORE_W
+                    + columns.saturating_sub(1) as f32 * CORE_GAP
+                    + 2.0 * PACKAGE_PAD,
+                height: rows as f32 * CORE_H
+                    + rows.saturating_sub(1) as f32 * CORE_GAP
+                    + 2.0 * PACKAGE_PAD
+                    + PACKAGE_HEADER_H,
+            }
+        })
+        .collect()
+}
+
+fn canvas_height(groups: &[PackageGroup]) -> f32 {
+    let total_height = groups.iter().map(|group| group.height).sum::<f32>()
+        + groups.len().saturating_sub(1) as f32 * PACKAGE_GAP;
+    (total_height * 0.8 + 56.0).clamp(360.0, 1600.0)
+}
+
+fn fit_zoom(content_size: Vec2, canvas_size: Vec2) -> f32 {
+    if content_size.x <= 0.0 || content_size.y <= 0.0 {
+        return 1.0;
+    }
+    let available = canvas_size - Vec2::new(48.0, 56.0);
+    (available.x.max(100.0) / content_size.x)
+        .min(available.y.max(100.0) / content_size.y)
+        .clamp(0.1, 1.75)
+}
 
 pub struct HardwareViewState {
     pub view_mode: HardwareViewMode,
@@ -13,6 +79,7 @@ pub struct HardwareViewState {
     pub canvas_zoom: f32,
     pub selected_core_id: Option<u16>,
     pub initial_fit_done: bool,
+    pub fitted_layout_signature: Option<u64>,
 }
 
 impl Default for HardwareViewState {
@@ -23,6 +90,30 @@ impl Default for HardwareViewState {
             canvas_zoom: 1.0,
             selected_core_id: None,
             initial_fit_done: false,
+            fitted_layout_signature: None,
+        }
+    }
+}
+
+fn sync_topology_state(state: &mut HardwareViewState, topology: &Topology) {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    topology.generation.hash(&mut hasher);
+    topology.vendor.hash(&mut hasher);
+    topology.model.hash(&mut hasher);
+    for core in &topology.cores {
+        core.id.hash(&mut hasher);
+        core.package_id.hash(&mut hasher);
+        core.logical_cpus.hash(&mut hasher);
+    }
+    let signature = hasher.finish();
+    if state.fitted_layout_signature != Some(signature) {
+        state.initial_fit_done = false;
+        state.fitted_layout_signature = Some(signature);
+        if state
+            .selected_core_id
+            .is_some_and(|id| !topology.cores.iter().any(|core| core.id == id))
+        {
+            state.selected_core_id = None;
         }
     }
 }
@@ -51,6 +142,7 @@ pub fn render_hardware_view(
         ui.label("Hardware topology discovery is loading or unavailable on this platform...");
         return;
     };
+    sync_topology_state(state, t);
 
     // 2. Toolbar: View mode toggle & Canvas controls
     ui.horizontal(|ui| {
@@ -101,19 +193,18 @@ fn render_tree_view(ui: &mut egui::Ui, t: &Topology, p: Palette) {
         .show(ui, |ui| {
             ui.heading("Processor Packages & Cores");
             ui.add_space(6.0);
-            let mut package_ids: Vec<u16> = t.cores.iter().filter_map(|c| c.package_id).collect();
-            package_ids.sort_unstable();
-            package_ids.dedup();
-            if package_ids.is_empty() {
-                package_ids.push(0);
+            let groups = package_groups(t);
+            if groups.is_empty() {
+                ui.label("No processor cores were reported by the platform.");
             }
-            for pkg_id in package_ids {
-                ui.strong(format!("Package #{pkg_id}"));
-                for core in t
-                    .cores
-                    .iter()
-                    .filter(|c| c.package_id.unwrap_or(0) == pkg_id)
-                {
+            for group in groups {
+                if let Some(id) = group.id {
+                    ui.strong(format!("Package #{id}"));
+                } else {
+                    ui.strong("Cores with unknown package identity");
+                }
+                for index in group.core_indices {
+                    let core = &t.cores[index];
                     ui.label(format!(
                         "  └── Core #{}: Logical CPUs {:?}",
                         core.id, core.logical_cpus
@@ -148,7 +239,11 @@ fn render_tree_view(ui: &mut egui::Ui, t: &Topology, p: Palette) {
 }
 
 fn render_canvas_view(ui: &mut egui::Ui, t: &Topology, state: &mut HardwareViewState, p: Palette) {
-    let canvas_h = 360.0;
+    let groups = package_groups(t);
+    let unscaled_w = groups.iter().map(|group| group.width).fold(0.0, f32::max);
+    let unscaled_h = groups.iter().map(|group| group.height).sum::<f32>()
+        + groups.len().saturating_sub(1) as f32 * PACKAGE_GAP;
+    let canvas_h = canvas_height(&groups);
     let (response, painter) = ui.allocate_painter(
         Vec2::new(ui.available_width(), canvas_h),
         egui::Sense::click_and_drag(),
@@ -169,96 +264,15 @@ fn render_canvas_view(ui: &mut egui::Ui, t: &Topology, state: &mut HardwareViewS
         egui::StrokeKind::Inside,
     );
 
-    let num_cores = t.cores.len().max(1);
-    let cols = if num_cores <= 4 {
-        num_cores
-    } else if num_cores <= 8 {
-        4
-    } else {
-        8
-    };
-    let rows = num_cores.div_ceil(cols);
-
-    let core_w_base = 124.0;
-    let core_h_base = 72.0;
-    let gap_x_base = 14.0;
-    let gap_y_base = 14.0;
-    let pkg_pad_base = 16.0;
-    let header_h_base = 32.0;
-
-    let unscaled_grid_w = cols as f32 * core_w_base + (cols.saturating_sub(1)) as f32 * gap_x_base;
-    let unscaled_grid_h = rows as f32 * core_h_base + (rows.saturating_sub(1)) as f32 * gap_y_base;
-    let unscaled_pkg_w = unscaled_grid_w + 2.0 * pkg_pad_base;
-    let unscaled_pkg_h = unscaled_grid_h + 2.0 * pkg_pad_base + header_h_base;
-
     // Auto-fit graph on first load or Reset View
     if !state.initial_fit_done {
-        let avail_w = (canvas_rect.width() - 48.0).max(100.0);
-        let avail_h = (canvas_rect.height() - 56.0).max(100.0);
-        let fit_zoom = (avail_w / unscaled_pkg_w)
-            .min(avail_h / unscaled_pkg_h)
-            .clamp(0.65, 1.75);
-        state.canvas_zoom = fit_zoom;
+        state.canvas_zoom = fit_zoom(Vec2::new(unscaled_w, unscaled_h), canvas_rect.size());
         state.canvas_pan = Vec2::ZERO;
         state.initial_fit_done = true;
     }
 
     let zoom = state.canvas_zoom;
-    let core_w = core_w_base * zoom;
-    let core_h = core_h_base * zoom;
-    let gap_x = gap_x_base * zoom;
-    let gap_y = gap_y_base * zoom;
-    let pkg_pad = pkg_pad_base * zoom;
-    let header_h = header_h_base * zoom;
-
-    let grid_w = cols as f32 * core_w + (cols.saturating_sub(1)) as f32 * gap_x;
-    let grid_h = rows as f32 * core_h + (rows.saturating_sub(1)) as f32 * gap_y;
-    let pkg_w = grid_w + 2.0 * pkg_pad;
-    let pkg_h = grid_h + 2.0 * pkg_pad + header_h;
-
-    let base_origin_x = canvas_rect.min.x + ((canvas_rect.width() - pkg_w) / 2.0).max(16.0);
-    let base_origin_y = canvas_rect.min.y + ((canvas_rect.height() - pkg_h) / 2.0).max(20.0);
-    let pkg_origin = Pos2::new(base_origin_x, base_origin_y) + state.canvas_pan;
-
-    // Package boundary
-    let pkg_rect = Rect::from_min_size(pkg_origin, Vec2::new(pkg_w, pkg_h));
-    painter.rect_filled(
-        pkg_rect,
-        CornerRadius::same(6),
-        p.surface.linear_multiply(0.5),
-    );
-    painter.rect_stroke(
-        pkg_rect,
-        CornerRadius::same(6),
-        Stroke::new(1.0, p.border_control),
-        egui::StrokeKind::Inside,
-    );
-
-    // Dedicated package header band
-    let header_rect = Rect::from_min_size(pkg_rect.min, Vec2::new(pkg_w, header_h));
-    let pkg_id_str = t
-        .cores
-        .first()
-        .and_then(|c| c.package_id)
-        .map(|id| format!("Package #{id} · "))
-        .unwrap_or_default();
-    let pkg_name = format!("{}{} {}", pkg_id_str, t.vendor, t.model)
-        .trim()
-        .to_string();
-    let pkg_label = if pkg_name.is_empty() {
-        "Processor Package".to_string()
-    } else {
-        pkg_name
-    };
-    painter.text(
-        header_rect.left_center() + Vec2::new(12.0 * zoom, 0.0),
-        egui::Align2::LEFT_CENTER,
-        pkg_label,
-        egui::FontId::proportional((12.5 * zoom).clamp(10.0, 18.0)),
-        p.text,
-    );
-
-    // Canvas Legend in top right
+    let painter = painter.with_clip_rect(canvas_rect);
     let legend_x = canvas_rect.max.x - 12.0;
     let legend_y = canvas_rect.min.y + 10.0;
     painter.text(
@@ -269,67 +283,126 @@ fn render_canvas_view(ui: &mut egui::Ui, t: &Topology, state: &mut HardwareViewS
         p.secondary,
     );
 
-    // Core grid origin separated from the header band
-    let grid_origin = Pos2::new(
-        pkg_rect.min.x + pkg_pad,
-        pkg_rect.min.y + header_h + pkg_pad,
-    );
-
     let click_pos = if response.clicked() {
         response.interact_pointer_pos()
     } else {
         None
     };
 
-    for (i, core) in t.cores.iter().enumerate() {
-        let col_idx = (i % cols) as f32;
-        let row_idx = (i / cols) as f32;
-        let core_pos =
-            grid_origin + Vec2::new(col_idx * (core_w + gap_x), row_idx * (core_h + gap_y));
-        let core_rect = Rect::from_min_size(core_pos, Vec2::new(core_w, core_h));
+    if groups.is_empty() {
+        painter.text(
+            canvas_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "No processor cores were reported by the platform",
+            egui::FontId::proportional(14.0),
+            p.secondary,
+        );
+    }
 
-        if let Some(pos) = click_pos
-            && core_rect.contains(pos)
-        {
-            state.selected_core_id = Some(core.id);
-        }
-
-        let is_selected = state.selected_core_id == Some(core.id);
-        let fill = if is_selected { p.selected } else { p.surface };
-        let stroke = if is_selected {
-            Stroke::new(2.0, p.focus)
-        } else {
-            Stroke::new(1.0, p.cpu)
-        };
-
-        painter.rect_filled(core_rect, CornerRadius::same(4), fill);
+    let mut group_y = canvas_rect.min.y + (canvas_rect.height() - unscaled_h * zoom) / 2.0;
+    for group in &groups {
+        let pkg_origin = Pos2::new(
+            canvas_rect.min.x + (canvas_rect.width() - group.width * zoom) / 2.0,
+            group_y,
+        ) + state.canvas_pan;
+        let pkg_rect = Rect::from_min_size(
+            pkg_origin,
+            Vec2::new(group.width * zoom, group.height * zoom),
+        );
+        painter.rect_filled(
+            pkg_rect,
+            CornerRadius::same(6),
+            p.surface.linear_multiply(0.5),
+        );
         painter.rect_stroke(
-            core_rect,
-            CornerRadius::same(4),
-            stroke,
+            pkg_rect,
+            CornerRadius::same(6),
+            Stroke::new(1.0, p.border_control),
             egui::StrokeKind::Inside,
         );
 
-        painter.text(
-            core_rect.center_top() + Vec2::new(0.0, 6.0 * zoom),
-            egui::Align2::CENTER_TOP,
-            format!("Core #{}", core.id),
-            egui::FontId::proportional(13.0 * zoom),
+        let group_name = match group.id {
+            Some(id) => format!("Package #{id}"),
+            None => "Cores with unknown package identity".to_string(),
+        };
+        let model = format!("{} {}", t.vendor, t.model).trim().to_string();
+        let full_label = if model.is_empty() {
+            group_name
+        } else {
+            format!("{group_name} · {model}")
+        };
+        let header_rect = Rect::from_min_size(
+            pkg_rect.min,
+            Vec2::new(pkg_rect.width(), PACKAGE_HEADER_H * zoom),
+        );
+        painter.with_clip_rect(header_rect.shrink(2.0)).text(
+            header_rect.left_center() + Vec2::new(12.0 * zoom, 0.0),
+            egui::Align2::LEFT_CENTER,
+            &full_label,
+            egui::FontId::proportional((12.5 * zoom).clamp(9.0, 18.0)),
             p.text,
         );
+        if response
+            .hover_pos()
+            .is_some_and(|pos| pkg_rect.contains(pos))
+        {
+            let _ = response.clone().on_hover_text(full_label);
+        }
 
-        let cpu_str = if core.logical_cpus.len() == 1 {
-            format!("CPU {}", core.logical_cpus[0])
-        } else {
-            format!("CPUs {:?}", core.logical_cpus)
-        };
-        painter.text(
-            core_rect.center_bottom() - Vec2::new(0.0, 8.0 * zoom),
-            egui::Align2::CENTER_BOTTOM,
-            cpu_str,
-            egui::FontId::monospace(11.5 * zoom),
-            p.secondary,
-        );
+        let grid_origin =
+            pkg_rect.min + Vec2::new(PACKAGE_PAD * zoom, (PACKAGE_HEADER_H + PACKAGE_PAD) * zoom);
+        for (slot, index) in group.core_indices.iter().enumerate() {
+            let core = &t.cores[*index];
+            let core_pos = grid_origin
+                + Vec2::new(
+                    (slot % group.columns) as f32 * (CORE_W + CORE_GAP) * zoom,
+                    (slot / group.columns) as f32 * (CORE_H + CORE_GAP) * zoom,
+                );
+            let core_rect = Rect::from_min_size(core_pos, Vec2::new(CORE_W * zoom, CORE_H * zoom));
+
+            if let Some(pos) = click_pos
+                && core_rect.contains(pos)
+            {
+                state.selected_core_id = Some(core.id);
+            }
+
+            let is_selected = state.selected_core_id == Some(core.id);
+            let fill = if is_selected { p.selected } else { p.surface };
+            let stroke = if is_selected {
+                Stroke::new(2.0, p.focus)
+            } else {
+                Stroke::new(1.0, p.cpu)
+            };
+            painter.rect_filled(core_rect, CornerRadius::same(4), fill);
+            painter.rect_stroke(
+                core_rect,
+                CornerRadius::same(4),
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+
+            let core_painter = painter.with_clip_rect(core_rect.shrink(2.0));
+            core_painter.text(
+                core_rect.center_top() + Vec2::new(0.0, 6.0 * zoom),
+                egui::Align2::CENTER_TOP,
+                format!("Core #{}", core.id),
+                egui::FontId::proportional(13.0 * zoom),
+                p.text,
+            );
+            let cpu_str = if core.logical_cpus.len() == 1 {
+                format!("CPU {}", core.logical_cpus[0])
+            } else {
+                format!("CPUs {:?}", core.logical_cpus)
+            };
+            core_painter.text(
+                core_rect.center_bottom() - Vec2::new(0.0, 8.0 * zoom),
+                egui::Align2::CENTER_BOTTOM,
+                cpu_str,
+                egui::FontId::monospace(11.5 * zoom),
+                p.secondary,
+            );
+        }
+        group_y += (group.height + PACKAGE_GAP) * zoom;
     }
 
     // Detail Inspector below canvas
@@ -375,27 +448,83 @@ fn render_canvas_view(ui: &mut egui::Ui, t: &Topology, state: &mut HardwareViewS
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use planora_core::CoreDescriptor;
+
+    fn topology(package_ids: &[Option<u16>]) -> Topology {
+        Topology {
+            generation: 1,
+            vendor: "Test Vendor".into(),
+            model: "A long processor model name for the header clipping test".into(),
+            architecture: "x86_64".into(),
+            cores: package_ids
+                .iter()
+                .enumerate()
+                .map(|(index, package_id)| CoreDescriptor {
+                    id: index as u16,
+                    package_id: *package_id,
+                    numa_node: None,
+                    logical_cpus: vec![index as u16],
+                    class: None,
+                })
+                .collect(),
+            caches: vec![],
+            gpus: vec![],
+            notes: vec![],
+        }
+    }
+
     #[test]
     fn test_package_header_does_not_overlap_core_nodes() {
         for zoom in [0.5, 0.8, 1.0, 1.5, 2.0] {
-            let pkg_pad = 12.0 * zoom;
-            let header_h = 32.0 * zoom;
-            let origin_y = 100.0;
-
-            let title_pos_y = origin_y + 8.0 * zoom;
-            let title_bottom_y = title_pos_y + 15.0 * zoom; // label font size ~14-15px
-            let grid_origin_y = origin_y + header_h + pkg_pad; // top of Core #0/#1
-
-            assert!(
-                grid_origin_y > title_bottom_y,
-                "Core grid top ({grid_origin_y}) must be strictly below package title bottom ({title_bottom_y}) at zoom {zoom}"
-            );
-            assert!(
-                grid_origin_y - title_bottom_y >= 8.0 * zoom,
-                "Clearance between package title and core grid must be >= {}px, got {}",
-                8.0 * zoom,
-                grid_origin_y - title_bottom_y
-            );
+            let header_bottom = PACKAGE_HEADER_H * zoom;
+            let core_top = (PACKAGE_HEADER_H + PACKAGE_PAD) * zoom;
+            assert!(core_top - header_bottom >= 8.0 * zoom);
         }
+    }
+
+    #[test]
+    fn multi_package_layout_preserves_discovered_identity_and_fits() {
+        let mut ids = vec![Some(0); 32];
+        ids.extend(vec![Some(2); 32]);
+        ids.push(None);
+        let t = topology(&ids);
+        let groups = package_groups(&t);
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0].id, None);
+        assert_eq!(groups[1].id, Some(0));
+        assert_eq!(groups[2].id, Some(2));
+        assert_eq!(
+            groups.iter().map(|g| g.core_indices.len()).sum::<usize>(),
+            65
+        );
+        assert_eq!(groups[0].core_indices, vec![64]);
+
+        let width = groups.iter().map(|g| g.width).fold(0.0, f32::max);
+        let height =
+            groups.iter().map(|g| g.height).sum::<f32>() + (groups.len() - 1) as f32 * PACKAGE_GAP;
+        for canvas_width in [760.0, 900.0, 1180.0] {
+            let canvas_size = Vec2::new(canvas_width, canvas_height(&groups));
+            let zoom = fit_zoom(Vec2::new(width, height), canvas_size);
+            assert!(width * zoom <= canvas_size.x - 48.0 + 0.01);
+            assert!(height * zoom <= canvas_size.y - 56.0 + 0.01);
+        }
+    }
+
+    #[test]
+    fn topology_change_refits_and_discards_missing_core_selection() {
+        let mut state = HardwareViewState {
+            selected_core_id: Some(7),
+            initial_fit_done: true,
+            ..Default::default()
+        };
+        sync_topology_state(&mut state, &topology(&[Some(0); 8]));
+        state.initial_fit_done = true;
+        // A restarted helper can reuse the same generation number.
+        let next = topology(&[Some(0), Some(0)]);
+        sync_topology_state(&mut state, &next);
+        assert!(!state.initial_fit_done);
+        assert!(state.fitted_layout_signature.is_some());
+        assert_eq!(state.selected_core_id, None);
     }
 }
