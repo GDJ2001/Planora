@@ -10,7 +10,8 @@ use planora_core::{
 };
 use planora_helper::{
     HANDSHAKE_TIMEOUT, REQUEST_TIMEOUT, exchange_request_timeout, receive_request,
-    receive_response_timeout, send_request, send_response, write_all_deadline,
+    receive_response_timeout, send_request, send_response, send_response_deadline,
+    write_all_deadline,
 };
 use std::io::{self, ErrorKind};
 use std::sync::Arc;
@@ -299,6 +300,47 @@ fn test_ipc_blocked_write_respects_deadline() {
     assert_eq!(error.kind(), ErrorKind::TimedOut);
     assert!(started.elapsed() < Duration::from_millis(450));
     drop(client);
+    server_handle.join().unwrap();
+}
+
+#[test]
+fn test_ipc_large_response_progresses_with_deadline() {
+    let name = test_socket_name("large-response").unwrap();
+    let listener = ListenerOptions::new()
+        .name(name.clone())
+        .create_sync()
+        .unwrap();
+    let server_handle = thread::spawn(move || {
+        let mut stream = listener.accept().unwrap();
+        let request = receive_request(&mut stream).unwrap();
+        send_response_deadline(
+            &mut stream,
+            &ResponseEnvelope {
+                request_id: request.request_id,
+                response: Response::Error {
+                    code: ErrorCode::Internal,
+                    message: "x".repeat(512 * 1024),
+                },
+            },
+            Instant::now() + Duration::from_secs(3),
+        )
+        .unwrap();
+    });
+
+    let mut client = Stream::connect(name).unwrap();
+    let envelope = exchange_request_timeout(
+        &mut client,
+        &Request {
+            request_id: 77,
+            command: Command::Capabilities,
+        },
+        Duration::from_secs(3),
+    )
+    .unwrap();
+    match envelope.response {
+        Response::Error { message, .. } => assert_eq!(message.len(), 512 * 1024),
+        other => panic!("Expected large error response, got {other:?}"),
+    }
     server_handle.join().unwrap();
 }
 

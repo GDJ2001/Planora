@@ -37,10 +37,33 @@ fn test_live_service_telemetry_sustained() {
 
     println!("Handshake successful with installed PlanoraHelper service!");
 
-    // 2. Poll snapshots for > 5 minutes (310 seconds)
+    let capability_started = Instant::now();
+    let capabilities = exchange_request_timeout(
+        &mut stream,
+        &Request {
+            request_id: 2,
+            command: Command::Capabilities,
+        },
+        REQUEST_TIMEOUT,
+    )
+    .expect("Should complete capabilities exchange within deadline");
+    assert!(matches!(capabilities.response, Response::Capabilities(_)));
+    println!(
+        "Capabilities received in {:?}",
+        capability_started.elapsed()
+    );
+
+    // A short override is useful for diagnosing an installed build; the default
+    // remains a five-minute release acceptance run.
+    let duration_secs = std::env::var("PLANORA_SERVICE_TEST_DURATION_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(305);
+
+    // 2. Poll snapshots for more than five minutes by default.
     let start = Instant::now();
     let mut count = 0u64;
-    while start.elapsed() < Duration::from_secs(305) {
+    while start.elapsed() < Duration::from_secs(duration_secs) {
         count += 1;
         let req_id = count + 10;
         let env = exchange_request_timeout(

@@ -111,68 +111,23 @@ pub fn read_exact_deadline(
     buf: &mut [u8],
     deadline: Instant,
 ) -> io::Result<()> {
-    use std::os::windows::io::{AsHandle, AsRawHandle};
-    use windows_sys::Win32::Storage::FileSystem::ReadFile;
-    use windows_sys::Win32::System::Pipes::PeekNamedPipe;
-
-    let raw_handle = match stream {
-        Stream::NamedPipe(pipe) => pipe.as_handle().as_raw_handle(),
-    };
-
     let mut total_read = 0;
     while total_read < buf.len() {
-        if Instant::now() >= deadline {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "IPC receive deadline exceeded",
-            ));
-        }
-        let mut avail: u32 = 0;
-        let ok = unsafe {
-            PeekNamedPipe(
-                raw_handle as _,
-                std::ptr::null_mut(),
-                0,
-                std::ptr::null_mut(),
-                &mut avail,
-                std::ptr::null_mut(),
-            )
-        };
-        if ok == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if avail == 0 {
-            if Instant::now() >= deadline {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "IPC receive deadline exceeded",
-                ));
-            }
-            std::thread::sleep(Duration::from_millis(5));
-            continue;
-        }
-
-        let to_read = (buf.len() - total_read).min(avail as usize) as u32;
-        let mut bytes_read: u32 = 0;
-        let ok = unsafe {
-            ReadFile(
-                raw_handle as _,
-                buf[total_read..].as_mut_ptr() as _,
-                to_read,
-                &mut bytes_read,
-                std::ptr::null_mut(),
-            )
-        };
-        if ok == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if bytes_read == 0 {
+        let end = (total_read + 64 * 1024).min(buf.len());
+        let count = overlapped_pipe_io(
+            stream,
+            &mut buf[total_read..end],
+            false,
+            deadline,
+            "IPC receive deadline exceeded",
+        )?;
+        if count == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "IPC peer disconnected",
             ));
         }
-        total_read += bytes_read as usize;
+        total_read += count;
     }
     Ok(())
 }
@@ -180,88 +135,116 @@ pub fn read_exact_deadline(
 /// Write all bytes with absolute deadline enforcement on Stream without accumulating blocked threads.
 #[cfg(windows)]
 pub fn write_all_deadline(stream: &mut Stream, data: &[u8], deadline: Instant) -> io::Result<()> {
-    use std::os::windows::io::{AsHandle, AsRawHandle};
-    use windows_sys::Win32::Foundation::{ERROR_NO_DATA, ERROR_PIPE_BUSY};
-    use windows_sys::Win32::Storage::FileSystem::WriteFile;
-    use windows_sys::Win32::System::Pipes::{PIPE_NOWAIT, PIPE_WAIT, SetNamedPipeHandleState};
-
-    let raw_handle = match stream {
-        Stream::NamedPipe(pipe) => pipe.as_handle().as_raw_handle(),
-    };
-
-    let nowait_mode = PIPE_NOWAIT;
-    let ok = unsafe {
-        SetNamedPipeHandleState(
-            raw_handle as _,
-            &nowait_mode,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        )
-    };
-    if ok == 0 {
-        return Err(io::Error::last_os_error());
-    }
-
-    struct RestorePipeMode(isize);
-    impl Drop for RestorePipeMode {
-        fn drop(&mut self) {
-            let wait_mode = PIPE_WAIT;
-            unsafe {
-                SetNamedPipeHandleState(
-                    self.0 as _,
-                    &wait_mode,
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                );
-            }
-        }
-    }
-    let _restore = RestorePipeMode(raw_handle as isize);
-
     let mut total_written = 0;
     while total_written < data.len() {
-        if Instant::now() >= deadline {
+        let end = (total_written + 4096).min(data.len());
+        let mut chunk = data[total_written..end].to_vec();
+        let count = overlapped_pipe_io(
+            stream,
+            &mut chunk,
+            true,
+            deadline,
+            "IPC send deadline exceeded",
+        )?;
+        if count == 0 {
             return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "IPC send deadline exceeded",
+                io::ErrorKind::WriteZero,
+                "IPC write returned zero",
             ));
         }
-        let chunk_len = (data.len() - total_written).min(65536) as u32;
-        let mut written: u32 = 0;
-        let ok = unsafe {
-            WriteFile(
-                raw_handle as _,
-                data[total_written..].as_ptr() as _,
-                chunk_len,
-                &mut written,
-                std::ptr::null_mut(),
-            )
-        };
-        if ok != 0 {
-            if written == 0 {
-                // PIPE_NOWAIT may report a successful zero-byte write when the
-                // peer is not draining the pipe. Keep the absolute deadline.
-                std::thread::sleep(Duration::from_millis(5));
-                continue;
-            }
-            total_written += written as usize;
-        } else {
-            let err = io::Error::last_os_error();
-            let raw_code = err.raw_os_error().unwrap_or(0) as u32;
-            if raw_code == ERROR_NO_DATA || raw_code == ERROR_PIPE_BUSY {
-                if Instant::now() >= deadline {
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "IPC send deadline exceeded",
-                    ));
-                }
-                std::thread::sleep(Duration::from_millis(5));
-            } else {
-                return Err(err);
-            }
-        }
+        total_written += count;
     }
     Ok(())
+}
+
+/// The interprocess Windows stream owns an overlapped pipe handle. Every operation must
+/// supply an OVERLAPPED record and keep its buffer alive until completion or cancellation.
+#[cfg(windows)]
+fn overlapped_pipe_io(
+    stream: &Stream,
+    buffer: &mut [u8],
+    write: bool,
+    deadline: Instant,
+    timeout_message: &'static str,
+) -> io::Result<usize> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_IO_PENDING, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile};
+    use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
+    use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+
+    let now = Instant::now();
+    if now >= deadline {
+        return Err(io::Error::new(io::ErrorKind::TimedOut, timeout_message));
+    }
+
+    struct Event(HANDLE);
+    impl Drop for Event {
+        fn drop(&mut self) {
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+    let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+    if event.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let event = Event(event);
+    let handle = match stream {
+        Stream::NamedPipe(pipe) => pipe.inner().as_raw_handle() as HANDLE,
+    };
+    let mut overlapped = OVERLAPPED {
+        hEvent: event.0,
+        ..OVERLAPPED::default()
+    };
+    let started = unsafe {
+        if write {
+            WriteFile(
+                handle,
+                buffer.as_ptr(),
+                buffer.len() as u32,
+                std::ptr::null_mut(),
+                &mut overlapped,
+            )
+        } else {
+            ReadFile(
+                handle,
+                buffer.as_mut_ptr(),
+                buffer.len() as u32,
+                std::ptr::null_mut(),
+                &mut overlapped,
+            )
+        }
+    };
+    if started == 0 {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
+            return Err(error);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let timeout_ms = remaining.as_millis().min(u32::MAX as u128) as u32;
+        let wait = unsafe { WaitForSingleObject(event.0, timeout_ms) };
+        if wait != WAIT_OBJECT_0 {
+            let wait_error = io::Error::last_os_error();
+            // A canceled operation may still complete normally. Wait for its final state
+            // before freeing either the OVERLAPPED record or the application buffer.
+            unsafe {
+                CancelIoEx(handle, &overlapped);
+                let mut ignored = 0;
+                GetOverlappedResult(handle, &overlapped, &mut ignored, 1);
+            }
+            if wait == WAIT_TIMEOUT {
+                return Err(io::Error::new(io::ErrorKind::TimedOut, timeout_message));
+            }
+            return Err(wait_error);
+        }
+    }
+    let mut transferred = 0;
+    if unsafe { GetOverlappedResult(handle, &overlapped, &mut transferred, 0) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(transferred as usize)
 }
 
 #[cfg(unix)]
