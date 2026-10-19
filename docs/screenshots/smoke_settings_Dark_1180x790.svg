@@ -1,0 +1,137 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="790" viewBox="0 0 1180 790">
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .mono { font-family: "JetBrains Mono", Consolas, monospace; }
+  </style>
+  <rect width="100%" height="100%" fill="rgb(11, 18, 32)"/>
+  <rect x="0.0" y="0.0" width="207.0" height="790.0" rx="0" fill="rgb(11, 18, 32)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="20.0" y="16.0" width="168.0" height="55.9" rx="0" fill="rgb(255, 255, 255)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <line x1="8.0" y1="96.9" x2="199.0" y2="96.9" stroke="rgb(35, 50, 75)" stroke-width="1.0"/>
+  <rect x="22.7" y="125.6" width="4.8" height="4.8" rx="2" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <rect x="30.5" y="125.6" width="4.8" height="4.8" rx="2" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <rect x="22.7" y="133.4" width="4.8" height="4.8" rx="2" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <rect x="30.5" y="133.4" width="4.8" height="4.8" rx="2" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <text x="46.0" y="137.1" fill="rgb(167, 180, 200)" font-size="16.0">Overview</text>
+  <line x1="29.7" y1="170.0" x2="35.3" y2="170.0" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="29.7" y1="173.9" x2="35.3" y2="173.9" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="29.7" y1="177.9" x2="35.3" y2="177.9" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <text x="46.0" y="179.1" fill="rgb(167, 180, 200)" font-size="16.0">Processes</text>
+  <rect x="24.0" y="210.9" width="10.1" height="10.1" rx="2" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="27.5" y1="207.9" x2="27.5" y2="210.9" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="27.5" y1="221.0" x2="27.5" y2="223.9" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="21.0" y1="214.4" x2="24.0" y2="214.4" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="34.0" y1="214.4" x2="37.0" y2="214.4" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="30.5" y1="207.9" x2="30.5" y2="210.9" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="30.5" y1="221.0" x2="30.5" y2="223.9" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="21.0" y1="217.4" x2="24.0" y2="217.4" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="34.0" y1="217.4" x2="37.0" y2="217.4" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <text x="46.0" y="221.1" fill="rgb(167, 180, 200)" font-size="16.0">Hardware</text>
+  <line x1="23.4" y1="263.5" x2="22.7" y2="260.4" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="22.7" y1="260.4" x2="23.6" y2="257.3" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="23.6" y1="257.3" x2="25.9" y2="255.1" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="25.9" y1="255.1" x2="29.0" y2="254.3" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="29.0" y1="254.3" x2="32.1" y2="255.1" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="32.1" y1="255.1" x2="34.4" y2="257.3" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="34.4" y1="257.3" x2="35.3" y2="260.4" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="35.3" y1="260.4" x2="34.6" y2="263.5" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="29.0" y1="260.6" x2="32.2" y2="256.9" stroke="rgb(167, 180, 200)" stroke-width="2.0"/>
+  <text x="46.0" y="263.1" fill="rgb(167, 180, 200)" font-size="16.0">Benchmarks</text>
+  <line x1="23.2" y1="293.6" x2="34.8" y2="293.6" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="34.8" y1="293.6" x2="34.8" y2="300.8" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="34.8" y1="300.8" x2="29.0" y2="306.2" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="29.0" y1="306.2" x2="23.2" y2="300.8" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="23.2" y1="300.8" x2="23.2" y2="293.6" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="26.0" y1="299.8" x2="28.5" y2="302.8" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="28.5" y1="302.8" x2="33.0" y2="297.8" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <text x="46.0" y="305.1" fill="rgb(167, 180, 200)" font-size="16.0">Capabilities</text>
+  <rect x="8.0" y="323.9" width="191.0" height="36.0" rx="6" fill="rgb(35, 50, 75)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="8.0" y="323.9" width="191.0" height="36.0" rx="6" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(37, 99, 235)" stroke-width="1"/>
+  <line x1="33.2" y1="341.9" x2="35.3" y2="341.9" stroke="rgb(37, 99, 235)" stroke-width="2.5"/>
+  <line x1="31.1" y1="345.6" x2="32.2" y2="347.4" stroke="rgb(37, 99, 235)" stroke-width="2.5"/>
+  <line x1="26.9" y1="345.6" x2="25.9" y2="347.4" stroke="rgb(37, 99, 235)" stroke-width="2.5"/>
+  <line x1="24.8" y1="341.9" x2="22.7" y2="341.9" stroke="rgb(37, 99, 235)" stroke-width="2.5"/>
+  <line x1="26.9" y1="338.3" x2="25.9" y2="336.5" stroke="rgb(37, 99, 235)" stroke-width="2.5"/>
+  <line x1="31.1" y1="338.3" x2="32.2" y2="336.5" stroke="rgb(37, 99, 235)" stroke-width="2.5"/>
+  <text x="46.0" y="347.1" fill="rgb(230, 237, 247)" font-size="16.0">Settings</text>
+  <text x="8.0" y="773.1" fill="rgb(230, 237, 247)" font-size="16.0">▲ Stale (4.3s ago)</text>
+  <line x1="8.0" y1="751.0" x2="199.0" y2="751.0" stroke="rgb(35, 50, 75)" stroke-width="1.0"/>
+  <line x1="207.5" y1="0.0" x2="207.5" y2="790.0" stroke="rgb(35, 50, 75)" stroke-width="1.0"/>
+  <rect x="208.0" y="0.0" width="972.0" height="790.0" rx="0" fill="rgb(11, 18, 32)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="1052.0" y="8.0" width="120.0" height="24.0" rx="12" fill="rgb(25, 38, 59)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="1052.0" y="8.0" width="120.0" height="24.0" rx="12" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(35, 50, 75)" stroke-width="1"/>
+  <text x="1074.0" y="24.5" fill="rgb(251, 191, 36)" font-size="14.0">Stale (4.3s ago)</text>
+  <rect x="980.9" y="10.0" width="63.1" height="20.0" rx="8" fill="rgb(50, 50, 50)" stroke="rgb(35, 50, 75)" stroke-width="1"/>
+  <text x="988.9" y="25.1" fill="rgb(215, 215, 215)" font-size="16.0">Pause ⏸</text>
+  <text x="972.9" y="24.2" fill="rgb(230, 237, 247)" font-size="13.0" class="mono">100 ms</text>
+  <text x="216.0" y="27.2" fill="rgb(230, 237, 247)" font-size="21.0">Settings &amp; Preferences</text>
+  <text x="216.0" y="50.5" fill="rgb(230, 237, 247)" font-size="14.0">Interface themes, measurement cadence, diagnostic logs, and platform build information</text>
+  <line x1="216.0" y1="72.0" x2="1172.0" y2="72.0" stroke="rgb(35, 50, 75)" stroke-width="1.0"/>
+  <rect x="216.0" y="93.0" width="956.0" height="670.0" rx="0" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="216.0" y="93.0" width="571.8" height="168.0" rx="8" fill="rgb(17, 28, 46)" stroke="rgb(35, 50, 75)" stroke-width="1"/>
+  <text x="233.0" y="123.1" fill="rgb(230, 237, 247)" font-size="16.0">Appearance &amp; Motion</text>
+  <text x="233.0" y="155.1" fill="rgb(230, 237, 247)" font-size="16.0">Theme Mode:</text>
+  <rect x="334.8" y="140.0" width="140.0" height="32.0" rx="4" fill="rgb(25, 38, 59)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="334.8" y="140.0" width="140.0" height="32.0" rx="4" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(35, 50, 75)" stroke-width="1"/>
+  <text x="371.1" y="160.5" fill="rgb(230, 237, 247)" font-size="14.0">System Auto</text>
+  <rect x="482.8" y="140.0" width="140.0" height="32.0" rx="4" fill="rgb(11, 18, 32)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="482.8" y="140.0" width="140.0" height="32.0" rx="4" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(37, 99, 235)" stroke-width="2"/>
+  <text x="499.3" y="160.5" fill="rgb(244, 247, 251)" font-size="14.0">Dark (Planora Deep)</text>
+  <rect x="630.8" y="140.0" width="140.0" height="32.0" rx="4" fill="rgb(244, 247, 251)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="630.8" y="140.0" width="140.0" height="32.0" rx="4" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(35, 50, 75)" stroke-width="1"/>
+  <text x="645.5" y="160.5" fill="rgb(20, 33, 61)" font-size="14.0">Light (Planora Clean)</text>
+  <text x="233.0" y="203.1" fill="rgb(230, 237, 247)" font-size="16.0">Display Density:</text>
+  <rect x="347.1" y="188.0" width="71.9" height="20.0" rx="8" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="1"/>
+  <text x="355.1" y="203.1" fill="rgb(215, 215, 215)" font-size="16.0">Compact</text>
+  <rect x="427.0" y="188.0" width="62.1" height="20.0" rx="8" fill="rgb(35, 50, 75)" stroke="rgb(35, 50, 75)" stroke-width="1"/>
+  <text x="435.0" y="203.1" fill="rgb(37, 99, 235)" font-size="16.0">Normal</text>
+  <rect x="497.1" y="188.0" width="70.4" height="20.0" rx="8" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="1"/>
+  <text x="505.1" y="203.1" fill="rgb(215, 215, 215)" font-size="16.0">Spacious</text>
+  <rect x="233.0" y="224.0" width="418.1" height="20.0" rx="0" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <text x="251.0" y="239.1" fill="rgb(215, 215, 215)" font-size="16.0">Reduced Motion (Disable continuous animations and transitions)</text>
+  <rect x="233.0" y="227.0" width="14.0" height="14.0" rx="4" fill="rgb(17, 28, 46)" stroke="rgb(35, 50, 75)" stroke-width="1"/>
+  <rect x="216.0" y="281.0" width="547.5" height="120.0" rx="8" fill="rgb(17, 28, 46)" stroke="rgb(35, 50, 75)" stroke-width="1"/>
+  <text x="233.0" y="311.1" fill="rgb(230, 237, 247)" font-size="16.0">Telemetry &amp; Historical Buffers</text>
+  <text x="233.0" y="343.1" fill="rgb(230, 237, 247)" font-size="16.0">Sampling Poll Interval:</text>
+  <rect x="387.2" y="328.0" width="53.1" height="20.0" rx="8" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="1"/>
+  <text x="395.2" y="343.1" fill="rgb(215, 215, 215)" font-size="16.0">50 ms</text>
+  <rect x="448.3" y="328.0" width="61.0" height="20.0" rx="8" fill="rgb(35, 50, 75)" stroke="rgb(35, 50, 75)" stroke-width="1"/>
+  <text x="456.3" y="343.1" fill="rgb(37, 99, 235)" font-size="16.0">100 ms</text>
+  <rect x="517.2" y="328.0" width="61.0" height="20.0" rx="8" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="1"/>
+  <text x="525.2" y="343.1" fill="rgb(215, 215, 215)" font-size="16.0">200 ms</text>
+  <rect x="586.2" y="328.0" width="61.0" height="20.0" rx="8" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="1"/>
+  <text x="594.2" y="343.1" fill="rgb(215, 215, 215)" font-size="16.0">500 ms</text>
+  <rect x="655.2" y="328.0" width="68.8" height="20.0" rx="8" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="1"/>
+  <text x="663.2" y="343.1" fill="rgb(215, 215, 215)" font-size="16.0">1000 ms</text>
+  <text x="233.0" y="379.1" fill="rgb(230, 237, 247)" font-size="16.0">Default Chart Time Window:</text>
+  <rect x="425.2" y="364.0" width="85.3" height="20.0" rx="8" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="1"/>
+  <text x="433.2" y="379.1" fill="rgb(215, 215, 215)" font-size="16.0">30 seconds</text>
+  <rect x="518.6" y="364.0" width="142.4" height="20.0" rx="8" fill="rgb(35, 50, 75)" stroke="rgb(35, 50, 75)" stroke-width="1"/>
+  <text x="526.6" y="379.1" fill="rgb(37, 99, 235)" font-size="16.0">60 seconds (default)</text>
+  <rect x="669.0" y="364.0" width="77.5" height="20.0" rx="8" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="1"/>
+  <text x="677.0" y="379.1" fill="rgb(215, 215, 215)" font-size="16.0">5 minutes</text>
+  <rect x="216.0" y="421.0" width="956.0" height="82.0" rx="8" fill="rgb(17, 28, 46)" stroke="rgb(35, 50, 75)" stroke-width="1"/>
+  <text x="233.0" y="453.1" fill="rgb(230, 237, 247)" font-size="16.0">Helper Operation Logs (256 Event Ring Buffer)</text>
+  <rect x="994.8" y="438.0" width="160.2" height="20.0" rx="8" fill="rgb(50, 50, 50)" stroke="rgb(35, 50, 75)" stroke-width="1"/>
+  <text x="1002.8" y="453.1" fill="rgb(215, 215, 215)" font-size="16.0">Copy Logs to Clipboard</text>
+  <rect x="834.8" y="438.0" width="151.9" height="20.0" rx="8" fill="rgb(50, 50, 50)" stroke="rgb(35, 50, 75)" stroke-width="1"/>
+  <text x="842.8" y="453.1" fill="rgb(215, 215, 215)" font-size="16.0">Fetch Diagnostic Logs</text>
+  <rect x="233.0" y="470.0" width="454.2" height="16.0" rx="0" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <text x="233.0" y="483.1" fill="rgb(230, 237, 247)" font-size="16.0">No diagnostic events fetched yet. Click &apos;Fetch Diagnostic Logs&apos; to inspect.</text>
+  <rect x="216.0" y="523.0" width="400.5" height="214.0" rx="8" fill="rgb(17, 28, 46)" stroke="rgb(35, 50, 75)" stroke-width="1"/>
+  <text x="233.0" y="553.1" fill="rgb(230, 237, 247)" font-size="16.0">Build Identity &amp; Platform Verification</text>
+  <text x="233.0" y="585.1" fill="rgb(230, 237, 247)" font-size="16.0">Application Version:</text>
+  <text x="403.8" y="584.8" fill="rgb(230, 237, 247)" font-size="15.0" class="mono">0.1.1</text>
+  <rect x="231.0" y="593.0" width="370.5" height="26.0" rx="2" fill="rgba(5, 5, 5, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <text x="233.0" y="611.1" fill="rgb(230, 237, 247)" font-size="16.0">Telemetry IPC Protocol:</text>
+  <text x="403.8" y="610.8" fill="rgb(230, 237, 247)" font-size="15.0" class="mono">Protocol v2</text>
+  <text x="233.0" y="637.1" fill="rgb(230, 237, 247)" font-size="16.0">Git Source Commit:</text>
+  <text x="403.8" y="636.8" fill="rgb(230, 237, 247)" font-size="15.0" class="mono">5494dee</text>
+  <rect x="231.0" y="645.0" width="370.5" height="26.0" rx="2" fill="rgba(5, 5, 5, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <text x="233.0" y="663.1" fill="rgb(230, 237, 247)" font-size="16.0">Target Platform:</text>
+  <text x="403.8" y="662.8" fill="rgb(230, 237, 247)" font-size="15.0" class="mono">x86_64-pc-windows-msvc</text>
+  <text x="233.0" y="689.1" fill="rgb(230, 237, 247)" font-size="16.0">Compiler Profile:</text>
+  <text x="403.8" y="688.8" fill="rgb(230, 237, 247)" font-size="15.0" class="mono">debug</text>
+  <rect x="231.0" y="697.0" width="370.5" height="26.0" rx="2" fill="rgba(5, 5, 5, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <text x="233.0" y="715.1" fill="rgb(230, 237, 247)" font-size="16.0">Rust Toolchain:</text>
+  <text x="403.8" y="714.8" fill="rgb(230, 237, 247)" font-size="15.0" class="mono">Rust 1.95.0 (Edition 2024)</text>
+</svg>

@@ -17,7 +17,17 @@ impl LogoCache {
     }
 
     fn load_image(bytes: &[u8]) -> Option<ColorImage> {
-        let img = image::load_from_memory(bytes).ok()?.to_rgba8();
+        let mut img = image::load_from_memory(bytes).ok()?.to_rgba8();
+        if img.width() > 1024 {
+            let target_w = 1024;
+            let target_h = (img.height() as f32 * (1024.0 / img.width() as f32)) as u32;
+            img = image::imageops::resize(
+                &img,
+                target_w,
+                target_h,
+                image::imageops::FilterType::Lanczos3,
+            );
+        }
         let size = [img.width() as usize, img.height() as usize];
         let pixels = img.into_raw();
         Some(ColorImage::from_rgba_unmultiplied(size, &pixels))

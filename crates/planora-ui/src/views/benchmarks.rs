@@ -66,15 +66,32 @@ pub fn render_benchmarks_view(
     let is_running = matches!(bm_state, BenchmarkState::Running { .. });
     let is_live = *app_state == AppState::Live;
 
+    let disabled_reason = if !is_live {
+        Some("Micro-architectural probes require an active, live helper connection.")
+    } else if is_running {
+        Some("A micro-architectural probe is currently running.")
+    } else {
+        None
+    };
+
+    if !is_live {
+        ui.colored_label(
+            p.warning,
+            "⚠️ Probes disabled: An active, live helper connection is required to run micro-architectural probes.",
+        );
+        ui.add_space(4.0);
+    }
+
     // 3. Action Controls
     ui.horizontal(|ui| {
-        if ui
-            .add_enabled(
-                is_live && !is_running,
-                egui::Button::new("Run Line Cache Probe"),
-            )
-            .clicked()
-        {
+        let mut line_btn = ui.add_enabled(
+            is_live && !is_running,
+            egui::Button::new("Run Line Cache Probe"),
+        );
+        if let Some(reason) = disabled_reason {
+            line_btn = line_btn.on_disabled_hover_text(reason);
+        }
+        if line_btn.clicked() {
             let job_id = planora_telemetry::unix_ms();
             let _ = tx.send(Command::RunCacheProbe {
                 job_id,
@@ -82,13 +99,14 @@ pub fn render_benchmarks_view(
             });
         }
 
-        if ui
-            .add_enabled(
-                is_live && !is_running,
-                egui::Button::new("Run Page Cache Probe"),
-            )
-            .clicked()
-        {
+        let mut page_btn = ui.add_enabled(
+            is_live && !is_running,
+            egui::Button::new("Run Page Cache Probe"),
+        );
+        if let Some(reason) = disabled_reason {
+            page_btn = page_btn.on_disabled_hover_text(reason);
+        }
+        if page_btn.clicked() {
             let job_id = planora_telemetry::unix_ms();
             let _ = tx.send(Command::RunCacheProbe {
                 job_id,
@@ -108,9 +126,12 @@ pub fn render_benchmarks_view(
     ui.horizontal(|ui| {
         ui.label("Core Latency CPUs (comma-separated):");
         ui.add(egui::TextEdit::singleline(&mut state.matrix_input).desired_width(120.0));
-        if ui
-            .add_enabled(is_live && !is_running, egui::Button::new("Run Core Matrix"))
-            .clicked()
+        let mut matrix_btn =
+            ui.add_enabled(is_live && !is_running, egui::Button::new("Run Core Matrix"));
+        if let Some(reason) = disabled_reason {
+            matrix_btn = matrix_btn.on_disabled_hover_text(reason);
+        }
+        if matrix_btn.clicked()
             && let Ok(logical_cpus) = state
                 .matrix_input
                 .split(',')

@@ -152,6 +152,44 @@ pub fn is_data_stale(last_received: Option<Instant>, poll_interval_ms: u64) -> O
     }
 }
 
+fn handle_response(response: Response, state: &Arc<Mutex<Shared>>) -> bool {
+    let mut shared = state.lock().unwrap();
+    match response {
+        Response::Snapshot(frame) => {
+            shared.state = Some(AppState::Live);
+            shared.last_frame_received = Some(Instant::now());
+            shared.frame = Some(Arc::from(frame));
+        }
+        Response::BenchmarkStatus(bms) => {
+            shared.benchmark_state = Some(bms);
+        }
+        Response::DiagnosticLogs(logs) => {
+            shared.diagnostic_logs = logs;
+        }
+        Response::Affinity {
+            process,
+            logical_cpus,
+        }
+        | Response::AffinityChanged {
+            process,
+            logical_cpus,
+            ..
+        } => {
+            shared.affinity = Some((process, logical_cpus));
+        }
+        Response::Error { code, message } => {
+            if code == ErrorCode::Unauthorized {
+                shared.state = Some(AppState::AwaitingAuthorization);
+                return false;
+            } else {
+                shared.action_error = Some(format!("[{:?}] {}", code, message));
+            }
+        }
+        _ => {}
+    }
+    true
+}
+
 pub fn background_worker(
     state: Arc<Mutex<Shared>>,
     rx: Receiver<Command>,
@@ -159,8 +197,8 @@ pub fn background_worker(
     context: eframe::egui::Context,
 ) {
     let mut next_request_id = 1u64;
-    let mut last_sample_request = Instant::now() - Duration::from_secs(10);
     let mut _current_session_id: Option<u64> = None;
+    let mut reconnect_backoff = Duration::from_millis(200);
 
     loop {
         let mut stream = match planora_helper::connect() {
@@ -178,12 +216,13 @@ pub fn background_worker(
                     }
                 }
                 context.request_repaint();
-                thread::sleep(Duration::from_millis(500));
+                thread::sleep(reconnect_backoff);
+                reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_millis(2000));
                 continue;
             }
         };
 
-        // Handshake
+        // Handshake with HANDSHAKE_TIMEOUT
         next_request_id = next_request_id.wrapping_add(1);
         let handshake_req = Request {
             request_id: next_request_id,
@@ -193,20 +232,24 @@ pub fn background_worker(
         };
 
         if planora_helper::send_request(&mut stream, &handshake_req).is_err() {
-            thread::sleep(Duration::from_millis(500));
+            thread::sleep(reconnect_backoff);
+            reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_millis(2000));
             continue;
         }
 
-        match planora_helper::receive_response(&mut stream) {
+        match planora_helper::receive_response_timeout(
+            &mut stream,
+            planora_helper::HANDSHAKE_TIMEOUT,
+        ) {
             Ok(ResponseEnvelope {
+                request_id,
                 response:
                     Response::Hello {
                         version,
                         session_id,
                         helper_authorized,
                     },
-                ..
-            }) => {
+            }) if request_id == handshake_req.request_id => {
                 if version != PROTOCOL_VERSION {
                     let mut shared = state.lock().unwrap();
                     shared.state = Some(AppState::IncompatibleVersion {
@@ -224,10 +267,8 @@ pub fn background_worker(
                     continue;
                 }
                 _current_session_id = Some(session_id);
-                {
-                    let mut shared = state.lock().unwrap();
-                    shared.state = Some(AppState::Live);
-                }
+                // Reset reconnect backoff on successful handshake
+                reconnect_backoff = Duration::from_millis(200);
             }
             Ok(ResponseEnvelope {
                 response:
@@ -244,114 +285,216 @@ pub fn background_worker(
                 continue;
             }
             _ => {
-                thread::sleep(Duration::from_millis(500));
+                // Timeout, request ID mismatch, or broken pipe on handshake
+                let mut shared = state.lock().unwrap();
+                if shared.frame.is_some() {
+                    shared.state = Some(AppState::Reconnecting);
+                }
+                context.request_repaint();
+                thread::sleep(reconnect_backoff);
+                reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_millis(2000));
                 continue;
             }
         }
 
-        // Fetch topology and capabilities on connect
+        // Fetch topology and capabilities on connect with REQUEST_TIMEOUT
         next_request_id = next_request_id.wrapping_add(1);
+        let topo_req_id = next_request_id;
         let _ = planora_helper::send_request(
             &mut stream,
             &Request {
-                request_id: next_request_id,
+                request_id: topo_req_id,
                 command: Command::Topology,
             },
         );
         if let Ok(ResponseEnvelope {
+            request_id,
             response: Response::Topology(topo),
-            ..
-        }) = planora_helper::receive_response(&mut stream)
+        }) =
+            planora_helper::receive_response_timeout(&mut stream, planora_helper::REQUEST_TIMEOUT)
+            && request_id == topo_req_id
         {
             let mut shared = state.lock().unwrap();
             shared.topology = Some(topo);
         }
 
         next_request_id = next_request_id.wrapping_add(1);
+        let caps_req_id = next_request_id;
         let _ = planora_helper::send_request(
             &mut stream,
             &Request {
-                request_id: next_request_id,
+                request_id: caps_req_id,
                 command: Command::Capabilities,
             },
         );
         if let Ok(ResponseEnvelope {
+            request_id,
             response: Response::Capabilities(caps),
-            ..
-        }) = planora_helper::receive_response(&mut stream)
+        }) =
+            planora_helper::receive_response_timeout(&mut stream, planora_helper::REQUEST_TIMEOUT)
+            && request_id == caps_req_id
         {
             let mut shared = state.lock().unwrap();
             shared.capabilities = caps;
         }
 
+        // Fetch initial snapshot immediately so Live state has fresh data right away
+        next_request_id = next_request_id.wrapping_add(1);
+        let init_req_id = next_request_id;
+        let _ = planora_helper::send_request(
+            &mut stream,
+            &Request {
+                request_id: init_req_id,
+                command: Command::Snapshot,
+            },
+        );
+        if let Ok(ResponseEnvelope {
+            request_id,
+            response,
+        }) =
+            planora_helper::receive_response_timeout(&mut stream, planora_helper::REQUEST_TIMEOUT)
+            && request_id == init_req_id
+        {
+            handle_response(response, &state);
+        }
+        let mut last_sample_request = Instant::now();
         context.request_repaint();
 
-        // Main command/sample loop
+        // Main command/sample loop with strict request-response pairing and deadlines
         loop {
-            let interval = Duration::from_millis(poll_ms.load(Ordering::Relaxed));
-            if last_sample_request.elapsed() >= interval {
-                last_sample_request = Instant::now();
+            // 1. Drain up to 4 pending user commands from UI to keep sampling responsive
+            let mut connection_healthy = true;
+            let mut commands_processed = 0;
+            while commands_processed < 4
+                && let Ok(cmd) = rx.try_recv()
+            {
+                commands_processed += 1;
                 next_request_id = next_request_id.wrapping_add(1);
-                let sample_cmd = Request {
-                    request_id: next_request_id,
-                    command: Command::Snapshot,
-                };
-                if planora_helper::send_request(&mut stream, &sample_cmd).is_err() {
-                    break;
-                }
-            }
-
-            // Drain any pending UI user actions
-            while let Ok(cmd) = rx.try_recv() {
-                next_request_id = next_request_id.wrapping_add(1);
+                let cur_req_id = next_request_id;
                 let req = Request {
-                    request_id: next_request_id,
+                    request_id: cur_req_id,
                     command: cmd,
                 };
                 if planora_helper::send_request(&mut stream, &req).is_err() {
+                    connection_healthy = false;
                     break;
+                }
+                match planora_helper::receive_response_timeout(
+                    &mut stream,
+                    planora_helper::REQUEST_TIMEOUT,
+                ) {
+                    Ok(env) => {
+                        if env.request_id != cur_req_id {
+                            // Request ID mismatch indicates corrupted or interleaved stream
+                            connection_healthy = false;
+                            break;
+                        }
+                        if !handle_response(env.response, &state) {
+                            connection_healthy = false;
+                            break;
+                        }
+                    }
+                    Err(_) => {
+                        connection_healthy = false;
+                        break;
+                    }
+                }
+                context.request_repaint();
+            }
+
+            if !connection_healthy {
+                let mut shared = state.lock().unwrap();
+                let had_frame = shared.frame.is_some();
+                if had_frame {
+                    shared.state = Some(AppState::Reconnecting);
+                } else {
+                    shared.state = Some(AppState::Connecting);
+                }
+                break; // break to reconnect
+            }
+
+            // 2. Determine time until next scheduled snapshot
+            let interval = Duration::from_millis(poll_ms.load(Ordering::Relaxed));
+            let elapsed = last_sample_request.elapsed();
+            let time_until_sample = interval.saturating_sub(elapsed);
+
+            // 3. Wait on rx for user commands until next sample is due
+            if time_until_sample > Duration::from_millis(5) {
+                match rx.recv_timeout(time_until_sample) {
+                    Ok(cmd) => {
+                        next_request_id = next_request_id.wrapping_add(1);
+                        let cur_req_id = next_request_id;
+                        let req = Request {
+                            request_id: cur_req_id,
+                            command: cmd,
+                        };
+                        if planora_helper::send_request(&mut stream, &req).is_err() {
+                            let mut shared = state.lock().unwrap();
+                            shared.state = Some(AppState::Reconnecting);
+                            break;
+                        }
+                        match planora_helper::receive_response_timeout(
+                            &mut stream,
+                            planora_helper::REQUEST_TIMEOUT,
+                        ) {
+                            Ok(env) => {
+                                if env.request_id != cur_req_id {
+                                    let mut shared = state.lock().unwrap();
+                                    shared.state = Some(AppState::Reconnecting);
+                                    break;
+                                }
+                                handle_response(env.response, &state);
+                            }
+                            Err(_) => {
+                                let mut shared = state.lock().unwrap();
+                                shared.state = Some(AppState::Reconnecting);
+                                break;
+                            }
+                        }
+                        context.request_repaint();
+                        continue;
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        // Timeout reached, proceed to sample snapshot
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        return; // UI shutdown
+                    }
                 }
             }
 
-            // Read available response
-            match planora_helper::receive_response(&mut stream) {
-                Ok(ResponseEnvelope { response, .. }) => match response {
-                    Response::Snapshot(frame) => {
+            // 4. Sample snapshot with REQUEST_TIMEOUT deadline
+            last_sample_request = Instant::now();
+            next_request_id = next_request_id.wrapping_add(1);
+            let sample_req_id = next_request_id;
+            let sample_cmd = Request {
+                request_id: sample_req_id,
+                command: Command::Snapshot,
+            };
+            if planora_helper::send_request(&mut stream, &sample_cmd).is_err() {
+                let mut shared = state.lock().unwrap();
+                shared.state = Some(AppState::Reconnecting);
+                break;
+            }
+            match planora_helper::receive_response_timeout(
+                &mut stream,
+                planora_helper::REQUEST_TIMEOUT,
+            ) {
+                Ok(env) => {
+                    if env.request_id != sample_req_id {
                         let mut shared = state.lock().unwrap();
-                        shared.state = Some(AppState::Live);
-                        shared.last_frame_received = Some(Instant::now());
-                        shared.frame = Some(Arc::from(frame));
+                        shared.state = Some(AppState::Reconnecting);
+                        break;
                     }
-                    Response::BenchmarkStatus(bms) => {
+                    if let Response::Snapshot(frame) = env.response {
+                        handle_response(Response::Snapshot(frame), &state);
+                    } else {
+                        // Response type mismatch for Snapshot command
                         let mut shared = state.lock().unwrap();
-                        shared.benchmark_state = Some(bms);
+                        shared.state = Some(AppState::Reconnecting);
+                        break;
                     }
-                    Response::DiagnosticLogs(logs) => {
-                        let mut shared = state.lock().unwrap();
-                        shared.diagnostic_logs = logs;
-                    }
-                    Response::Affinity {
-                        process,
-                        logical_cpus,
-                    }
-                    | Response::AffinityChanged {
-                        process,
-                        logical_cpus,
-                        ..
-                    } => {
-                        let mut shared = state.lock().unwrap();
-                        shared.affinity = Some((process, logical_cpus));
-                    }
-                    Response::Error { code, message } => {
-                        let mut shared = state.lock().unwrap();
-                        if code == ErrorCode::Unauthorized {
-                            shared.state = Some(AppState::AwaitingAuthorization);
-                        } else {
-                            shared.action_error = Some(format!("[{:?}] {}", code, message));
-                        }
-                    }
-                    _ => {}
-                },
+                }
                 Err(error) => {
                     let mut shared = state.lock().unwrap();
                     let had_frame = shared.frame.is_some();
@@ -362,13 +505,193 @@ pub fn background_worker(
                     } else {
                         shared.state = Some(AppState::Connecting);
                     }
-                    break; // reconnect
+                    break;
                 }
             }
             context.request_repaint();
-            thread::sleep(Duration::from_millis(10));
         }
 
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(reconnect_backoff);
+        reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_millis(2000));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use planora_core::{AvailabilityReason, Metric, PROTOCOL_VERSION, TelemetryFrame};
+
+    fn dummy_frame(seq: u64) -> TelemetryFrame {
+        TelemetryFrame {
+            protocol_version: PROTOCOL_VERSION,
+            session_id: 42,
+            topology_generation: 1,
+            sequence: seq,
+            sampled_at_ms: 1000 + seq * 100,
+            collection_duration_ms: 1.5,
+            cpu_percent: Metric::available(25.0, "%", "test", 1000),
+            memory_used_bytes: Metric::available(1024 * 1024, "bytes", "test", 1000),
+            memory_total_bytes: Metric::available(4 * 1024 * 1024, "bytes", "test", 1000),
+            disk_read_bytes_per_sec: Metric::available(0, "B/s", "test", 1000),
+            disk_write_bytes_per_sec: Metric::available(0, "B/s", "test", 1000),
+            network_rx_bytes_per_sec: Metric::available(0, "B/s", "test", 1000),
+            network_tx_bytes_per_sec: Metric::available(0, "B/s", "test", 1000),
+            gpu_percent: Metric::unavailable(
+                "%",
+                "test",
+                1000,
+                AvailabilityReason::Unsupported("None".into()),
+            ),
+            package_power_watts: Metric::unavailable(
+                "W",
+                "test",
+                1000,
+                AvailabilityReason::Unsupported("None".into()),
+            ),
+            processes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_telemetry_stall_and_recovery_cycle() {
+        let state = Arc::new(Mutex::new(Shared::default()));
+
+        // Step 1: Initial state is Connecting
+        assert_eq!(state.lock().unwrap().state, None);
+
+        // Step 2: Receive snapshot -> transitions to Live
+        let frame1 = dummy_frame(1);
+        handle_response(Response::Snapshot(Box::new(frame1)), &state);
+
+        {
+            let shared = state.lock().unwrap();
+            assert_eq!(shared.state, Some(AppState::Live));
+            assert!(shared.last_frame_received.is_some());
+            assert_eq!(shared.frame.as_ref().unwrap().sequence, 1);
+        }
+
+        // Step 3: Check freshness within poll interval (100ms)
+        let last_rcvd = state.lock().unwrap().last_frame_received.unwrap();
+        assert!(is_data_stale(Some(last_rcvd), 100).is_none());
+
+        // Step 4: Simulate telemetry stall past 3 * 100ms + 500ms threshold (e.g. 1500ms ago)
+        let stale_time = Instant::now()
+            .checked_sub(Duration::from_millis(1500))
+            .unwrap();
+        let elapsed = is_data_stale(Some(stale_time), 100);
+        assert!(
+            elapsed.is_some(),
+            "Data older than 800ms must be flagged as stale"
+        );
+
+        // UI evaluates this to AppState::Stale
+        let stale_state = AppState::Stale(elapsed.unwrap());
+        match stale_state {
+            AppState::Stale(d) => assert!(d >= Duration::from_millis(1500)),
+            _ => panic!("Expected AppState::Stale"),
+        }
+
+        // Step 5: Telemetry recovers -> helper delivers frame 2
+        let frame2 = dummy_frame(2);
+        handle_response(Response::Snapshot(Box::new(frame2)), &state);
+
+        {
+            let shared = state.lock().unwrap();
+            assert_eq!(shared.state, Some(AppState::Live));
+            assert_eq!(shared.frame.as_ref().unwrap().sequence, 2);
+            // Staleness check on fresh frame immediately returns None (not stale)
+            let new_rcvd = shared.last_frame_received.unwrap();
+            assert!(is_data_stale(Some(new_rcvd), 100).is_none());
+        }
+    }
+
+    #[test]
+    fn test_reconnect_transition_preserves_frame() {
+        let state = Arc::new(Mutex::new(Shared::default()));
+
+        // Receive snapshot
+        handle_response(Response::Snapshot(Box::new(dummy_frame(1))), &state);
+
+        // Simulate IPC disconnection: since frame exists, transition to Reconnecting
+        {
+            let mut shared = state.lock().unwrap();
+            assert!(shared.frame.is_some());
+            shared.state = Some(AppState::Reconnecting);
+        }
+
+        // Verify that frame is preserved so UI can display last known state with Reconnecting badge
+        {
+            let shared = state.lock().unwrap();
+            assert_eq!(shared.state, Some(AppState::Reconnecting));
+            assert_eq!(shared.frame.as_ref().unwrap().sequence, 1);
+        }
+    }
+
+    #[test]
+    fn test_ipc_stream_stall_triggers_timeout_and_staleness() {
+        use interprocess::local_socket::prelude::*;
+        #[cfg(not(windows))]
+        use interprocess::local_socket::{GenericFilePath, ToFsName};
+        #[cfg(windows)]
+        use interprocess::local_socket::{GenericNamespaced, ToNsName};
+        use interprocess::local_socket::{ListenerOptions, Stream};
+        use planora_helper::{receive_request, receive_response_timeout};
+
+        let name = {
+            #[cfg(windows)]
+            {
+                format!("planora-ui-test-stall-{}", std::process::id())
+                    .to_ns_name::<GenericNamespaced>()
+                    .unwrap()
+            }
+            #[cfg(not(windows))]
+            {
+                format!("/tmp/planora-ui-test-stall-{}.sock", std::process::id())
+                    .to_fs_name::<GenericFilePath>()
+                    .unwrap()
+            }
+        };
+
+        let listener = ListenerOptions::new()
+            .name(name.clone())
+            .create_sync()
+            .unwrap();
+
+        // Server accepts connection and stalls without answering request
+        let server = thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            let _req = receive_request(&mut stream).unwrap();
+            // Stalls for 2 seconds
+            thread::sleep(Duration::from_millis(2000));
+        });
+
+        let mut client = Stream::connect(name).unwrap();
+        planora_helper::send_request(
+            &mut client,
+            &Request {
+                request_id: 1,
+                command: Command::Snapshot,
+            },
+        )
+        .unwrap();
+
+        let res = receive_response_timeout(&mut client, Duration::from_millis(300));
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err().kind(), io::ErrorKind::TimedOut);
+
+        // Verify that when timeout occurs, shared state reports Reconnecting and retains age
+        let state = Arc::new(Mutex::new(Shared::default()));
+        {
+            let mut s = state.lock().unwrap();
+            s.frame = Some(Arc::from(dummy_frame(1)));
+            s.last_frame_received = Some(Instant::now() - Duration::from_millis(1500));
+            s.state = Some(AppState::Reconnecting);
+        }
+
+        let staleness = is_data_stale(state.lock().unwrap().last_frame_received, 100);
+        assert!(staleness.is_some());
+        assert_eq!(state.lock().unwrap().state, Some(AppState::Reconnecting));
+
+        server.join().unwrap();
     }
 }

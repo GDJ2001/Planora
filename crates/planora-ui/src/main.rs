@@ -3,6 +3,7 @@
 pub mod components;
 pub mod formatting;
 pub mod history;
+pub mod smoke_test;
 pub mod state;
 pub mod theme;
 pub mod views;
@@ -104,10 +105,8 @@ impl App {
         let is_dark = theme_is_dark(self.settings.theme, Some(ctx.theme()));
         apply_egui_theme(ctx, is_dark, self.settings.density);
     }
-}
 
-impl eframe::App for App {
-    fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    pub fn render_ui(&mut self, root: &mut egui::Ui) {
         let ctx = root.ctx().clone();
         self.apply_theme(&ctx);
         let p = self.palette(&ctx);
@@ -480,15 +479,21 @@ impl eframe::App for App {
                     render_now,
                     p,
                 ),
-                Page::Hardware => render_hardware_view(
-                    ui,
-                    topo_opt.as_ref(),
-                    &mut self.hardware_state,
-                    &app_state,
-                    &mut self.display_pause,
-                    current_poll,
-                    p,
-                ),
+                Page::Hardware => {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            render_hardware_view(
+                                ui,
+                                topo_opt.as_ref(),
+                                &mut self.hardware_state,
+                                &app_state,
+                                &mut self.display_pause,
+                                current_poll,
+                                p,
+                            );
+                        });
+                }
                 Page::Benchmarks => {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
@@ -526,13 +531,24 @@ impl eframe::App for App {
                 ),
             }
         });
+    }
+}
 
-        // Background telemetry and direct UI events request repaints.
-        // A permanent animation timer would keep repainting an idle window.
+impl eframe::App for App {
+    fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.render_ui(root);
     }
 }
 
 fn main() -> eframe::Result<()> {
+    if std::env::args().any(|a| a == "--headless-smoke-test") {
+        let out_dir = std::env::args()
+            .nth(2)
+            .unwrap_or_else(|| "docs/screenshots".into());
+        let _ = smoke_test::run_smoke_suite(std::path::Path::new(&out_dir), true);
+        return Ok(());
+    }
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1180.0, 760.0])
@@ -711,5 +727,10 @@ mod tests {
             deserialized.default_history_range,
             history::HistoryRange::Min5
         );
+    }
+
+    #[test]
+    fn test_headless_smoke_suite_executes() {
+        smoke_test::run_smoke_fast_check().expect("Headless smoke fast check should pass");
     }
 }

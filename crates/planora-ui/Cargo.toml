@@ -1,6 +1,6 @@
 [package]
 name = "planora-ui"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 build = "build.rs"
 
@@ -20,3 +20,7 @@ cc = "1"
 [[bin]]
 name = "planora"
 path = "src/main.rs"
+
+[dev-dependencies]
+interprocess.workspace = true
+

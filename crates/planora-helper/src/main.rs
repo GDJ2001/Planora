@@ -682,12 +682,14 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
         let state = state.clone();
         thread::spawn(move || {
             let _guard = ConnectionGuard { caller_id: cid };
+            state.diagnostics.log(
+                0,
+                ErrorCode::Internal,
+                format!("connection established from caller {cid}"),
+            );
             let mut authenticated = false;
 
-            for _ in 0..128 {
-                if STOP.load(Ordering::Relaxed) {
-                    break;
-                }
+            while !STOP.load(Ordering::Relaxed) {
                 let Ok(request) = receive_request(&mut stream) else {
                     break;
                 };
@@ -728,6 +730,12 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
                     }
                 }
             }
+
+            state.diagnostics.log(
+                0,
+                ErrorCode::Internal,
+                format!("connection closed for caller {cid}"),
+            );
         });
     }
 
@@ -766,6 +774,9 @@ mod windows_service {
             unsafe {
                 status(SERVICE_STOP_PENDING, 0);
             }
+            std::thread::spawn(|| {
+                let _ = planora_helper::connect();
+            });
         }
     }
 

@@ -4,7 +4,7 @@ use crate::{
     state::{AppState, DisplayPause, HardwareViewMode},
     theme::{CORNER_RADIUS, Palette},
 };
-use eframe::egui::{self, CornerRadius, Rect, Stroke, Vec2};
+use eframe::egui::{self, CornerRadius, Pos2, Rect, Stroke, Vec2};
 use planora_core::Topology;
 
 pub struct HardwareViewState {
@@ -91,61 +91,58 @@ pub fn render_hardware_view(
 }
 
 fn render_tree_view(ui: &mut egui::Ui, t: &Topology, p: Palette) {
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        egui::Frame::group(ui.style())
-            .fill(p.surface)
-            .stroke(Stroke::new(1.0, p.border))
-            .corner_radius(CornerRadius::same(CORNER_RADIUS as u8))
-            .inner_margin(egui::Margin::same(14))
-            .show(ui, |ui| {
-                ui.heading("Processor Packages & Cores");
-                ui.add_space(6.0);
-                let mut package_ids: Vec<u16> =
-                    t.cores.iter().filter_map(|c| c.package_id).collect();
-                package_ids.sort_unstable();
-                package_ids.dedup();
-                if package_ids.is_empty() {
-                    package_ids.push(0);
-                }
-                for pkg_id in package_ids {
-                    ui.strong(format!("Package #{pkg_id}"));
-                    for core in t
-                        .cores
-                        .iter()
-                        .filter(|c| c.package_id.unwrap_or(0) == pkg_id)
-                    {
-                        ui.label(format!(
-                            "  └── Core #{}: Logical CPUs {:?}",
-                            core.id, core.logical_cpus
-                        ));
-                    }
-                }
-
-                ui.add_space(14.0);
-                ui.heading("Cache Hierarchy");
-                ui.add_space(6.0);
-                for cache in &t.caches {
-                    let size_s = format_bytes(cache.size_bytes);
-                    let line_s = cache
-                        .line_bytes
-                        .map(|l| format!("{l} B"))
-                        .unwrap_or_else(|| "unknown".into());
+    egui::Frame::group(ui.style())
+        .fill(p.surface)
+        .stroke(Stroke::new(1.0, p.border))
+        .corner_radius(CornerRadius::same(CORNER_RADIUS as u8))
+        .inner_margin(egui::Margin::same(14))
+        .show(ui, |ui| {
+            ui.heading("Processor Packages & Cores");
+            ui.add_space(6.0);
+            let mut package_ids: Vec<u16> = t.cores.iter().filter_map(|c| c.package_id).collect();
+            package_ids.sort_unstable();
+            package_ids.dedup();
+            if package_ids.is_empty() {
+                package_ids.push(0);
+            }
+            for pkg_id in package_ids {
+                ui.strong(format!("Package #{pkg_id}"));
+                for core in t
+                    .cores
+                    .iter()
+                    .filter(|c| c.package_id.unwrap_or(0) == pkg_id)
+                {
                     ui.label(format!(
-                        "Cache #{} (L{} {}): {} · Line size: {} · Shared by CPUs: {:?}",
-                        cache.id, cache.level, cache.cache_type, size_s, line_s, cache.shared_by
+                        "  └── Core #{}: Logical CPUs {:?}",
+                        core.id, core.logical_cpus
                     ));
                 }
+            }
 
-                if !t.gpus.is_empty() {
-                    ui.add_space(14.0);
-                    ui.heading("GPU Compute Nodes");
-                    ui.add_space(6.0);
-                    for gpu in &t.gpus {
-                        ui.label(format!("GPU #{}: {} ({})", gpu.id, gpu.name, gpu.source));
-                    }
+            ui.add_space(14.0);
+            ui.heading("Cache Hierarchy");
+            ui.add_space(6.0);
+            for cache in &t.caches {
+                let size_s = format_bytes(cache.size_bytes);
+                let line_s = cache
+                    .line_bytes
+                    .map(|l| format!("{l} B"))
+                    .unwrap_or_else(|| "unknown".into());
+                ui.label(format!(
+                    "Cache #{} (L{} {}): {} · Line size: {} · Shared by CPUs: {:?}",
+                    cache.id, cache.level, cache.cache_type, size_s, line_s, cache.shared_by
+                ));
+            }
+
+            if !t.gpus.is_empty() {
+                ui.add_space(14.0);
+                ui.heading("GPU Compute Nodes");
+                ui.add_space(6.0);
+                for gpu in &t.gpus {
+                    ui.label(format!("GPU #{}: {} ({})", gpu.id, gpu.name, gpu.source));
                 }
-            });
-    });
+            }
+        });
 }
 
 fn render_canvas_view(ui: &mut egui::Ui, t: &Topology, state: &mut HardwareViewState, p: Palette) {
@@ -170,14 +167,78 @@ fn render_canvas_view(ui: &mut egui::Ui, t: &Topology, state: &mut HardwareViewS
         egui::StrokeKind::Inside,
     );
 
-    let origin = canvas_rect.min + state.canvas_pan + Vec2::new(24.0, 24.0);
     let zoom = state.canvas_zoom;
+    let num_cores = t.cores.len().max(1);
+    let cols = if num_cores <= 4 {
+        num_cores
+    } else if num_cores <= 8 {
+        4
+    } else {
+        8
+    };
+    let rows = num_cores.div_ceil(cols);
 
-    // Render cores in grid
-    let mut x_off = 0.0f32;
-    let mut y_off = 0.0f32;
-    let core_w = 120.0 * zoom;
-    let core_h = 70.0 * zoom;
+    let core_w = 124.0 * zoom;
+    let core_h = 72.0 * zoom;
+    let gap_x = 14.0 * zoom;
+    let gap_y = 14.0 * zoom;
+
+    let grid_w = cols as f32 * core_w + (cols.saturating_sub(1)) as f32 * gap_x;
+    let grid_h = rows as f32 * core_h + (rows.saturating_sub(1)) as f32 * gap_y;
+
+    let base_origin_x = canvas_rect.min.x + ((canvas_rect.width() - grid_w) / 2.0).max(24.0);
+    let base_origin_y = canvas_rect.min.y + ((canvas_rect.height() - grid_h) / 2.0).max(36.0);
+    let origin = Pos2::new(base_origin_x, base_origin_y) + state.canvas_pan;
+
+    // Package boundary
+    let pkg_pad = 14.0 * zoom;
+    let pkg_rect = Rect::from_min_size(
+        origin - Vec2::splat(pkg_pad),
+        Vec2::new(grid_w + 2.0 * pkg_pad, grid_h + 2.0 * pkg_pad),
+    );
+    painter.rect_filled(
+        pkg_rect,
+        CornerRadius::same(6),
+        p.surface.linear_multiply(0.5),
+    );
+    painter.rect_stroke(
+        pkg_rect,
+        CornerRadius::same(6),
+        Stroke::new(1.0, p.border_control),
+        egui::StrokeKind::Inside,
+    );
+    let pkg_id_str = t
+        .cores
+        .first()
+        .and_then(|c| c.package_id)
+        .map(|id| format!("Package #{id} · "))
+        .unwrap_or_default();
+    let pkg_name = format!("{}{} {}", pkg_id_str, t.vendor, t.model)
+        .trim()
+        .to_string();
+    let pkg_label = if pkg_name.is_empty() {
+        "Processor Package".to_string()
+    } else {
+        pkg_name
+    };
+    painter.text(
+        pkg_rect.left_top() + Vec2::new(8.0, 4.0),
+        egui::Align2::LEFT_TOP,
+        pkg_label,
+        egui::FontId::proportional(11.5 * zoom),
+        p.secondary,
+    );
+
+    // Canvas Legend in top right
+    let legend_x = canvas_rect.max.x - 12.0;
+    let legend_y = canvas_rect.min.y + 10.0;
+    painter.text(
+        Pos2::new(legend_x, legend_y),
+        egui::Align2::RIGHT_TOP,
+        "Drag to pan · Click core to inspect cache hierarchy",
+        egui::FontId::proportional(11.0),
+        p.secondary,
+    );
 
     let click_pos = if response.clicked() {
         response.interact_pointer_pos()
@@ -186,8 +247,10 @@ fn render_canvas_view(ui: &mut egui::Ui, t: &Topology, state: &mut HardwareViewS
     };
 
     for (i, core) in t.cores.iter().enumerate() {
-        let core_rect =
-            Rect::from_min_size(origin + Vec2::new(x_off, y_off), Vec2::new(core_w, core_h));
+        let col_idx = (i % cols) as f32;
+        let row_idx = (i / cols) as f32;
+        let core_pos = origin + Vec2::new(col_idx * (core_w + gap_x), row_idx * (core_h + gap_y));
+        let core_rect = Rect::from_min_size(core_pos, Vec2::new(core_w, core_h));
 
         if let Some(pos) = click_pos
             && core_rect.contains(pos)
@@ -215,23 +278,22 @@ fn render_canvas_view(ui: &mut egui::Ui, t: &Topology, state: &mut HardwareViewS
             core_rect.center_top() + Vec2::new(0.0, 6.0 * zoom),
             egui::Align2::CENTER_TOP,
             format!("Core #{}", core.id),
-            egui::FontId::proportional(12.5 * zoom),
+            egui::FontId::proportional(13.0 * zoom),
             p.text,
         );
 
+        let cpu_str = if core.logical_cpus.len() == 1 {
+            format!("CPU {}", core.logical_cpus[0])
+        } else {
+            format!("CPUs {:?}", core.logical_cpus)
+        };
         painter.text(
             core_rect.center_bottom() - Vec2::new(0.0, 8.0 * zoom),
             egui::Align2::CENTER_BOTTOM,
-            format!("{:?}", core.logical_cpus),
-            egui::FontId::monospace(10.5 * zoom),
+            cpu_str,
+            egui::FontId::monospace(11.5 * zoom),
             p.secondary,
         );
-
-        x_off += core_w + 14.0 * zoom;
-        if (i + 1) % 4 == 0 {
-            x_off = 0.0;
-            y_off += core_h + 16.0 * zoom;
-        }
     }
 
     // Detail Inspector below canvas

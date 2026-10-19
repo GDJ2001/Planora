@@ -187,5 +187,20 @@ pub fn apply_egui_theme(ctx: &egui::Context, is_dark: bool, density: Density) {
     ctx.style_mut_of(egui_theme, |style| {
         style.spacing.item_spacing = density.item_spacing();
         style.spacing.window_margin = Margin::same(CORNER_RADIUS as i8);
+        style
+            .text_styles
+            .insert(egui::TextStyle::Body, egui::FontId::proportional(14.0));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Button, egui::FontId::proportional(13.5));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Heading, egui::FontId::proportional(18.0));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Small, egui::FontId::proportional(12.0));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Monospace, egui::FontId::monospace(12.5));
     });
 }

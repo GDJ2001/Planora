@@ -56,117 +56,128 @@ pub fn render_overview_view(
     render_secondary_resource_panel(ui, frame, p);
     ui.add_space(18.0);
 
-    // 4. 4 Chart Panels in 2-column responsive grid (collapsing to 1-column if < 900px)
+    // 4. 4 Chart Panels in 2-column responsive grid (collapsing to 1-column if < 780px)
     let available_w = ui.available_width();
-    let is_wide = available_w >= 900.0;
     let chart_gap = 16.0;
-    let chart_w = if is_wide {
-        (available_w - chart_gap) / 2.0
-    } else {
-        available_w
-    };
+    let chart_cols = calculate_chart_columns(available_w);
+    let chart_w = calculate_chart_width(available_w, chart_gap, chart_cols);
+    let is_wide = chart_cols == 2;
 
     let mut crosshair_x = state.shared_crosshair_x;
 
     if is_wide {
         // Row 1: CPU and Memory
-        ui.horizontal(|ui| {
-            ui.allocate_ui(Vec2::new(chart_w, 0.0), |ui| {
-                render_chart_panel(
-                    ui,
-                    "CPU Utilization",
-                    &mut state.cpu_chart,
-                    ChartScale::Fixed0To100,
-                    vec![ChartSeriesConfig {
-                        name: "System CPU",
-                        color: p.cpu,
-                        series: &histories.cpu,
-                        unit: "%",
-                    }],
-                    now,
-                    &mut crosshair_x,
-                    p,
-                );
-            });
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = chart_gap;
+            ui.allocate_ui_with_layout(
+                Vec2::new(chart_w, 0.0),
+                egui::Layout::top_down(egui::Align::LEFT),
+                |ui| {
+                    render_chart_panel(
+                        ui,
+                        "CPU Utilization",
+                        &mut state.cpu_chart,
+                        ChartScale::Fixed0To100,
+                        vec![ChartSeriesConfig {
+                            name: "System CPU",
+                            color: p.cpu,
+                            series: &histories.cpu,
+                            unit: "%",
+                        }],
+                        now,
+                        &mut crosshair_x,
+                        p,
+                    );
+                },
+            );
 
-            ui.add_space(chart_gap);
-
-            ui.allocate_ui(Vec2::new(chart_w, 0.0), |ui| {
-                render_chart_panel(
-                    ui,
-                    "Memory Usage",
-                    &mut state.mem_chart,
-                    ChartScale::Fixed0To100,
-                    vec![ChartSeriesConfig {
-                        name: "Memory Used",
-                        color: p.memory,
-                        series: &histories.memory_pct,
-                        unit: "%",
-                    }],
-                    now,
-                    &mut crosshair_x,
-                    p,
-                );
-            });
+            ui.allocate_ui_with_layout(
+                Vec2::new(chart_w, 0.0),
+                egui::Layout::top_down(egui::Align::LEFT),
+                |ui| {
+                    render_chart_panel(
+                        ui,
+                        "Memory Usage",
+                        &mut state.mem_chart,
+                        ChartScale::Fixed0To100,
+                        vec![ChartSeriesConfig {
+                            name: "Memory Used",
+                            color: p.memory,
+                            series: &histories.memory_pct,
+                            unit: "%",
+                        }],
+                        now,
+                        &mut crosshair_x,
+                        p,
+                    );
+                },
+            );
         });
 
         ui.add_space(chart_gap);
 
         // Row 2: Disk and Network
-        ui.horizontal(|ui| {
-            ui.allocate_ui(Vec2::new(chart_w, 0.0), |ui| {
-                render_chart_panel(
-                    ui,
-                    "Disk Throughput",
-                    &mut state.disk_chart,
-                    ChartScale::Throughput,
-                    vec![
-                        ChartSeriesConfig {
-                            name: "Read",
-                            color: p.disk,
-                            series: &histories.disk_read,
-                            unit: "B/s",
-                        },
-                        ChartSeriesConfig {
-                            name: "Write",
-                            color: p.accent,
-                            series: &histories.disk_write,
-                            unit: "B/s",
-                        },
-                    ],
-                    now,
-                    &mut crosshair_x,
-                    p,
-                );
-            });
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = chart_gap;
+            ui.allocate_ui_with_layout(
+                Vec2::new(chart_w, 0.0),
+                egui::Layout::top_down(egui::Align::LEFT),
+                |ui| {
+                    render_chart_panel(
+                        ui,
+                        "Disk Throughput",
+                        &mut state.disk_chart,
+                        ChartScale::Throughput,
+                        vec![
+                            ChartSeriesConfig {
+                                name: "Read",
+                                color: p.disk,
+                                series: &histories.disk_read,
+                                unit: "B/s",
+                            },
+                            ChartSeriesConfig {
+                                name: "Write",
+                                color: p.accent,
+                                series: &histories.disk_write,
+                                unit: "B/s",
+                            },
+                        ],
+                        now,
+                        &mut crosshair_x,
+                        p,
+                    );
+                },
+            );
 
-            ui.add_space(chart_gap);
-
-            ui.allocate_ui(Vec2::new(chart_w, 0.0), |ui| {
-                render_chart_panel(
-                    ui,
-                    "Network Activity",
-                    &mut state.net_chart,
-                    ChartScale::Throughput,
-                    vec![
-                        ChartSeriesConfig {
-                            name: "Receive (↓)",
-                            color: p.network,
-                            series: &histories.net_rx,
-                            unit: "B/s",
-                        },
-                        ChartSeriesConfig {
-                            name: "Transmit (↑)",
-                            color: p.focus,
-                            series: &histories.net_tx,
-                            unit: "B/s",
-                        },
-                    ],
-                    now,
-                    &mut crosshair_x,
-                    p,
-                );
-            });
+            ui.allocate_ui_with_layout(
+                Vec2::new(chart_w, 0.0),
+                egui::Layout::top_down(egui::Align::LEFT),
+                |ui| {
+                    render_chart_panel(
+                        ui,
+                        "Network Activity",
+                        &mut state.net_chart,
+                        ChartScale::Throughput,
+                        vec![
+                            ChartSeriesConfig {
+                                name: "Receive (↓)",
+                                color: p.network,
+                                series: &histories.net_rx,
+                                unit: "B/s",
+                            },
+                            ChartSeriesConfig {
+                                name: "Transmit (↑)",
+                                color: p.focus,
+                                series: &histories.net_tx,
+                                unit: "B/s",
+                            },
+                        ],
+                        now,
+                        &mut crosshair_x,
+                        p,
+                    );
+                },
+            );
         });
     } else {
         // Narrow window: 1-column layout
@@ -329,4 +340,56 @@ pub fn render_overview_view(
                 p,
             );
         });
+}
+
+pub fn calculate_chart_columns(available_w: f32) -> usize {
+    if available_w >= 780.0 { 2 } else { 1 }
+}
+
+pub fn calculate_chart_width(available_w: f32, gap: f32, columns: usize) -> f32 {
+    let stroke_safety = 2.0;
+    if columns == 2 {
+        (((available_w - gap) / 2.0) - stroke_safety).max(100.0)
+    } else {
+        (available_w - stroke_safety).max(100.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_chart_grid_breakpoints() {
+        assert_eq!(calculate_chart_columns(1280.0), 2);
+        assert_eq!(calculate_chart_columns(780.0), 2);
+        assert_eq!(calculate_chart_columns(779.0), 1);
+        assert_eq!(calculate_chart_columns(500.0), 1);
+    }
+
+    #[test]
+    fn test_chart_width_containment_at_target_resolutions() {
+        // Target window widths: 1024, 1180, 1366, 1536, 1920
+        let gap = 16.0;
+        let window_widths = [1024.0, 1180.0, 1366.0, 1536.0, 1920.0];
+
+        for &win_w in &window_widths {
+            let usable_w = win_w - 208.0 - 48.0;
+            let cols = calculate_chart_columns(usable_w);
+            let chart_w = calculate_chart_width(usable_w, gap, cols);
+
+            let total_row_w = (cols as f32 * chart_w) + ((cols - 1) as f32 * gap);
+            assert!(
+                total_row_w <= usable_w + 0.1,
+                "Window {win_w}px (usable {usable_w}px): charts row width {total_row_w}px exceeds usable width"
+            );
+
+            // Chart panel inner frame width: (chart_w - 26.0)
+            let inner_w = chart_w - 26.0;
+            assert!(
+                inner_w >= 74.0,
+                "Inner chart panel width must remain positive"
+            );
+        }
+    }
 }

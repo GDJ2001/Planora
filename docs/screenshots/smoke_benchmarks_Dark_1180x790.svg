@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="790" viewBox="0 0 1180 790">
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .mono { font-family: "JetBrains Mono", Consolas, monospace; }
+  </style>
+  <rect width="100%" height="100%" fill="rgb(11, 18, 32)"/>
+  <rect x="0.0" y="0.0" width="207.0" height="790.0" rx="0" fill="rgb(11, 18, 32)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="20.0" y="16.0" width="168.0" height="55.9" rx="0" fill="rgb(255, 255, 255)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <line x1="8.0" y1="96.9" x2="199.0" y2="96.9" stroke="rgb(35, 50, 75)" stroke-width="1.0"/>
+  <rect x="22.7" y="125.6" width="4.8" height="4.8" rx="2" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <rect x="30.5" y="125.6" width="4.8" height="4.8" rx="2" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <rect x="22.7" y="133.4" width="4.8" height="4.8" rx="2" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <rect x="30.5" y="133.4" width="4.8" height="4.8" rx="2" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <text x="46.0" y="137.1" fill="rgb(167, 180, 200)" font-size="16.0">Overview</text>
+  <line x1="29.7" y1="170.0" x2="35.3" y2="170.0" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="29.7" y1="173.9" x2="35.3" y2="173.9" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="29.7" y1="177.9" x2="35.3" y2="177.9" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <text x="46.0" y="179.1" fill="rgb(167, 180, 200)" font-size="16.0">Processes</text>
+  <rect x="24.0" y="210.9" width="10.1" height="10.1" rx="2" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="27.5" y1="207.9" x2="27.5" y2="210.9" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="27.5" y1="221.0" x2="27.5" y2="223.9" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="21.0" y1="214.4" x2="24.0" y2="214.4" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="34.0" y1="214.4" x2="37.0" y2="214.4" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="30.5" y1="207.9" x2="30.5" y2="210.9" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="30.5" y1="221.0" x2="30.5" y2="223.9" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="21.0" y1="217.4" x2="24.0" y2="217.4" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="34.0" y1="217.4" x2="37.0" y2="217.4" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <text x="46.0" y="221.1" fill="rgb(167, 180, 200)" font-size="16.0">Hardware</text>
+  <rect x="8.0" y="239.9" width="191.0" height="36.0" rx="6" fill="rgb(35, 50, 75)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="8.0" y="239.9" width="191.0" height="36.0" rx="6" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(37, 99, 235)" stroke-width="1"/>
+  <line x1="23.4" y1="263.5" x2="22.7" y2="260.4" stroke="rgb(37, 99, 235)" stroke-width="1.5"/>
+  <line x1="22.7" y1="260.4" x2="23.6" y2="257.3" stroke="rgb(37, 99, 235)" stroke-width="1.5"/>
+  <line x1="23.6" y1="257.3" x2="25.9" y2="255.1" stroke="rgb(37, 99, 235)" stroke-width="1.5"/>
+  <line x1="25.9" y1="255.1" x2="29.0" y2="254.3" stroke="rgb(37, 99, 235)" stroke-width="1.5"/>
+  <line x1="29.0" y1="254.3" x2="32.1" y2="255.1" stroke="rgb(37, 99, 235)" stroke-width="1.5"/>
+  <line x1="32.1" y1="255.1" x2="34.4" y2="257.3" stroke="rgb(37, 99, 235)" stroke-width="1.5"/>
+  <line x1="34.4" y1="257.3" x2="35.3" y2="260.4" stroke="rgb(37, 99, 235)" stroke-width="1.5"/>
+  <line x1="35.3" y1="260.4" x2="34.6" y2="263.5" stroke="rgb(37, 99, 235)" stroke-width="1.5"/>
+  <line x1="29.0" y1="260.6" x2="32.2" y2="256.9" stroke="rgb(37, 99, 235)" stroke-width="2.0"/>
+  <text x="46.0" y="263.1" fill="rgb(230, 237, 247)" font-size="16.0">Benchmarks</text>
+  <line x1="23.2" y1="293.6" x2="34.8" y2="293.6" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="34.8" y1="293.6" x2="34.8" y2="300.8" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="34.8" y1="300.8" x2="29.0" y2="306.2" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="29.0" y1="306.2" x2="23.2" y2="300.8" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="23.2" y1="300.8" x2="23.2" y2="293.6" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="26.0" y1="299.8" x2="28.5" y2="302.8" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <line x1="28.5" y1="302.8" x2="33.0" y2="297.8" stroke="rgb(167, 180, 200)" stroke-width="1.5"/>
+  <text x="46.0" y="305.1" fill="rgb(167, 180, 200)" font-size="16.0">Capabilities</text>
+  <line x1="33.2" y1="341.9" x2="35.3" y2="341.9" stroke="rgb(167, 180, 200)" stroke-width="2.5"/>
+  <line x1="31.1" y1="345.6" x2="32.2" y2="347.4" stroke="rgb(167, 180, 200)" stroke-width="2.5"/>
+  <line x1="26.9" y1="345.6" x2="25.9" y2="347.4" stroke="rgb(167, 180, 200)" stroke-width="2.5"/>
+  <line x1="24.8" y1="341.9" x2="22.7" y2="341.9" stroke="rgb(167, 180, 200)" stroke-width="2.5"/>
+  <line x1="26.9" y1="338.3" x2="25.9" y2="336.5" stroke="rgb(167, 180, 200)" stroke-width="2.5"/>
+  <line x1="31.1" y1="338.3" x2="32.2" y2="336.5" stroke="rgb(167, 180, 200)" stroke-width="2.5"/>
+  <text x="46.0" y="347.1" fill="rgb(167, 180, 200)" font-size="16.0">Settings</text>
+  <text x="8.0" y="773.1" fill="rgb(230, 237, 247)" font-size="16.0">▲ Stale (3.8s ago)</text>
+  <line x1="8.0" y1="751.0" x2="199.0" y2="751.0" stroke="rgb(35, 50, 75)" stroke-width="1.0"/>
+  <line x1="207.5" y1="0.0" x2="207.5" y2="790.0" stroke="rgb(35, 50, 75)" stroke-width="1.0"/>
+  <rect x="208.0" y="0.0" width="972.0" height="790.0" rx="0" fill="rgb(11, 18, 32)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="216.0" y="8.0" width="956.0" height="357.1" rx="0" fill="rgba(0, 0, 0, 0.000)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="1052.0" y="8.0" width="120.0" height="24.0" rx="12" fill="rgb(25, 38, 59)" stroke="rgba(0, 0, 0, 0.000)" stroke-width="0"/>
+  <rect x="1052.0" y="8.0" width="120.0" height="24.0" rx="12" fill="rgba(0, 0, 0, 0.000)" stroke="rgb(35, 50, 75)" stroke-width="1"/>
+  <text x="1074.0" y="24.5" fill="rgb(251, 191, 36)" font-size="14.0">Stale (3.8s ago)</text>
+  <rect x="980.9" y="10.0" width="63.1" height="20.0" rx="8" fill="rgb(50, 50, 50)" stroke="rgb(35, 50, 75)" stroke-width="1"/>
+  <text x="988.9" y="25.1" fill="rgb(215, 215, 215)" font-size="16.0">Pause ⏸</text>
+  <text x="972.9" y="24.2" fill="rgb(230, 237, 247)" font-size="13.0" class="mono">100 ms</text>
+  <text x="216.0" y="27.2" fill="rgb(230, 237, 247)" font-size="21.0">Micro-Architectural Probes</text>
+  <text x="216.0" y="50.5" fill="rgb(230, 237, 247)" font-size="14.0">Deterministic, memory-bounded single-cycle Sattolo cache line/page probes and inter-core latency</text>
+  <line x1="216.0" y1="72.0" x2="1172.0" y2="72.0" stroke="rgb(35, 50, 75)" stroke-width="1.0"/>
+  <rect x="216.0" y="93.0" width="600.7" height="138.0" rx="8" fill="rgb(17, 28, 46)" stroke="rgb(35, 50, 75)" stroke-width="1"/>
+  <text x="229.0" y="121.1" fill="rgb(230, 237, 247)" font-size="16.0">🛡 Execution Guardrails &amp; Memory Budget:</text>
+  <text x="229.0" y="149.1" fill="rgb(230, 237, 247)" font-size="16.0">• Working Set Ceiling: 64 MiB (strict total process memory allocation limit 72 MiB)</text>
+  <text x="229.0" y="171.1" fill="rgb(230, 237, 247)" font-size="16.0">• Cache Probes: 12-second deadline with cancellation checks before and during batch runs</text>
+  <text x="229.0" y="193.1" fill="rgb(230, 237, 247)" font-size="16.0">• Core Matrix: 20-second timeout, 2 to 8 logical CPUs</text>
+  <text x="229.0" y="215.1" fill="rgb(230, 237, 247)" font-size="16.0">• Architecture Honesty: RDTSCP / exact core-pinning reported as unavailable on Apple Silicon</text>
+  <text x="216.0" y="262.1" fill="rgb(230, 237, 247)" font-size="16.0">⚠️ Probes disabled: An active, live helper connection is required to run micro-architectural probes.</text>
+  <rect x="216.0" y="275.0" width="151.4" height="20.0" rx="8" fill="rgba(25, 25, 25, 0.502)" stroke="rgba(18, 25, 38, 0.502)" stroke-width="1"/>
+  <text x="224.0" y="290.1" fill="rgba(108, 108, 108, 0.502)" font-size="16.0">Run Line Cache Probe</text>
+  <rect x="375.4" y="275.0" width="156.4" height="20.0" rx="8" fill="rgba(25, 25, 25, 0.502)" stroke="rgba(18, 25, 38, 0.502)" stroke-width="1"/>
+  <text x="383.4" y="290.1" fill="rgba(108, 108, 108, 0.502)" font-size="16.0">Run Page Cache Probe</text>
+  <text x="216.0" y="324.1" fill="rgb(230, 237, 247)" font-size="16.0">Core Latency CPUs (comma-separated):</text>
+  <rect x="468.4" y="309.0" width="120.0" height="20.1" rx="8" fill="rgb(11, 18, 32)" stroke="rgb(35, 50, 75)" stroke-width="1"/>
+  <text x="476.4" y="324.1" fill="rgb(230, 237, 247)" font-size="16.0">0, 1, 2, 3</text>
+  <rect x="596.4" y="309.1" width="116.8" height="20.0" rx="8" fill="rgba(25, 25, 25, 0.502)" stroke="rgba(18, 25, 38, 0.502)" stroke-width="1"/>
+  <text x="604.4" y="324.2" fill="rgba(108, 108, 108, 0.502)" font-size="16.0">Run Core Matrix</text>
+  <text x="216.0" y="362.2" fill="rgb(230, 237, 247)" font-size="16.0">Click a probe button above to begin micro-architectural benchmark execution.</text>
+</svg>

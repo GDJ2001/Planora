@@ -59,7 +59,8 @@ pub fn render_chart_panel(
         .corner_radius(CornerRadius::same(CORNER_RADIUS as u8))
         .inner_margin(egui::Margin::same(12))
         .show(ui, |ui| {
-            ui.set_width(panel_w);
+            ui.set_max_width((panel_w - 26.0).max(100.0));
+            ui.set_width((panel_w - 26.0).max(100.0));
 
             // Header: Title, Range buttons, and Tabular View toggle
             ui.horizontal(|ui| {
@@ -311,6 +312,7 @@ pub fn render_chart_panel(
                     }
 
                     // Plot each active series
+                    let mut points_plotted = 0;
                     for (idx, c) in series_configs.iter().enumerate() {
                         let enabled = if idx == 0 {
                             state.series1_enabled
@@ -327,6 +329,7 @@ pub fn render_chart_panel(
                             canvas_w as usize,
                         );
                         for seg in &segs {
+                            points_plotted += seg.len();
                             if seg.is_empty() {
                                 continue;
                             }
@@ -362,6 +365,59 @@ pub fn render_chart_panel(
                                 }
                                 painter.add(egui::Shape::line(pts, Stroke::new(1.8, c.color)));
                             }
+                        }
+                    }
+
+                    if points_plotted == 0 {
+                        let has_any_recorded =
+                            series_configs.iter().any(|c| !c.series.samples.is_empty());
+                        let msg = if has_any_recorded {
+                            "No samples in current time window"
+                        } else {
+                            "Awaiting telemetry samples..."
+                        };
+                        painter.text(
+                            canvas_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            msg,
+                            egui::FontId::proportional(13.0),
+                            p.secondary,
+                        );
+                    } else {
+                        // Check if the latest sample is stale (> 3s old)
+                        let is_series_stale = series_configs.iter().all(|c| {
+                            c.series
+                                .samples
+                                .back()
+                                .map(|s| {
+                                    now.saturating_duration_since(s.time)
+                                        > Duration::from_millis(3000)
+                                })
+                                .unwrap_or(false)
+                        });
+                        if is_series_stale {
+                            let stale_rect = egui::Rect::from_min_size(
+                                Pos2::new(canvas_rect.max.x - 88.0, canvas_rect.min.y + 6.0),
+                                Vec2::new(82.0, 18.0),
+                            );
+                            painter.rect_filled(
+                                stale_rect,
+                                CornerRadius::same(4),
+                                p.surface_raised,
+                            );
+                            painter.rect_stroke(
+                                stale_rect,
+                                CornerRadius::same(4),
+                                Stroke::new(1.0, p.warning),
+                                egui::StrokeKind::Inside,
+                            );
+                            painter.text(
+                                stale_rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                "Data Frozen",
+                                egui::FontId::proportional(11.0),
+                                p.warning,
+                            );
                         }
                     }
 

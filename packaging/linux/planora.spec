@@ -1,5 +1,5 @@
 Name: planora
-Version: 0.1.1
+Version: 0.1.2
 Release: 1%{?dist}
 Summary: Native hardware visualizer and resource monitor
 License: MIT OR Apache-2.0

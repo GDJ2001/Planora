@@ -129,6 +129,7 @@ pub fn render_processes_view(
         state.table_state.sort_descending,
     );
 
+    let available_h = ui.available_height();
     let is_wide = ui.available_width() >= 1100.0;
     let selected_record = selected_identity
         .as_ref()
@@ -145,22 +146,26 @@ pub fn render_processes_view(
         let table_w = (ui.available_width() - inspector_w - 12.0).max(300.0);
 
         ui.horizontal(|ui| {
-            ui.allocate_ui(Vec2::new(table_w, ui.available_height()), |ui| {
-                render_process_table(
-                    ui,
-                    &rows,
-                    selected_identity,
-                    &mut state.table_state,
-                    30.0,
-                    p,
-                );
-            });
+            ui.set_min_height(available_h);
+            ui.allocate_ui_with_layout(
+                Vec2::new(table_w, available_h),
+                egui::Layout::top_down(egui::Align::LEFT),
+                |ui| {
+                    ui.set_min_height(available_h);
+                    render_process_table(
+                        ui,
+                        &rows,
+                        selected_identity,
+                        &mut state.table_state,
+                        30.0,
+                        p,
+                    );
+                },
+            );
 
             // Native draggable split handle; keep the table usable.
-            let (grip, drag) = ui.allocate_exact_size(
-                Vec2::new(12.0, ui.available_height().max(100.0)),
-                egui::Sense::drag(),
-            );
+            let (grip, drag) = ui
+                .allocate_exact_size(Vec2::new(12.0, available_h.max(100.0)), egui::Sense::drag());
             ui.painter().line_segment(
                 [grip.center_top(), grip.center_bottom()],
                 Stroke::new(2.0, p.border_control),
@@ -171,37 +176,46 @@ pub fn render_processes_view(
             }
 
             // Right Inspector Pane
-            ui.allocate_ui(Vec2::new(inspector_w, ui.available_height()), |ui| {
-                render_inspector_pane(
-                    ui,
-                    selected_record,
-                    histories,
-                    state,
-                    actions_disabled || pause_state.is_paused,
-                    current_affinity,
-                    topology,
-                    tx,
-                    now,
-                    p,
-                );
-            });
+            ui.allocate_ui_with_layout(
+                Vec2::new(inspector_w, available_h),
+                egui::Layout::top_down(egui::Align::LEFT),
+                |ui| {
+                    ui.set_min_height(available_h);
+                    render_inspector_pane(
+                        ui,
+                        selected_record,
+                        histories,
+                        state,
+                        actions_disabled || pause_state.is_paused,
+                        current_affinity,
+                        topology,
+                        tx,
+                        now,
+                        p,
+                    );
+                },
+            );
         });
     } else {
         // Narrow window: Top Table, Bottom Inspector if selected
         if let Some(record) = selected_record {
             let inspector_h = 240.0;
-            let table_h = (ui.available_height() - inspector_h - 16.0).max(200.0);
+            let table_h = (available_h - inspector_h - 16.0).max(200.0);
 
-            ui.allocate_ui(Vec2::new(ui.available_width(), table_h), |ui| {
-                render_process_table(
-                    ui,
-                    &rows,
-                    selected_identity,
-                    &mut state.table_state,
-                    28.0,
-                    p,
-                );
-            });
+            ui.allocate_ui_with_layout(
+                Vec2::new(ui.available_width(), table_h),
+                egui::Layout::top_down(egui::Align::LEFT),
+                |ui| {
+                    render_process_table(
+                        ui,
+                        &rows,
+                        selected_identity,
+                        &mut state.table_state,
+                        28.0,
+                        p,
+                    );
+                },
+            );
 
             ui.add_space(16.0);
             render_inspector_pane(
@@ -250,16 +264,19 @@ fn render_inspector_pane(
         .corner_radius(CornerRadius::same(CORNER_RADIUS as u8))
         .inner_margin(egui::Margin::same(14))
         .show(ui, |ui| {
-            let Some(record) = selected_record else {
-                ui.heading("Process Inspector");
-                ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new("Select a process from the table to view real-time trends, grouped measurements, and CPU affinity controls.")
-                        .color(p.secondary)
-                        .size(12.5),
-                );
-                return;
-            };
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    let Some(record) = selected_record else {
+                        ui.heading("Process Inspector");
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new("Select a process from the table to view real-time trends, grouped measurements, and CPU affinity controls.")
+                                .color(p.secondary)
+                                .size(12.5),
+                        );
+                        return;
+                    };
 
             ui.horizontal(|ui| {
                 ui.heading(&record.name);
@@ -478,6 +495,7 @@ fn render_inspector_pane(
                         });
                 }
             }
+                });
         });
 }
 

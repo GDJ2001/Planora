@@ -9,7 +9,7 @@ use planora_core::{
     ResponseEnvelope,
 };
 use std::io::{self, Read, Write};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 const ENDPOINT: &str = "planora-v2";
@@ -104,12 +104,137 @@ pub fn receive_response(stream: &mut impl Read) -> io::Result<ResponseEnvelope> 
     serde_json::from_slice(&data).map_err(io::Error::other)
 }
 
-/// Transact a command to the helper over a dedicated local IPC connection.
+#[cfg(windows)]
+pub fn wait_for_bytes_windows(stream: &Stream, needed: usize, deadline: Instant) -> io::Result<()> {
+    use std::os::windows::io::{AsHandle, AsRawHandle};
+    use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+
+    let raw_handle = match stream {
+        Stream::NamedPipe(pipe) => pipe.as_handle().as_raw_handle(),
+    };
+
+    loop {
+        let mut avail: u32 = 0;
+        let ok = unsafe {
+            PeekNamedPipe(
+                raw_handle as _,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                &mut avail,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            let err = io::Error::last_os_error();
+            return Err(err);
+        }
+        if (avail as usize) >= needed {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "IPC receive deadline exceeded",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[cfg(unix)]
+pub fn wait_for_bytes_unix(stream: &Stream, deadline: Instant) -> io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+    let fd = stream.as_raw_fd();
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "IPC receive deadline exceeded",
+            ));
+        }
+        let remaining = deadline.saturating_duration_since(now);
+        let timeout_ms = remaining.as_millis().min(i32::MAX as u128) as i32;
+
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
+            revents: 0,
+        };
+        let res = unsafe { libc::poll(&mut pfd, 1, timeout_ms.max(1)) };
+        if res < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
+        } else if res == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "IPC receive deadline exceeded",
+            ));
+        } else {
+            if (pfd.revents & (libc::POLLERR | libc::POLLHUP)) != 0
+                && (pfd.revents & libc::POLLIN) == 0
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "IPC pipe disconnected",
+                ));
+            }
+            return Ok(());
+        }
+    }
+}
+
+/// Receive a response with deadline enforcement on the Stream without accumulating blocked threads.
+pub fn receive_response_deadline(
+    stream: &mut Stream,
+    deadline: Instant,
+) -> io::Result<ResponseEnvelope> {
+    #[cfg(windows)]
+    wait_for_bytes_windows(stream, 4, deadline)?;
+    #[cfg(unix)]
+    wait_for_bytes_unix(stream, deadline)?;
+
+    let mut length = [0u8; 4];
+    stream.read_exact(&mut length)?;
+    let len = u32::from_le_bytes(length) as usize;
+    if len > MAX_RESPONSE_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("response size ({len} bytes) exceeds limit of {MAX_RESPONSE_SIZE} bytes"),
+        ));
+    }
+
+    #[cfg(windows)]
+    wait_for_bytes_windows(stream, len, deadline)?;
+    #[cfg(unix)]
+    wait_for_bytes_unix(stream, deadline)?;
+
+    let mut data = vec![0u8; len];
+    stream.read_exact(&mut data)?;
+    serde_json::from_slice(&data).map_err(io::Error::other)
+}
+
+/// Receive a response with a timeout duration.
+pub fn receive_response_timeout(
+    stream: &mut Stream,
+    timeout: Duration,
+) -> io::Result<ResponseEnvelope> {
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(|| Instant::now() + Duration::from_secs(60));
+    receive_response_deadline(stream, deadline)
+}
+
+/// Transact a command to the helper over a dedicated local IPC connection with strict deadlines.
 pub fn transact(command: &Command) -> io::Result<Response> {
     static REQUEST_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let mut stream = connect()?;
 
-    // Perform handshake
+    // Perform handshake with HANDSHAKE_TIMEOUT deadline
     let handshake_id = REQUEST_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     send_request(
         &mut stream,
@@ -121,7 +246,16 @@ pub fn transact(command: &Command) -> io::Result<Response> {
         },
     )?;
 
-    let handshake_env = receive_response(&mut stream)?;
+    let handshake_env = receive_response_timeout(&mut stream, HANDSHAKE_TIMEOUT)?;
+    if handshake_env.request_id != handshake_id {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "handshake request ID mismatch: sent {handshake_id}, got {}",
+                handshake_env.request_id
+            ),
+        ));
+    }
     match handshake_env.response {
         Response::Hello {
             version,
@@ -150,7 +284,7 @@ pub fn transact(command: &Command) -> io::Result<Response> {
         }
     }
 
-    // Send payload command
+    // Send payload command with REQUEST_TIMEOUT deadline
     let req_id = REQUEST_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     send_request(
         &mut stream,
@@ -160,7 +294,7 @@ pub fn transact(command: &Command) -> io::Result<Response> {
         },
     )?;
 
-    let resp_env = receive_response(&mut stream)?;
+    let resp_env = receive_response_timeout(&mut stream, REQUEST_TIMEOUT)?;
     if resp_env.request_id != req_id {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,

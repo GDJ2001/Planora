@@ -85,13 +85,10 @@ pub fn render_summary_cards(
     p: Palette,
 ) {
     let available_w = ui.available_width();
-    let is_wide = available_w >= 900.0;
     let gap = 16.0;
-    let card_w = if is_wide {
-        (available_w - 3.0 * gap) / 4.0
-    } else {
-        (available_w - gap) / 2.0
-    };
+
+    let columns = calculate_columns(available_w);
+    let card_w = calculate_card_width(available_w, gap, columns);
 
     let card_frame =
         |ui: &mut egui::Ui, width: f32, add_contents: Box<dyn FnOnce(&mut egui::Ui)>| {
@@ -101,7 +98,10 @@ pub fn render_summary_cards(
                 .corner_radius(CornerRadius::same(CORNER_RADIUS as u8))
                 .inner_margin(egui::Margin::same(14))
                 .show(ui, |ui| {
-                    ui.set_width(width);
+                    // Inner width subtracts 2 * 14.0 margin + 2.0 border strokes
+                    let inner_w = (width - 30.0).max(60.0);
+                    ui.set_max_width(inner_w);
+                    ui.set_width(inner_w);
                     ui.set_min_height(96.0);
                     add_contents(ui);
                 });
@@ -189,7 +189,7 @@ pub fn render_summary_cards(
                             format_rate(r_rate.map(|r| r as f32)),
                             format_rate(w_rate.map(|w| w as f32))
                         ))
-                        .size(10.5)
+                        .size(12.0)
                         .color(p.secondary),
                     );
                 });
@@ -237,7 +237,7 @@ pub fn render_summary_cards(
                             format_rate(rx.map(|rx| rx as f32)),
                             format_rate(tx.map(|tx| tx as f32))
                         ))
-                        .size(10.5)
+                        .size(12.0)
                         .color(p.secondary),
                     );
                 });
@@ -256,30 +256,40 @@ pub fn render_summary_cards(
         );
     };
 
-    if is_wide {
-        ui.horizontal(|ui| {
-            draw_card1_cpu(ui, card_w);
-            ui.add_space(gap);
-            draw_card2_mem(ui, card_w);
-            ui.add_space(gap);
-            draw_card3_disk(ui, card_w);
-            ui.add_space(gap);
-            draw_card4_net(ui, card_w);
-        });
-    } else {
-        ui.vertical(|ui| {
-            ui.horizontal(|ui| {
+    match columns {
+        4 => {
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
                 draw_card1_cpu(ui, card_w);
-                ui.add_space(gap);
                 draw_card2_mem(ui, card_w);
-            });
-            ui.add_space(gap);
-            ui.horizontal(|ui| {
                 draw_card3_disk(ui, card_w);
-                ui.add_space(gap);
                 draw_card4_net(ui, card_w);
             });
-        });
+        }
+        2 => {
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = gap;
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = gap;
+                    draw_card1_cpu(ui, card_w);
+                    draw_card2_mem(ui, card_w);
+                });
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = gap;
+                    draw_card3_disk(ui, card_w);
+                    draw_card4_net(ui, card_w);
+                });
+            });
+        }
+        _ => {
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = gap;
+                draw_card1_cpu(ui, card_w);
+                draw_card2_mem(ui, card_w);
+                draw_card3_disk(ui, card_w);
+                draw_card4_net(ui, card_w);
+            });
+        }
     }
 }
 
@@ -352,4 +362,70 @@ pub fn render_secondary_resource_panel(ui: &mut egui::Ui, frame: &TelemetryFrame
                 });
             });
     });
+}
+
+pub fn calculate_columns(available_w: f32) -> usize {
+    if available_w >= 1060.0 {
+        4
+    } else if available_w >= 520.0 {
+        2
+    } else {
+        1
+    }
+}
+
+pub fn calculate_card_width(available_w: f32, gap: f32, columns: usize) -> f32 {
+    let stroke_safety = 2.0;
+    match columns {
+        4 => (((available_w - 3.0 * gap) / 4.0) - stroke_safety).max(120.0),
+        2 => (((available_w - gap) / 2.0) - stroke_safety).max(120.0),
+        _ => (available_w - stroke_safety).max(120.0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_card_column_breakpoints() {
+        assert_eq!(calculate_columns(1280.0), 4);
+        assert_eq!(calculate_columns(1060.0), 4);
+        assert_eq!(calculate_columns(1059.0), 2);
+        assert_eq!(calculate_columns(800.0), 2);
+        assert_eq!(calculate_columns(520.0), 2);
+        assert_eq!(calculate_columns(519.0), 1);
+        assert_eq!(calculate_columns(320.0), 1);
+    }
+
+    #[test]
+    fn test_card_width_containment_at_target_resolutions() {
+        // Target window widths: 1024, 1180, 1366, 1536, 1920
+        // Sidebar is 208px, root central panel padding is 2 * 24px = 48px
+        // Usable content width = window_width - 208.0 - 48.0
+        let gap = 16.0;
+        let window_widths = [1024.0, 1180.0, 1366.0, 1536.0, 1920.0];
+
+        for &win_w in &window_widths {
+            let usable_w = win_w - 208.0 - 48.0;
+            let cols = calculate_columns(usable_w);
+            let card_w = calculate_card_width(usable_w, gap, cols);
+
+            // Total width of rendered cards and gaps
+            let total_row_w = (cols as f32 * card_w) + ((cols - 1) as f32 * gap);
+
+            // Must fit within available content width without horizontal overflow
+            assert!(
+                total_row_w <= usable_w + 0.1,
+                "Window {win_w}px (usable {usable_w}px): cards row width {total_row_w}px exceeds usable width"
+            );
+
+            // Inner width is width - 30.0 (14px frame margin on each side + 2px stroke)
+            let inner_w = card_w - 30.0;
+            assert!(
+                inner_w >= 60.0,
+                "Inner card width must remain at least 60px"
+            );
+        }
+    }
 }
