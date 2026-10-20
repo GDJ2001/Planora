@@ -848,12 +848,40 @@ impl App {
                     return;
                 }
                 AppState::IncompatibleVersion { helper_version } => {
-                    ui.heading("Incompatible Helper Version");
-                    ui.colored_label(
-                        p.error,
-                        format!("The running helper reports protocol v{helper_version}, but Planora UI requires protocol v{PROTOCOL_VERSION}."),
-                    );
-                    ui.label("Please upgrade or restart the PlanoraHelper service to continue.");
+                    ui.add_space(32.0);
+                    let card_width = ui.available_width().min(720.0);
+                    let inset = ((ui.available_width() - card_width) / 2.0).max(0.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(inset);
+                        ui.vertical(|ui| {
+                            ui.set_width(card_width);
+                            egui::Frame::group(ui.style())
+                                .fill(p.surface)
+                                .stroke(Stroke::new(1.0, p.error))
+                                .corner_radius(CornerRadius::same(8))
+                                .inner_margin(egui::Margin::same(24))
+                                .show(ui, |ui| {
+                                    ui.colored_label(p.error, egui::RichText::new("VERSION MISMATCH").strong().size(11.0));
+                                    ui.add_space(6.0);
+                                    ui.heading("Planora and its helper need the same version");
+                                    ui.label("The running helper cannot supply data to this version of Planora. Install the matching package, then reopen the application.");
+                                    ui.add_space(18.0);
+                                    egui::Grid::new("helper_version_details")
+                                        .num_columns(2)
+                                        .spacing([24.0, 10.0])
+                                        .show(ui, |ui| {
+                                            ui.label("Application protocol");
+                                            ui.monospace(format!("v{PROTOCOL_VERSION}"));
+                                            ui.end_row();
+                                            ui.label("Running helper protocol");
+                                            ui.monospace(format!("v{helper_version}"));
+                                            ui.end_row();
+                                        });
+                                    ui.add_space(16.0);
+                                    ui.colored_label(p.secondary, "Monitoring will resume after the installed helper matches this application.");
+                                });
+                        });
+                    });
                     return;
                 }
                 AppState::Failed(msg) if render_frame.is_none() => {

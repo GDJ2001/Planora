@@ -316,6 +316,30 @@ fn handle_response(response: Response, state: &Arc<Mutex<Shared>>) -> bool {
     true
 }
 
+/// Protocol v3 predates the structured version-mismatch response and rejects a
+/// v4 Hello as Unauthorized. Confirm the old version on a separate connection
+/// before deciding whether the user actually needs authorization.
+fn probe_legacy_v3() -> Option<u32> {
+    let mut stream = planora_helper::connect().ok()?;
+    let request = Request {
+        request_id: 1,
+        command: Command::Hello { version: 3 },
+    };
+    let response = planora_helper::exchange_request_timeout(
+        &mut stream,
+        &request,
+        planora_helper::HANDSHAKE_TIMEOUT,
+    )
+    .ok()?;
+    match response {
+        ResponseEnvelope {
+            request_id: 1,
+            response: Response::Hello { version: 3, .. },
+        } => Some(3),
+        _ => None,
+    }
+}
+
 pub fn background_worker(
     state: Arc<Mutex<Shared>>,
     rx: Receiver<Command>,
@@ -399,8 +423,13 @@ pub fn background_worker(
                     },
                 ..
             }) => {
+                let legacy_version = probe_legacy_v3();
                 let mut shared = state.lock().unwrap();
-                shared.state = Some(AppState::AwaitingAuthorization);
+                shared.state = Some(
+                    legacy_version.map_or(AppState::AwaitingAuthorization, |helper_version| {
+                        AppState::IncompatibleVersion { helper_version }
+                    }),
+                );
                 context.request_repaint();
                 thread::sleep(Duration::from_secs(1));
                 continue;
