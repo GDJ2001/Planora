@@ -142,7 +142,7 @@ pub fn render_compact_sidebar_status(
             ui.colored_label(p.secondary, "◌ Connecting...");
         }
         AppState::AwaitingAuthorization => {
-            ui.colored_label(p.error, "🔒 Needs Authorization");
+            ui.colored_label(p.warning, "Authorization needed");
         }
         AppState::IncompatibleVersion { helper_version } => {
             ui.colored_label(p.error, format!("✖ Version mismatch (v{helper_version})"));

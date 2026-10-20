@@ -305,6 +305,7 @@ pub fn create_test_app(theme: Theme, page: Page) -> App {
         settings_state: crate::views::settings::SettingsViewState::default(),
         auto_close: None,
         screenshot_out: None,
+        screenshot_pending: false,
         frames_rendered: 0,
     }
 }

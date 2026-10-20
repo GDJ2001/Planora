@@ -86,6 +86,7 @@ pub struct App {
     settings_state: SettingsViewState,
     auto_close: Option<(Instant, std::time::Duration)>,
     screenshot_out: Option<std::path::PathBuf>,
+    screenshot_pending: bool,
     frames_rendered: usize,
 }
 
@@ -219,6 +220,7 @@ impl App {
             settings_state: SettingsViewState::default(),
             auto_close: None,
             screenshot_out: None,
+            screenshot_pending: false,
             frames_rendered: 0,
         }
     }
@@ -389,15 +391,29 @@ impl App {
         if let Some((start, dur)) = self.auto_close
             && start.elapsed() >= dur
         {
+            if self.screenshot_out.is_some() || self.screenshot_pending {
+                eprintln!(
+                    "Native screenshot timed out ({} frames rendered)",
+                    self.frames_rendered
+                );
+                std::process::exit(1);
+            }
             root.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
         let ctx = root.ctx().clone();
 
         self.frames_rendered = self.frames_rendered.saturating_add(1);
-        if self.frames_rendered >= 45
+        if self.screenshot_out.is_some() || self.screenshot_pending {
+            ctx.request_repaint();
+        }
+        if self.frames_rendered >= 3
+            && self
+                .auto_close
+                .is_none_or(|(start, _)| start.elapsed() >= std::time::Duration::from_secs(2))
             && let Some(path) = self.screenshot_out.take()
         {
+            self.screenshot_pending = true;
             ctx.request_screenshot(move |img| {
                 let mut raw = Vec::with_capacity(img.pixels.len() * 4);
                 for p in &img.pixels {
@@ -760,25 +776,75 @@ impl App {
             // Connection state views
             match &app_state {
                 AppState::AwaitingAuthorization => {
-                    ui.heading("Helper Authorization Required");
-                    ui.label("Planora requires an authorized local privileged helper before monitoring starts.");
-                    ui.add_space(8.0);
-
-                    #[cfg(windows)]
-                    if ui.add_enabled(self.authorization_child.is_none(), egui::Button::new("Authorize Windows Helper (Administrator Approval)")).clicked() {
-                        self.launch_helper_script("Authorize-Planora.ps1");
-                    }
-                    #[cfg(windows)]
-                    if self.authorization_child.is_some() { ui.spinner(); ui.label("Waiting for administrator approval and helper restart…"); }
-                    #[cfg(windows)]
-                    if let Some(error) = &self.authorization_error { ui.colored_label(p.error, error); }
-
-                    #[cfg(target_os = "macos")]
-                    if ui.button("Request macOS Daemon Approval").clicked()
-                        && unsafe { planora_register_daemon() } != 0
-                    {
-                        ui.colored_label(p.error, "Registration failed; check Console.app for details.");
-                    }
+                    ui.add_space(32.0);
+                    let card_width = ui.available_width().min(720.0);
+                    let inset = ((ui.available_width() - card_width) / 2.0).max(0.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(inset);
+                        ui.vertical(|ui| {
+                            ui.set_width(card_width);
+                            egui::Frame::group(ui.style())
+                            .fill(p.surface)
+                            .stroke(Stroke::new(1.0, p.border))
+                            .corner_radius(CornerRadius::same(8))
+                            .inner_margin(egui::Margin::same(24))
+                            .show(ui, |ui| {
+                                ui.colored_label(p.warning, egui::RichText::new("SETUP REQUIRED").strong().size(11.0));
+                                ui.add_space(6.0);
+                                ui.heading("Authorize the local helper");
+                                ui.label("Planora needs the installed helper to read system and process measurements. The main window stays at normal user privileges.");
+                                ui.add_space(18.0);
+                                egui::Grid::new("authorization_steps")
+                                    .num_columns(2)
+                                    .spacing([18.0, 12.0])
+                                    .show(ui, |ui| {
+                                        for (step, detail) in [
+                                            ("1  Install", "Install Planora and its local helper using the platform package."),
+                                            ("2  Authorize", "Approve your platform's helper authorization for this account."),
+                                            ("3  Connect", "Planora will reconnect and begin collecting measurements."),
+                                        ] {
+                                            ui.strong(step);
+                                            ui.label(detail);
+                                            ui.end_row();
+                                        }
+                                    });
+                                ui.add_space(20.0);
+                                #[cfg(windows)]
+                                {
+                                    let authorization_script_available = std::env::current_exe()
+                                        .ok()
+                                        .and_then(|exe| exe.parent().map(|dir| dir.join("Authorize-Planora.ps1")))
+                                        .is_some_and(|path| path.is_file());
+                                    if ui.add_enabled(
+                                        self.authorization_child.is_none() && authorization_script_available,
+                                        egui::Button::new("Authorize helper…").min_size(Vec2::new(180.0, 36.0)),
+                                    ).clicked() {
+                                        self.launch_helper_script("Authorize-Planora.ps1");
+                                    }
+                                    if !authorization_script_available {
+                                        ui.colored_label(p.warning, "Install Planora with Setup to enable helper authorization.");
+                                    }
+                                    if self.authorization_child.is_some() {
+                                        ui.horizontal(|ui| {
+                                            ui.spinner();
+                                            ui.label("Waiting for administrator approval and helper restart…");
+                                        });
+                                    }
+                                    if let Some(error) = &self.authorization_error {
+                                        ui.colored_label(p.error, error);
+                                    }
+                                }
+                                #[cfg(target_os = "macos")]
+                                if ui.button("Request macOS daemon approval…").clicked()
+                                    && unsafe { planora_register_daemon() } != 0
+                                {
+                                    ui.colored_label(p.error, "Registration failed; check Console.app for details.");
+                                }
+                                ui.add_space(14.0);
+                                ui.colored_label(p.secondary, "Only local IPC is used. No network listener or automatic recording is started.");
+                            });
+                        });
+                    });
                     return;
                 }
                 AppState::IncompatibleVersion { helper_version } => {
