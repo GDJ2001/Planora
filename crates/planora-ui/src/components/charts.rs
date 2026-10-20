@@ -76,7 +76,12 @@ pub fn render_chart_panel(
                     ui.add_space(8.0);
 
                     // Range selection: 30s | 60s | 5m
-                    for r in [HistoryRange::Min5, HistoryRange::Sec60, HistoryRange::Sec30] {
+                    for r in [
+                        HistoryRange::Min15,
+                        HistoryRange::Min5,
+                        HistoryRange::Sec60,
+                        HistoryRange::Sec30,
+                    ] {
                         let is_active = state.range == r;
                         if ui.selectable_label(is_active, r.label()).clicked() {
                             state.range = r;
@@ -251,6 +256,7 @@ pub fn render_chart_panel(
                         HistoryRange::Sec30 => ["-30s", "-20s", "-10s", "0s"],
                         HistoryRange::Sec60 => ["-60s", "-40s", "-20s", "0s"],
                         HistoryRange::Min5 => ["-5m", "-3m", "-1m", "0s"],
+                        HistoryRange::Min15 => ["-15m", "-10m", "-5m", "0s"],
                     };
                     for (i, t_lbl) in time_labels.iter().enumerate() {
                         let x = canvas_rect.min.x

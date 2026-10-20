@@ -11,7 +11,7 @@ use crate::{
 use eframe::egui::{self, CornerRadius, Pos2, Stroke, Vec2};
 use planora_core::{Command, ProcessIdentity, ProcessRecord, TelemetryFrame, Topology};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     sync::mpsc::SyncSender,
     time::{Duration, Instant},
 };
@@ -28,6 +28,24 @@ pub struct ProcessesViewState {
     pub affinity_requested: bool,
     pub affinity_initialized: bool,
     pub affinity_error: Option<String>,
+    cached_order: Vec<ProcessIdentity>,
+    last_sorted_at: Option<Instant>,
+    last_sort_query: String,
+    last_sort_column: crate::components::table::SortColumn,
+    last_sort_descending: bool,
+    last_quick_filter: QuickFilter,
+    last_selected_identity: Option<ProcessIdentity>,
+    pub quick_filter: QuickFilter,
+    pub pinned: HashSet<ProcessIdentity>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum QuickFilter {
+    #[default]
+    All,
+    Selected,
+    Pinned,
+    Active,
 }
 
 impl ProcessesViewState {
@@ -109,6 +127,34 @@ pub fn render_processes_view(
             ui.checkbox(&mut state.table_state.columns.show_gpu, "GPU (optional)");
         });
 
+        ui.menu_button("Filter", |ui| {
+            for (filter, label) in [
+                (QuickFilter::All, "All processes"),
+                (QuickFilter::Selected, "Selected"),
+                (QuickFilter::Pinned, "Pinned"),
+                (QuickFilter::Active, "Resource activity"),
+            ] {
+                ui.selectable_value(&mut state.quick_filter, filter, label);
+            }
+        });
+        if let Some(identity) = selected_identity.as_ref() {
+            let pinned = state.pinned.contains(identity);
+            if ui.button(if pinned { "Unpin" } else { "Pin" }).clicked() {
+                if pinned {
+                    state.pinned.remove(identity);
+                } else {
+                    state.pinned.insert(identity.clone());
+                }
+                state.last_sorted_at = None;
+            }
+        }
+        if (!state.table_state.search_query.is_empty() || state.quick_filter != QuickFilter::All)
+            && ui.button("Clear filters").clicked()
+        {
+            state.table_state.search_query.clear();
+            state.quick_filter = QuickFilter::All;
+        }
+
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let total_count = frame.processes.len();
             ui.label(
@@ -122,12 +168,70 @@ pub fn render_processes_view(
     ui.add_space(10.0);
 
     // Filter & Sort
-    let rows = sort_processes(
-        &frame.processes,
-        &state.table_state.search_query,
-        state.table_state.sort_column,
-        state.table_state.sort_descending,
-    );
+    let query_changed = state.last_sort_query != state.table_state.search_query
+        || state.last_sort_column != state.table_state.sort_column
+        || state.last_sort_descending != state.table_state.sort_descending
+        || state.last_quick_filter != state.quick_filter
+        || (state.quick_filter == QuickFilter::Selected
+            && state.last_selected_identity != *selected_identity);
+    let expired = state
+        .last_sorted_at
+        .is_none_or(|last| last.elapsed() >= Duration::from_secs(1));
+    if query_changed || (expired && !ui.input(|i| i.pointer.any_down())) {
+        let mut sorted = sort_processes(
+            &frame.processes,
+            &state.table_state.search_query,
+            state.table_state.sort_column,
+            state.table_state.sort_descending,
+        );
+        sorted.retain(|process| match state.quick_filter {
+            QuickFilter::All => true,
+            QuickFilter::Selected => selected_identity.as_ref() == Some(&process.identity),
+            QuickFilter::Pinned => state.pinned.contains(&process.identity),
+            QuickFilter::Active => {
+                process.cpu_percent.value.is_some_and(|value| value > 0.0)
+                    || process
+                        .io_read_bytes_per_sec
+                        .value
+                        .is_some_and(|value| value > 0)
+                    || process
+                        .io_write_bytes_per_sec
+                        .value
+                        .is_some_and(|value| value > 0)
+                    || process
+                        .disk_read_bytes_per_sec
+                        .value
+                        .is_some_and(|value| value > 0)
+                    || process
+                        .disk_write_bytes_per_sec
+                        .value
+                        .is_some_and(|value| value > 0)
+            }
+        });
+        state.cached_order = sorted.iter().map(|p| p.identity.clone()).collect();
+        state.last_sorted_at = Some(Instant::now());
+        state
+            .last_sort_query
+            .clone_from(&state.table_state.search_query);
+        state.last_sort_column = state.table_state.sort_column;
+        state.last_sort_descending = state.table_state.sort_descending;
+        state.last_quick_filter = state.quick_filter;
+        state.last_selected_identity.clone_from(selected_identity);
+    }
+    let by_identity: HashMap<_, _> = frame.processes.iter().map(|p| (&p.identity, p)).collect();
+    let rows: Vec<&ProcessRecord> = state
+        .cached_order
+        .iter()
+        .filter_map(|id| by_identity.get(id).copied())
+        .collect();
+    if rows.is_empty() {
+        ui.label(
+            egui::RichText::new(
+                "No processes match these filters. Clear filters to show all processes.",
+            )
+            .color(p.secondary),
+        );
+    }
 
     let available_h = ui.available_height();
     let is_wide = ui.available_width() >= 1100.0;
@@ -184,6 +288,7 @@ pub fn render_processes_view(
                     render_inspector_pane(
                         ui,
                         selected_record,
+                        selected_identity.as_ref(),
                         histories,
                         state,
                         actions_disabled || pause_state.is_paused,
@@ -221,6 +326,7 @@ pub fn render_processes_view(
             render_inspector_pane(
                 ui,
                 Some(record),
+                selected_identity.as_ref(),
                 histories,
                 state,
                 actions_disabled || pause_state.is_paused,
@@ -239,6 +345,15 @@ pub fn render_processes_view(
                 30.0,
                 p,
             );
+            if let Some(identity) = selected_identity.as_ref() {
+                ui.colored_label(
+                    p.warning,
+                    format!(
+                        "Selected PID {} has exited or is unavailable in this snapshot.",
+                        identity.pid
+                    ),
+                );
+            }
         }
     }
 }
@@ -246,6 +361,7 @@ pub fn render_processes_view(
 fn render_inspector_pane(
     ui: &mut egui::Ui,
     selected_record: Option<&ProcessRecord>,
+    selected_identity: Option<&ProcessIdentity>,
     histories: &ResourceHistories,
     state: &mut ProcessesViewState,
     is_paused: bool,
@@ -270,6 +386,11 @@ fn render_inspector_pane(
                     let Some(record) = selected_record else {
                         ui.heading("Process Inspector");
                         ui.add_space(8.0);
+                        if let Some(identity) = selected_identity {
+                            ui.colored_label(p.warning, format!("PID {} is no longer in the current process snapshot.", identity.pid));
+                            ui.label("Its recorded selection remains until you choose another process or clear it.");
+                            return;
+                        }
                         ui.label(
                             egui::RichText::new("Select a process from the table to view real-time trends, grouped measurements, and CPU affinity controls.")
                                 .color(p.secondary)
@@ -378,6 +499,24 @@ fn render_inspector_pane(
                     ui.label("Disk Write Rate:");
                     let dw_s = format_rate(record.disk_write_bytes_per_sec.value.map(|v| v as f32));
                     ui.label(egui::RichText::new(dw_s).monospace());
+                    ui.end_row();
+
+                    ui.label("Process I/O Read:").on_hover_text("All process I/O reported by Windows; this is not disk-only activity.");
+                    let io_read = format_rate(record.io_read_bytes_per_sec.value.map(|v| v as f32));
+                    ui.label(egui::RichText::new(io_read).monospace()).on_hover_text(format!(
+                        "Source: {} · {}",
+                        record.io_read_bytes_per_sec.source,
+                        record.io_read_bytes_per_sec.unavailable_reason.as_ref().map_or_else(|| "Available".to_string(), ToString::to_string),
+                    ));
+                    ui.end_row();
+
+                    ui.label("Process I/O Write:").on_hover_text("All process I/O reported by Windows; this is not disk-only activity.");
+                    let io_write = format_rate(record.io_write_bytes_per_sec.value.map(|v| v as f32));
+                    ui.label(egui::RichText::new(io_write).monospace()).on_hover_text(format!(
+                        "Source: {} · {}",
+                        record.io_write_bytes_per_sec.source,
+                        record.io_write_bytes_per_sec.unavailable_reason.as_ref().map_or_else(|| "Available".to_string(), ToString::to_string),
+                    ));
                     ui.end_row();
 
                     ui.label("GPU Utilization:");

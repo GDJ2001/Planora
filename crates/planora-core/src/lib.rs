@@ -1,7 +1,8 @@
 //! Portable versioned contracts shared by the UI, helper, and collectors.
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
+pub const SUPPORTED_SAMPLE_INTERVALS_MS: [u64; 5] = [100, 250, 500, 1_000, 2_000];
 pub const MAX_REQUEST_SIZE: usize = 64 * 1024;
 pub const MAX_RESPONSE_SIZE: usize = 8 * 1024 * 1024;
 pub const MAX_PROCESSES_LIMIT: usize = 65_536;
@@ -185,8 +186,27 @@ pub struct ProcessRecord {
     pub memory_bytes: Metric<u64>,
     pub disk_read_bytes_per_sec: Metric<u64>,
     pub disk_write_bytes_per_sec: Metric<u64>,
+    pub io_read_bytes_per_sec: Metric<u64>,
+    pub io_write_bytes_per_sec: Metric<u64>,
     pub gpu_percent: Metric<f32>,
     pub affinity: Metric<Vec<u16>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct GpuEngineSample {
+    /// Windows performance counter instance, including its adapter LUID and engine identity.
+    pub instance: String,
+    pub engine_type: String,
+    pub utilization_percent: Metric<f32>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ResourceDeviceSample {
+    /// Stable provider identity within a session; the display name may change.
+    pub id: String,
+    pub label: String,
+    pub read_bytes_per_sec: Metric<u64>,
+    pub write_bytes_per_sec: Metric<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -205,6 +225,10 @@ pub struct TelemetryFrame {
     pub network_rx_bytes_per_sec: Metric<u64>,
     pub network_tx_bytes_per_sec: Metric<u64>,
     pub gpu_percent: Metric<f32>,
+    pub gpu_engines: Vec<GpuEngineSample>,
+    pub gpu_engine_unavailable_reason: Option<AvailabilityReason>,
+    pub disks: Vec<ResourceDeviceSample>,
+    pub network_interfaces: Vec<ResourceDeviceSample>,
     pub package_power_watts: Metric<f32>,
     pub processes: Vec<ProcessRecord>,
 }
@@ -229,6 +253,8 @@ pub enum FrameValidationError {
     },
     #[error("process count ({count}) exceeds maximum allowed ({max})")]
     ExcessiveProcesses { count: usize, max: usize },
+    #[error("device count ({count}) exceeds maximum allowed ({max})")]
+    ExcessiveDevices { count: usize, max: usize },
 }
 
 fn validate_metric<T>(m: &Metric<T>, name: &'static str) -> Result<(), FrameValidationError> {
@@ -275,6 +301,30 @@ impl TelemetryFrame {
         }
         validate_pct(&self.cpu_percent, "cpu_percent")?;
         validate_pct(&self.gpu_percent, "gpu_percent")?;
+        for engine in &self.gpu_engines {
+            validate_pct(
+                &engine.utilization_percent,
+                "gpu_engine.utilization_percent",
+            )?;
+        }
+        if !self.gpu_engines.is_empty() && self.gpu_engine_unavailable_reason.is_some() {
+            return Err(FrameValidationError::ContradictoryMetricState {
+                field: "gpu_engines",
+                has_value: true,
+                has_reason: true,
+            });
+        }
+        let device_count = self.disks.len() + self.network_interfaces.len();
+        if device_count > 4096 {
+            return Err(FrameValidationError::ExcessiveDevices {
+                count: device_count,
+                max: 4096,
+            });
+        }
+        for device in self.disks.iter().chain(&self.network_interfaces) {
+            validate_metric(&device.read_bytes_per_sec, "device.read_bytes_per_sec")?;
+            validate_metric(&device.write_bytes_per_sec, "device.write_bytes_per_sec")?;
+        }
         validate_metric(&self.memory_used_bytes, "memory_used_bytes")?;
         validate_metric(&self.memory_total_bytes, "memory_total_bytes")?;
         validate_metric(&self.disk_read_bytes_per_sec, "disk_read_bytes_per_sec")?;
@@ -302,6 +352,16 @@ impl TelemetryFrame {
             validate_pct(&p.cpu_percent, "process.cpu_percent")?;
             validate_pct(&p.gpu_percent, "process.gpu_percent")?;
             validate_metric(&p.memory_bytes, "process.memory_bytes")?;
+            validate_metric(
+                &p.disk_read_bytes_per_sec,
+                "process.disk_read_bytes_per_sec",
+            )?;
+            validate_metric(
+                &p.disk_write_bytes_per_sec,
+                "process.disk_write_bytes_per_sec",
+            )?;
+            validate_metric(&p.io_read_bytes_per_sec, "process.io_read_bytes_per_sec")?;
+            validate_metric(&p.io_write_bytes_per_sec, "process.io_write_bytes_per_sec")?;
             validate_metric(&p.affinity, "process.affinity")?;
         }
 
@@ -373,6 +433,9 @@ pub enum BenchmarkState {
         job_id: u64,
         elapsed_ms: u64,
     },
+    Cancelling {
+        job_id: u64,
+    },
     Completed {
         job_id: u64,
         result: BenchmarkResult,
@@ -414,6 +477,9 @@ pub enum Command {
     },
     Topology,
     Snapshot,
+    SetSamplingInterval {
+        interval_ms: u64,
+    },
     Capabilities,
     RunCacheProbe {
         job_id: u64,
@@ -446,6 +512,10 @@ pub enum Response {
     },
     Topology(Topology),
     Snapshot(Box<TelemetryFrame>),
+    SamplingStatus {
+        requested_ms: u64,
+        effective_ms: u64,
+    },
     Capabilities(Vec<Capability>),
     BenchmarkStatus(BenchmarkState),
     Affinity {
@@ -553,6 +623,10 @@ mod tests {
                 1000,
                 AvailabilityReason::Unsupported("no gpu".into()),
             ),
+            gpu_engines: Vec::new(),
+            gpu_engine_unavailable_reason: Some(AvailabilityReason::WarmingUp),
+            disks: Vec::new(),
+            network_interfaces: Vec::new(),
             package_power_watts: Metric::unavailable(
                 "W",
                 "sys",
@@ -563,6 +637,44 @@ mod tests {
         };
 
         assert!(valid_frame.validate().is_ok());
+
+        let mut contradictory_gpu = valid_frame.clone();
+        contradictory_gpu.gpu_engines.push(GpuEngineSample {
+            instance: "engine-0".into(),
+            engine_type: "3D".into(),
+            utilization_percent: Metric::available(4.0, "%", "pdh", 1000),
+        });
+        assert!(matches!(
+            contradictory_gpu.validate(),
+            Err(FrameValidationError::ContradictoryMetricState {
+                field: "gpu_engines",
+                ..
+            })
+        ));
+
+        let mut invalid_device = valid_frame.clone();
+        invalid_device.disks.push(ResourceDeviceSample {
+            id: "disk0".into(),
+            label: "Disk 0".into(),
+            read_bytes_per_sec: Metric::available(100, "bytes/s", "test", 1000),
+            write_bytes_per_sec: Metric::unavailable(
+                "bytes/s",
+                "test",
+                1000,
+                AvailabilityReason::WarmingUp,
+            ),
+        });
+        assert!(invalid_device.validate().is_ok());
+        invalid_device.disks[0]
+            .read_bytes_per_sec
+            .unavailable_reason = Some(AvailabilityReason::WarmingUp);
+        assert!(matches!(
+            invalid_device.validate(),
+            Err(FrameValidationError::ContradictoryMetricState {
+                field: "device.read_bytes_per_sec",
+                ..
+            })
+        ));
 
         // Test contradictory metric (has value AND reason)
         let mut contradictory = valid_frame.clone();

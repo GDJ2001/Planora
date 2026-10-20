@@ -34,8 +34,8 @@ impl Default for TableColumnsConfig {
             show_pid: true,
             show_cpu: true,
             show_memory: true,
-            show_disk_read: true,
-            show_disk_write: true,
+            show_disk_read: false,
+            show_disk_write: false,
             show_gpu: false,
         }
     }
@@ -731,6 +731,8 @@ mod tests {
     fn test_process_column_layout_adaptive_hiding() {
         let config = TableColumnsConfig {
             show_gpu: true,
+            show_disk_read: true,
+            show_disk_write: true,
             ..Default::default()
         };
 

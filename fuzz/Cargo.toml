@@ -1,0 +1,21 @@
+[package]
+name = "planora-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "=0.4.13"
+planora-helper = { path = "../crates/planora-helper" }
+
+[[bin]]
+name = "ipc_frames"
+path = "fuzz_targets/ipc_frames.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

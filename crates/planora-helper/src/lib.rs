@@ -790,4 +790,20 @@ mod tests {
             _ => panic!("unexpected response variant"),
         }
     }
+
+    #[test]
+    fn malformed_framed_requests_are_rejected_without_panics() {
+        let mut seed = 0x7357_a12c_4135_d817u64;
+        for length in 0..512usize {
+            let mut framed = Vec::with_capacity(length + 4);
+            framed.extend_from_slice(&(length as u32).to_le_bytes());
+            for _ in 0..length {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                framed.push(seed as u8);
+            }
+            let _ = receive_request(&mut framed.as_slice());
+        }
+    }
 }

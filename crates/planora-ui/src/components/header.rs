@@ -37,11 +37,17 @@ pub fn render_page_header(
 
             // Pause / Resume toggle button
             let pause_btn_text = if pause_state.is_paused {
-                "Resume ▶"
+                "Resume"
             } else {
-                "Pause ⏸"
+                "Pause"
             };
-            if ui.button(pause_btn_text).clicked() {
+            if ui
+                .add_enabled(
+                    *app_state != AppState::Replay,
+                    egui::Button::new(pause_btn_text),
+                )
+                .clicked()
+            {
                 pause_state.is_paused = !pause_state.is_paused;
             }
 

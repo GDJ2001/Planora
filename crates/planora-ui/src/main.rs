@@ -1,8 +1,10 @@
 #![allow(clippy::too_many_arguments)]
 
 pub mod components;
+pub mod export;
 pub mod formatting;
 pub mod history;
+pub mod recording;
 pub mod smoke_test;
 pub mod state;
 pub mod theme;
@@ -10,8 +12,10 @@ pub mod views;
 
 use components::{badge::render_compact_sidebar_status, icons, logo::LogoCache};
 use eframe::egui::{self, Color32, CornerRadius, Pos2, Rect, Stroke, Vec2};
+use export::ExportManager;
 use history::{ResourceHistories, measurement_instant};
 use planora_core::{Command, PROTOCOL_VERSION, ProcessIdentity};
+use recording::{Recorder, Replay};
 use state::{AppState, DisplayPause, Page, Shared, UserSettings, background_worker, is_data_stale};
 use std::{
     sync::{
@@ -43,6 +47,17 @@ pub struct App {
     tx: SyncSender<Command>,
     poll_ms: Arc<AtomicU64>,
     settings: UserSettings,
+    settings_error: Option<String>,
+    recorder: Recorder,
+    exporter: ExportManager,
+    replay: Replay,
+    replay_input: String,
+    record_selected_process: bool,
+    recording_error: Option<String>,
+    #[cfg(windows)]
+    authorization_child: Option<std::process::Child>,
+    #[cfg(windows)]
+    authorization_error: Option<String>,
 
     // Navigation & View states
     page: Page,
@@ -64,9 +79,44 @@ pub struct App {
 }
 
 impl App {
+    #[cfg(windows)]
+    fn launch_helper_script(&mut self, script_name: &str) {
+        if self.authorization_child.is_some() {
+            return;
+        }
+        let script = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.join(script_name)));
+        let Some(script) = script.filter(|path| path.is_file()) else {
+            self.authorization_error = Some(format!(
+                "{script_name} is missing from the installed application."
+            ));
+            return;
+        };
+        match std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+            .arg(script)
+            .spawn()
+        {
+            Ok(child) => {
+                self.authorization_child = Some(child);
+                self.authorization_error = None;
+            }
+            Err(error) => {
+                self.authorization_error = Some(format!(
+                    "Could not launch helper authorization command: {error}"
+                ))
+            }
+        }
+    }
+
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let (tx, rx) = mpsc::sync_channel(64);
         let settings = UserSettings::load();
+        let mut processes_state = ProcessesViewState::default();
+        processes_state.table_state.columns = settings.process_columns;
+        processes_state.table_state.sort_column = settings.process_sort_column;
+        processes_state.table_state.sort_descending = settings.process_sort_descending;
         let poll_ms = Arc::new(AtomicU64::new(settings.poll_interval_ms));
         let shared = Arc::new(Mutex::new(Shared::default()));
 
@@ -86,13 +136,24 @@ impl App {
             tx,
             poll_ms,
             settings,
+            settings_error: None,
+            recorder: Recorder::default(),
+            exporter: ExportManager::default(),
+            replay: Replay::default(),
+            replay_input: String::new(),
+            record_selected_process: false,
+            recording_error: None,
+            #[cfg(windows)]
+            authorization_child: None,
+            #[cfg(windows)]
+            authorization_error: None,
             page: Page::Overview,
             selected: None,
             display_pause: DisplayPause::default(),
             logo_cache: LogoCache::new(),
             histories: ResourceHistories::default(),
             overview_state: OverviewViewState::default(),
-            processes_state: ProcessesViewState::default(),
+            processes_state,
             hardware_state: HardwareViewState::default(),
             benchmarks_state: BenchmarksViewState::default(),
             capabilities_state: CapabilitiesViewState::default(),
@@ -112,7 +173,159 @@ impl App {
         apply_egui_theme(ctx, is_dark, self.settings.density);
     }
 
+    fn render_recordings_page(
+        &mut self,
+        ui: &mut egui::Ui,
+        frame: Option<Arc<planora_core::TelemetryFrame>>,
+        topology: Option<&planora_core::Topology>,
+        benchmark: Option<&planora_core::BenchmarkState>,
+        diagnostics: &[planora_core::DiagnosticEntry],
+        app_state: &AppState,
+        p: Palette,
+    ) {
+        ui.heading("Recordings & Exports");
+        ui.label(
+            egui::RichText::new("Save measured data locally only when you choose to record.")
+                .color(p.secondary),
+        );
+        ui.add_space(14.0);
+        let status = self.recorder.status();
+        egui::Frame::group(ui.style()).fill(p.surface).show(ui, |ui| {
+            ui.strong("Live recording");
+            ui.label("System measurements are saved once per second. A selected process is included only when enabled below.");
+            ui.checkbox(&mut self.record_selected_process, "Include selected process name and measurements");
+            if status.active {
+                ui.label(format!("{} · {} bytes written · {} dropped samples", status.message, status.bytes_written, status.dropped));
+                if self.recorder.is_active() && ui.button("Stop Recording").clicked() { self.recorder.stop(); }
+            } else if ui.add_enabled(*app_state == AppState::Live, egui::Button::new("Start Recording")).clicked() {
+                match self.recorder.start(topology.cloned(), self.record_selected_process, state::BUILD_INFO.version, state::BUILD_INFO.git_commit) {
+                    Ok(path) => { self.replay_input = path.display().to_string(); self.recording_error = None; },
+                    Err(e) => self.recording_error = Some(format!("Could not start recording: {e}")),
+                }
+            }
+            if let Some(path) = &status.path { ui.label(format!("File: {}", path.display())); }
+            if !status.active && !status.message.is_empty() { ui.label(&status.message); }
+        });
+        ui.add_space(12.0);
+        egui::Frame::group(ui.style())
+            .fill(p.surface)
+            .show(ui, |ui| {
+                ui.strong("Replay a recording");
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.replay_input)
+                            .hint_text("Path to a .planora.jsonl file")
+                            .desired_width((ui.available_width() - 190.0).max(160.0)),
+                    );
+                    if ui
+                        .add_enabled(!status.active, egui::Button::new("Open Recording"))
+                        .clicked()
+                    {
+                        match self.replay.start(
+                            std::path::PathBuf::from(self.replay_input.trim()),
+                            ui.ctx().clone(),
+                        ) {
+                            Ok(()) => {
+                                self.histories = ResourceHistories::default();
+                                self.display_pause = DisplayPause::default();
+                                self.recording_error = None;
+                                self.page = Page::Overview;
+                            }
+                            Err(e) => {
+                                self.recording_error =
+                                    Some(format!("Could not open recording: {e}"))
+                            }
+                        }
+                    }
+                    if self.replay.is_active() && ui.button("Return to Live").clicked() {
+                        self.replay.stop();
+                        self.histories = ResourceHistories::default();
+                    }
+                });
+                ui.label(&self.replay.message);
+                if let Ok(dir) = recording::recordings_dir() {
+                    let mut recent: Vec<_> = std::fs::read_dir(&dir)
+                        .into_iter()
+                        .flatten()
+                        .flatten()
+                        .map(|e| e.path())
+                        .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+                        .collect();
+                    recent.sort_unstable_by(|a, b| b.cmp(a));
+                    for path in recent.into_iter().take(8) {
+                        if ui
+                            .button(path.file_name().unwrap_or_default().to_string_lossy())
+                            .clicked()
+                        {
+                            self.replay_input = path.display().to_string();
+                        }
+                    }
+                }
+            });
+        if let Some(error) = &self.recording_error {
+            ui.colored_label(p.error, error);
+        }
+        ui.add_space(12.0);
+        egui::Frame::group(ui.style()).fill(p.surface).show(ui, |ui| {
+            ui.strong("Exports");
+            ui.label("Exports use the current snapshot or the latest benchmark. Diagnostic messages are redacted by default.");
+            ui.horizontal_wrapped(|ui| {
+                if let Some(frame) = frame.clone()
+                    && ui.button("Export Process Table CSV").clicked()
+                {
+                    let table = &self.processes_state.table_state;
+                    if let Err(error) = self.exporter.processes(frame, table.search_query.clone(), table.sort_column, table.sort_descending) {
+                        self.recording_error = Some(format!("Process export failed: {error}"));
+                    }
+                }
+                if ui.button("Export Visible Chart Ranges CSV").clicked() {
+                    let ranges = [self.overview_state.cpu_chart.range, self.overview_state.mem_chart.range, self.overview_state.disk_chart.range, self.overview_state.net_chart.range];
+                    if let Err(error) = self.exporter.charts(self.histories.clone(), ranges, Instant::now()) {
+                        self.recording_error = Some(format!("Chart export failed: {error}"));
+                    }
+                }
+                if let Some(benchmark) = benchmark
+                    && ui.button("Export Benchmark JSON").clicked()
+                    && let Err(error) = self.exporter.benchmark(benchmark.clone(), topology.cloned())
+                {
+                    self.recording_error = Some(format!("Benchmark export failed: {error}"));
+                }
+                if ui.button("Export Redacted Diagnostics JSON").clicked()
+                    && let Err(error) = self.exporter.diagnostics(diagnostics.to_vec())
+                {
+                    self.recording_error = Some(format!("Diagnostics export failed: {error}"));
+                }
+            });
+            let status = self.exporter.status();
+            if !status.message.is_empty() { ui.label(status.message); }
+            if let Some(path) = status.path { ui.label(format!("File: {}", path.display())); }
+        });
+    }
+
     pub fn render_ui(&mut self, root: &mut egui::Ui) {
+        #[cfg(windows)]
+        if let Some(child) = self.authorization_child.as_mut() {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    self.authorization_error = if status.success() {
+                        None
+                    } else {
+                        Some(format!(
+                            "Authorization command exited with {status}. Check the administrator prompt and retry."
+                        ))
+                    };
+                    self.authorization_child = None;
+                }
+                Ok(None) => root
+                    .ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(250)),
+                Err(error) => {
+                    self.authorization_error =
+                        Some(format!("Could not check authorization: {error}"));
+                    self.authorization_child = None;
+                }
+            }
+        }
         if let Some((start, dur)) = self.auto_close
             && start.elapsed() >= dur
         {
@@ -159,7 +372,8 @@ impl App {
         self.apply_theme(&ctx);
         let p = self.palette(&ctx);
 
-        let (mut app_state, frame_opt, topo_opt, caps, shared_copy) = {
+        self.replay.poll();
+        let (mut app_state, mut frame_opt, mut topo_opt, caps, shared_copy) = {
             let shared = self.shared.lock().unwrap();
             let state = shared.state.clone().unwrap_or(AppState::Connecting);
             let frame = shared.frame.clone();
@@ -172,12 +386,23 @@ impl App {
                 topology: shared.topology.clone(),
                 capabilities: shared.capabilities.clone(),
                 benchmark_state: shared.benchmark_state.clone(),
+                sampling_effective_ms: shared.sampling_effective_ms,
                 diagnostic_logs: shared.diagnostic_logs.clone(),
                 affinity: shared.affinity.clone(),
                 action_error: shared.action_error.clone(),
             };
             (state, frame, topo, caps, shared_copy)
         };
+
+        if self.replay.is_active() {
+            app_state = AppState::Replay;
+            frame_opt = self.replay.frame.clone();
+            topo_opt = self.replay.topology.clone();
+        } else if app_state == AppState::Live
+            && let Some(frame) = &frame_opt
+        {
+            self.recorder.record(frame, self.selected.as_ref());
+        }
 
         // Evaluate staleness if in Live state
         let current_poll = self.poll_ms.load(Ordering::Relaxed);
@@ -189,7 +414,13 @@ impl App {
 
         // Ingest new frame into histories
         let now = Instant::now();
-        let wall_clock_now_ms = planora_telemetry::unix_ms();
+        let wall_clock_now_ms = if app_state == AppState::Replay {
+            frame_opt
+                .as_ref()
+                .map_or_else(planora_telemetry::unix_ms, |f| f.sampled_at_ms)
+        } else {
+            planora_telemetry::unix_ms()
+        };
         if let Some(frame) = &frame_opt {
             self.histories.reset_if_new_session(frame.session_id);
 
@@ -204,10 +435,12 @@ impl App {
                         wall_clock_now_ms,
                         frame.cpu_percent.sampled_at_ms,
                     );
-                    self.histories.cpu.push(
+                    self.histories.cpu.push_with_metadata(
                         measured_at,
                         frame.cpu_percent.sampled_at_ms,
                         frame.cpu_percent.value,
+                        &frame.cpu_percent.source,
+                        frame.cpu_percent.unavailable_reason.as_ref(),
                     );
                 }
 
@@ -224,16 +457,22 @@ impl App {
                     wall_clock_now_ms,
                     frame.memory_used_bytes.sampled_at_ms,
                 );
-                self.histories.memory_pct.push(
+                self.histories.memory_pct.push_with_metadata(
                     measured_at,
                     frame.memory_used_bytes.sampled_at_ms,
                     mem_pct,
+                    &frame.memory_used_bytes.source,
+                    frame
+                        .memory_used_bytes
+                        .unavailable_reason
+                        .as_ref()
+                        .or(frame.memory_total_bytes.unavailable_reason.as_ref()),
                 );
 
                 // Disk
                 let disk_r = frame.disk_read_bytes_per_sec.value.map(|v| v as f32);
                 let disk_w = frame.disk_write_bytes_per_sec.value.map(|v| v as f32);
-                self.histories.disk_read.push(
+                self.histories.disk_read.push_with_metadata(
                     measurement_instant(
                         now,
                         wall_clock_now_ms,
@@ -241,8 +480,10 @@ impl App {
                     ),
                     frame.disk_read_bytes_per_sec.sampled_at_ms,
                     disk_r,
+                    &frame.disk_read_bytes_per_sec.source,
+                    frame.disk_read_bytes_per_sec.unavailable_reason.as_ref(),
                 );
-                self.histories.disk_write.push(
+                self.histories.disk_write.push_with_metadata(
                     measurement_instant(
                         now,
                         wall_clock_now_ms,
@@ -250,12 +491,14 @@ impl App {
                     ),
                     frame.disk_write_bytes_per_sec.sampled_at_ms,
                     disk_w,
+                    &frame.disk_write_bytes_per_sec.source,
+                    frame.disk_write_bytes_per_sec.unavailable_reason.as_ref(),
                 );
 
                 // Network
                 let net_rx = frame.network_rx_bytes_per_sec.value.map(|v| v as f32);
                 let net_tx = frame.network_tx_bytes_per_sec.value.map(|v| v as f32);
-                self.histories.net_rx.push(
+                self.histories.net_rx.push_with_metadata(
                     measurement_instant(
                         now,
                         wall_clock_now_ms,
@@ -263,8 +506,10 @@ impl App {
                     ),
                     frame.network_rx_bytes_per_sec.sampled_at_ms,
                     net_rx,
+                    &frame.network_rx_bytes_per_sec.source,
+                    frame.network_rx_bytes_per_sec.unavailable_reason.as_ref(),
                 );
-                self.histories.net_tx.push(
+                self.histories.net_tx.push_with_metadata(
                     measurement_instant(
                         now,
                         wall_clock_now_ms,
@@ -272,6 +517,8 @@ impl App {
                     ),
                     frame.network_tx_bytes_per_sec.sampled_at_ms,
                     net_tx,
+                    &frame.network_tx_bytes_per_sec.source,
+                    frame.network_tx_bytes_per_sec.unavailable_reason.as_ref(),
                 );
 
                 // Selected Process trends (only recorded while observed!)
@@ -329,7 +576,6 @@ impl App {
         // Live collection continues in self.histories without mutating the display.
         // Clone only the Arc handle so page controls can mutably borrow pause state.
         let frozen_histories = self.display_pause.frozen_histories.clone();
-        let render_histories = frozen_histories.as_deref().unwrap_or(&self.histories);
 
         // 1. Sidebar (208 px)
         egui::Panel::left("nav_sidebar")
@@ -358,6 +604,7 @@ impl App {
                     (Page::Hardware, "Hardware", icons::draw_hardware),
                     (Page::Benchmarks, "Benchmarks", icons::draw_benchmarks),
                     (Page::Capabilities, "Capabilities", icons::draw_capabilities),
+                    (Page::Recordings, "Recordings", icons::draw_benchmarks),
                     (Page::Settings, "Settings", icons::draw_settings),
                 ];
 
@@ -411,6 +658,11 @@ impl App {
 
         // 2. Central Panel
         egui::CentralPanel::default().show(root, |ui| {
+            if self.page == Page::Recordings {
+                self.render_recordings_page(ui, frame_opt.clone(), topo_opt.as_ref(), shared_copy.benchmark_state.as_ref(), &shared_copy.diagnostic_logs, &app_state, p);
+                return;
+            }
+            let render_histories = frozen_histories.as_deref().unwrap_or(&self.histories);
             // Action error banner
             if let Some(err_msg) = &shared_copy.action_error {
                 egui::Frame::group(ui.style())
@@ -437,17 +689,13 @@ impl App {
                     ui.add_space(8.0);
 
                     #[cfg(windows)]
-                    if ui.button("Authorize Windows Helper (Administrator Approval)").clicked() {
-                        let script = std::env::current_exe()
-                            .ok()
-                            .and_then(|p| p.parent().map(|p| p.join("Authorize-Planora.ps1")));
-                        if let Some(script) = script {
-                            let _ = std::process::Command::new("powershell.exe")
-                                .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-                                .arg(script)
-                                .spawn();
-                        }
+                    if ui.add_enabled(self.authorization_child.is_none(), egui::Button::new("Authorize Windows Helper (Administrator Approval)")).clicked() {
+                        self.launch_helper_script("Authorize-Planora.ps1");
                     }
+                    #[cfg(windows)]
+                    if self.authorization_child.is_some() { ui.spinner(); ui.label("Waiting for administrator approval and helper restart…"); }
+                    #[cfg(windows)]
+                    if let Some(error) = &self.authorization_error { ui.colored_label(p.error, error); }
 
                     #[cfg(target_os = "macos")]
                     if ui.button("Request macOS Daemon Approval").clicked()
@@ -512,21 +760,33 @@ impl App {
                             );
                         });
                 },
-                Page::Processes => render_processes_view(
-                    ui,
-                    frame,
-                    render_histories,
-                    &mut self.processes_state,
-                    &app_state,
-                    &mut self.display_pause,
-                    current_poll,
-                    &mut self.selected,
-                    shared_copy.affinity.as_ref(),
-                    topo_opt.as_ref(),
-                    &self.tx,
-                    render_now,
-                    p,
-                ),
+                Page::Processes => {
+                    render_processes_view(
+                        ui,
+                        frame,
+                        render_histories,
+                        &mut self.processes_state,
+                        &app_state,
+                        &mut self.display_pause,
+                        current_poll,
+                        &mut self.selected,
+                        shared_copy.affinity.as_ref(),
+                        topo_opt.as_ref(),
+                        &self.tx,
+                        render_now,
+                        p,
+                    );
+                    let table = &self.processes_state.table_state;
+                    if self.settings.process_columns != table.columns
+                        || self.settings.process_sort_column != table.sort_column
+                        || self.settings.process_sort_descending != table.sort_descending
+                    {
+                        self.settings.process_columns = table.columns;
+                        self.settings.process_sort_column = table.sort_column;
+                        self.settings.process_sort_descending = table.sort_descending;
+                        self.settings_error = self.settings.save().err().map(|e| format!("Could not save preferences: {e}"));
+                    }
+                },
                 Page::Hardware => {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
@@ -567,16 +827,24 @@ impl App {
                     current_poll,
                     p,
                 ),
-                Page::Settings => render_settings_view(
-                    ui,
-                    &mut self.settings,
-                    &self.poll_ms,
-                    &shared_copy.diagnostic_logs,
-                    &app_state,
-                    &mut self.display_pause,
-                    &self.tx,
-                    p,
-                ),
+                Page::Settings => {
+                    render_settings_view(
+                        ui, &mut self.settings, &mut self.settings_error, &self.poll_ms,
+                        shared_copy.sampling_effective_ms, &shared_copy.diagnostic_logs,
+                        &app_state, &mut self.display_pause, &self.tx, p,
+                    );
+                    #[cfg(windows)] {
+                        ui.separator();
+                        ui.strong("Helper authorization");
+                        ui.label("Revoking stops the local helper until an administrator authorizes it again.");
+                        if ui.add_enabled(self.authorization_child.is_none(), egui::Button::new("Revoke Helper Authorization")).clicked() {
+                            self.launch_helper_script("Revoke-Planora.ps1");
+                        }
+                        if self.authorization_child.is_some() { ui.label("Waiting for administrator approval…"); }
+                        if let Some(error) = &self.authorization_error { ui.colored_label(p.error, error); }
+                    }
+                },
+                Page::Recordings => unreachable!("recordings page rendered before frame selection"),
             }
         });
     }
@@ -633,6 +901,7 @@ fn main() -> eframe::Result<()> {
                     "benchmarks" => Page::Benchmarks,
                     "capabilities" => Page::Capabilities,
                     "settings" => Page::Settings,
+                    "recordings" => Page::Recordings,
                     _ => Page::Overview,
                 };
                 i += 2;
@@ -735,6 +1004,8 @@ mod tests {
             memory_bytes: Metric::available(1024, "bytes", "fixture", 1),
             disk_read_bytes_per_sec: m.clone(),
             disk_write_bytes_per_sec: m.clone(),
+            io_read_bytes_per_sec: m.clone(),
+            io_write_bytes_per_sec: m.clone(),
             gpu_percent: Metric::unavailable(
                 "%",
                 "fixture",
@@ -773,6 +1044,10 @@ mod tests {
                 1,
                 AvailabilityReason::Unsupported("missing".into()),
             ),
+            gpu_engines: Vec::new(),
+            gpu_engine_unavailable_reason: Some(planora_core::AvailabilityReason::WarmingUp),
+            disks: Vec::new(),
+            network_interfaces: Vec::new(),
             package_power_watts: Metric::unavailable(
                 "W",
                 "fixture",
@@ -850,17 +1125,21 @@ mod tests {
     #[test]
     fn settings_serialization_round_trip() {
         let s = UserSettings {
+            schema_version: 2,
             theme: Theme::Dark,
             density: theme::Density::Compact,
-            poll_interval_ms: 200,
+            poll_interval_ms: 250,
             hardware_view_mode: state::HardwareViewMode::Tree,
             reduced_motion: true,
             default_history_range: history::HistoryRange::Min5,
+            process_columns: components::table::TableColumnsConfig::default(),
+            process_sort_column: components::table::SortColumn::Cpu,
+            process_sort_descending: true,
         };
         let serialized = serde_json::to_string(&s).unwrap();
         let deserialized: UserSettings = serde_json::from_str(&serialized).unwrap();
         assert_eq!(deserialized.theme, Theme::Dark);
-        assert_eq!(deserialized.poll_interval_ms, 200);
+        assert_eq!(deserialized.poll_interval_ms, 250);
         assert_eq!(deserialized.density, theme::Density::Compact);
         assert_eq!(
             deserialized.hardware_view_mode,

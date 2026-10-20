@@ -8,7 +8,7 @@ use planora_core::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    io,
+    io::{self, Write},
     path::PathBuf,
     sync::{
         Arc, Mutex,
@@ -28,6 +28,7 @@ pub enum Page {
     Benchmarks,
     Capabilities,
     Settings,
+    Recordings,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -38,57 +39,155 @@ pub enum HardwareViewMode {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct UserSettings {
+    pub schema_version: u32,
     pub theme: Theme,
     pub density: Density,
     pub poll_interval_ms: u64,
     pub hardware_view_mode: HardwareViewMode,
     pub reduced_motion: bool,
     pub default_history_range: HistoryRange,
+    pub process_columns: crate::components::table::TableColumnsConfig,
+    pub process_sort_column: crate::components::table::SortColumn,
+    pub process_sort_descending: bool,
 }
 
 impl Default for UserSettings {
     fn default() -> Self {
         Self {
+            schema_version: 2,
             theme: Theme::System,
             density: Density::Normal,
             poll_interval_ms: 100,
             hardware_view_mode: HardwareViewMode::Canvas,
             reduced_motion: false,
             default_history_range: HistoryRange::Sec60,
+            process_columns: crate::components::table::TableColumnsConfig::default(),
+            process_sort_column: crate::components::table::SortColumn::Cpu,
+            process_sort_descending: true,
         }
     }
 }
 
 impl UserSettings {
     pub fn file_path() -> Option<PathBuf> {
-        let base = std::env::var_os("APPDATA")
+        #[cfg(target_os = "macos")]
+        let base = std::env::var_os("HOME")
             .map(PathBuf::from)
+            .map(|p| p.join("Library").join("Application Support"));
+        #[cfg(windows)]
+        let base = std::env::var_os("APPDATA").map(PathBuf::from);
+        #[cfg(all(not(windows), not(target_os = "macos")))]
+        let base = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
             .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".config")));
 
         base.map(|b| b.join("Planora").join("settings.json"))
     }
 
     pub fn load() -> Self {
-        if let Some(path) = Self::file_path()
-            && let Ok(data) = std::fs::read_to_string(path)
-            && let Ok(settings) = serde_json::from_str(&data)
-        {
-            return settings;
+        if let Some(path) = Self::file_path() {
+            let paths = vec![path];
+            #[cfg(target_os = "macos")]
+            let paths = {
+                let mut paths = paths;
+                if let Some(legacy) = std::env::var_os("HOME") {
+                    paths.push(PathBuf::from(legacy).join(".config/Planora/settings.json"));
+                }
+                paths
+            };
+            for path in paths {
+                if let Ok(data) = std::fs::read_to_string(path)
+                    && let Ok(mut settings) = serde_json::from_str::<Self>(&data)
+                {
+                    settings.schema_version = 2;
+                    settings.poll_interval_ms = match settings.poll_interval_ms {
+                        50 => 100,
+                        200 => 250,
+                        other => other,
+                    };
+                    if !planora_core::SUPPORTED_SAMPLE_INTERVALS_MS
+                        .contains(&settings.poll_interval_ms)
+                    {
+                        settings.poll_interval_ms = Self::default().poll_interval_ms;
+                    }
+                    return settings;
+                }
+            }
         }
         Self::default()
     }
 
-    pub fn save(&self) {
-        if let Some(path) = Self::file_path()
-            && let Some(parent) = path.parent()
-        {
-            let _ = std::fs::create_dir_all(parent);
-            if let Ok(data) = serde_json::to_string_pretty(self) {
-                let _ = std::fs::write(path, data);
-            }
+    pub fn save(&self) -> io::Result<()> {
+        static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(1);
+        let path = Self::file_path().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "configuration directory unavailable",
+            )
+        })?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid settings path"))?;
+        std::fs::create_dir_all(parent)?;
+        let temp = parent.join(format!(
+            "settings.{}.{}.{}.tmp",
+            std::process::id(),
+            planora_telemetry::unix_ms(),
+            NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
+        let data = serde_json::to_vec_pretty(self).map_err(io::Error::other)?;
+        let result = (|| -> io::Result<()> {
+            file.write_all(&data)?;
+            file.sync_all()?;
+            drop(file);
+            replace_settings_file(&temp, &path)
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(temp);
         }
+        result
     }
+}
+
+#[cfg(not(windows))]
+fn replace_settings_file(temp: &std::path::Path, target: &std::path::Path) -> io::Result<()> {
+    std::fs::rename(temp, target)
+}
+
+#[cfg(windows)]
+fn replace_settings_file(temp: &std::path::Path, target: &std::path::Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+    let from: Vec<u16> = temp
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let to: Vec<u16> = target
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    if unsafe {
+        MoveFileExW(
+            from.as_ptr(),
+            to.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -97,6 +196,7 @@ pub enum AppState {
     AwaitingAuthorization,
     Connecting,
     Live,
+    Replay,
     Reconnecting,
     Stale(Duration),
     IncompatibleVersion { helper_version: u32 },
@@ -136,6 +236,7 @@ pub struct Shared {
     pub topology: Option<Topology>,
     pub capabilities: Vec<Capability>,
     pub benchmark_state: Option<BenchmarkState>,
+    pub sampling_effective_ms: Option<u64>,
     pub diagnostic_logs: Vec<DiagnosticEntry>,
     pub affinity: Option<(planora_core::ProcessIdentity, Vec<u16>)>,
     pub action_error: Option<String>,
@@ -156,12 +257,24 @@ fn handle_response(response: Response, state: &Arc<Mutex<Shared>>) -> bool {
     let mut shared = state.lock().unwrap();
     match response {
         Response::Snapshot(frame) => {
+            if let Err(error) = frame.validate() {
+                shared.action_error = Some(format!("Invalid telemetry frame: {error}"));
+                return false;
+            }
+            let is_new = shared.frame.as_ref().is_none_or(|previous| {
+                previous.session_id != frame.session_id || previous.sequence != frame.sequence
+            });
             shared.state = Some(AppState::Live);
-            shared.last_frame_received = Some(Instant::now());
-            shared.frame = Some(Arc::from(frame));
+            if is_new {
+                shared.last_frame_received = Some(Instant::now());
+                shared.frame = Some(Arc::from(frame));
+            }
         }
         Response::BenchmarkStatus(bms) => {
             shared.benchmark_state = Some(bms);
+        }
+        Response::SamplingStatus { effective_ms, .. } => {
+            shared.sampling_effective_ms = Some(effective_ms);
         }
         Response::DiagnosticLogs(logs) => {
             shared.diagnostic_logs = logs;
@@ -292,6 +405,37 @@ pub fn background_worker(
             }
         }
 
+        // Register this connection's collection cadence before fetching data.
+        let mut configured_poll_ms = poll_ms.load(Ordering::Relaxed);
+        next_request_id = next_request_id.wrapping_add(1);
+        let sampling_req = Request {
+            request_id: next_request_id,
+            command: Command::SetSamplingInterval {
+                interval_ms: configured_poll_ms,
+            },
+        };
+        match planora_helper::exchange_request_timeout(
+            &mut stream,
+            &sampling_req,
+            planora_helper::REQUEST_TIMEOUT,
+        ) {
+            Ok(ResponseEnvelope {
+                request_id,
+                response:
+                    Response::SamplingStatus {
+                        requested_ms,
+                        effective_ms,
+                    },
+            }) if request_id == sampling_req.request_id && requested_ms == configured_poll_ms => {
+                state.lock().unwrap().sampling_effective_ms = Some(effective_ms);
+            }
+            _ => {
+                state.lock().unwrap().state = Some(AppState::Reconnecting);
+                context.request_repaint();
+                continue;
+            }
+        }
+
         // Fetch topology and capabilities on connect with REQUEST_TIMEOUT
         next_request_id = next_request_id.wrapping_add(1);
         let topo_req_id = next_request_id;
@@ -360,7 +504,11 @@ pub fn background_worker(
                 response: Response::Snapshot(frame),
                 ..
             }) => {
-                handle_response(Response::Snapshot(frame), &state);
+                if !handle_response(Response::Snapshot(frame), &state) {
+                    state.lock().unwrap().state = Some(AppState::Reconnecting);
+                    context.request_repaint();
+                    continue;
+                }
             }
             _ => {
                 state.lock().unwrap().state = Some(AppState::Reconnecting);
@@ -375,6 +523,38 @@ pub fn background_worker(
 
         // Main command/sample loop with strict request-response pairing and deadlines
         loop {
+            let desired_poll_ms = poll_ms.load(Ordering::Relaxed);
+            if desired_poll_ms != configured_poll_ms {
+                next_request_id = next_request_id.wrapping_add(1);
+                let req = Request {
+                    request_id: next_request_id,
+                    command: Command::SetSamplingInterval {
+                        interval_ms: desired_poll_ms,
+                    },
+                };
+                match planora_helper::exchange_request_timeout(
+                    &mut stream,
+                    &req,
+                    planora_helper::REQUEST_TIMEOUT,
+                ) {
+                    Ok(ResponseEnvelope {
+                        request_id,
+                        response:
+                            Response::SamplingStatus {
+                                requested_ms,
+                                effective_ms,
+                            },
+                    }) if request_id == req.request_id && requested_ms == desired_poll_ms => {
+                        configured_poll_ms = desired_poll_ms;
+                        state.lock().unwrap().sampling_effective_ms = Some(effective_ms);
+                        context.request_repaint();
+                    }
+                    _ => {
+                        state.lock().unwrap().state = Some(AppState::Reconnecting);
+                        break;
+                    }
+                }
+            }
             // 1. Drain up to 4 pending user commands from UI to keep sampling responsive
             let mut connection_healthy = true;
             let mut commands_processed = 0;
@@ -474,7 +654,10 @@ pub fn background_worker(
             ) {
                 Ok(env) => {
                     if let Response::Snapshot(frame) = env.response {
-                        handle_response(Response::Snapshot(frame), &state);
+                        if !handle_response(Response::Snapshot(frame), &state) {
+                            state.lock().unwrap().state = Some(AppState::Reconnecting);
+                            break;
+                        }
                     } else {
                         // Response type mismatch for Snapshot command
                         let mut shared = state.lock().unwrap();
@@ -529,6 +712,10 @@ mod tests {
                 1000,
                 AvailabilityReason::Unsupported("None".into()),
             ),
+            gpu_engines: Vec::new(),
+            gpu_engine_unavailable_reason: Some(planora_core::AvailabilityReason::WarmingUp),
+            disks: Vec::new(),
+            network_interfaces: Vec::new(),
             package_power_watts: Metric::unavailable(
                 "W",
                 "test",
@@ -612,6 +799,36 @@ mod tests {
             assert_eq!(shared.state, Some(AppState::Reconnecting));
             assert_eq!(shared.frame.as_ref().unwrap().sequence, 1);
         }
+    }
+
+    #[test]
+    fn repeated_or_invalid_frame_cannot_freshen_display() {
+        let state = Arc::new(Mutex::new(Shared::default()));
+        assert!(handle_response(
+            Response::Snapshot(Box::new(dummy_frame(1))),
+            &state
+        ));
+        let received = state.lock().unwrap().last_frame_received.unwrap();
+        let original = state.lock().unwrap().frame.clone().unwrap();
+        assert!(handle_response(
+            Response::Snapshot(Box::new(dummy_frame(1))),
+            &state
+        ));
+        assert_eq!(state.lock().unwrap().last_frame_received, Some(received));
+        assert!(Arc::ptr_eq(
+            &original,
+            state.lock().unwrap().frame.as_ref().unwrap()
+        ));
+
+        let mut invalid = dummy_frame(2);
+        invalid.cpu_percent.value = Some(f32::NAN);
+        assert!(!handle_response(
+            Response::Snapshot(Box::new(invalid)),
+            &state
+        ));
+        let shared = state.lock().unwrap();
+        assert_eq!(shared.last_frame_received, Some(received));
+        assert_eq!(shared.frame.as_ref().unwrap().sequence, 1);
     }
 
     #[test]

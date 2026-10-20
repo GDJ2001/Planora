@@ -2,7 +2,7 @@ use interprocess::local_socket::prelude::*;
 use planora_bench::{ChaseMode, run_cache_probe, run_core_matrix};
 use planora_core::{
     BenchmarkState, Capability, Command, DiagnosticEntry, ErrorCode, PROTOCOL_VERSION,
-    ProcessIdentity, Response, ResponseEnvelope, TelemetryFrame,
+    ProcessIdentity, Response, ResponseEnvelope, SUPPORTED_SAMPLE_INTERVALS_MS, TelemetryFrame,
 };
 use planora_helper::{
     HANDSHAKE_TIMEOUT, REQUEST_TIMEOUT, caller_id, listener, peer_authorized,
@@ -22,6 +22,7 @@ use std::{
 
 static STOP: AtomicBool = AtomicBool::new(false);
 static ACTIVE_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
+static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 static CALLER_CONNECTIONS: Mutex<Option<HashMap<u64, usize>>> = Mutex::new(None);
 
 const MAX_TOTAL_CONNECTIONS: usize = 16;
@@ -30,10 +31,13 @@ const MAX_DIAGNOSTIC_ENTRIES: usize = 256;
 
 struct ConnectionGuard {
     caller_id: u64,
+    connection_id: u64,
+    sampling: Arc<SamplingCoordinator>,
 }
 
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
+        self.sampling.remove(self.connection_id);
         ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::SeqCst);
         let mut map = CALLER_CONNECTIONS.lock().unwrap();
         if let Some(map) = map.as_mut()
@@ -45,6 +49,36 @@ impl Drop for ConnectionGuard {
                 *cnt -= 1;
             }
         }
+    }
+}
+
+#[derive(Default)]
+struct SamplingCoordinator {
+    requests: Mutex<HashMap<u64, u64>>,
+}
+
+impl SamplingCoordinator {
+    fn set(&self, connection_id: u64, interval_ms: u64) -> Result<u64, ()> {
+        if !SUPPORTED_SAMPLE_INTERVALS_MS.contains(&interval_ms) {
+            return Err(());
+        }
+        let mut requests = self.requests.lock().unwrap();
+        requests.insert(connection_id, interval_ms);
+        Ok(requests.values().copied().min().unwrap_or(1_000))
+    }
+
+    fn remove(&self, connection_id: u64) {
+        self.requests.lock().unwrap().remove(&connection_id);
+    }
+
+    fn effective_ms(&self) -> u64 {
+        self.requests
+            .lock()
+            .unwrap()
+            .values()
+            .copied()
+            .min()
+            .unwrap_or(1_000)
     }
 }
 
@@ -81,7 +115,8 @@ impl DiagnosticLogger {
 struct BenchmarkManager {
     current_job_id: AtomicU64,
     state: Mutex<BenchmarkState>,
-    cancel: Arc<AtomicBool>,
+    cancel: Mutex<Arc<AtomicBool>>,
+    worker: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
 impl BenchmarkManager {
@@ -89,7 +124,8 @@ impl BenchmarkManager {
         Self {
             current_job_id: AtomicU64::new(0),
             state: Mutex::new(BenchmarkState::Idle),
-            cancel: Arc::new(AtomicBool::new(false)),
+            cancel: Mutex::new(Arc::new(AtomicBool::new(false))),
+            worker: Mutex::new(None),
         }
     }
 
@@ -99,15 +135,41 @@ impl BenchmarkManager {
 
     fn cancel(&self, job_id: u64) -> Response {
         let active = self.current_job_id.load(Ordering::SeqCst);
-        if active == job_id && active != 0 {
-            self.cancel.store(true, Ordering::SeqCst);
-            *self.state.lock().unwrap() = BenchmarkState::Cancelled { job_id };
-            Response::BenchmarkStatus(BenchmarkState::Cancelled { job_id })
+        let mut state = self.state.lock().unwrap();
+        if active == job_id
+            && matches!(*state, BenchmarkState::Running { job_id: running_id, .. } if running_id == job_id)
+        {
+            self.cancel.lock().unwrap().store(true, Ordering::SeqCst);
+            *state = BenchmarkState::Cancelling { job_id };
+            Response::BenchmarkStatus(state.clone())
         } else {
             Response::Error {
                 code: ErrorCode::NotFound,
                 message: format!("no active benchmark job {job_id} to cancel"),
             }
+        }
+    }
+
+    fn stop_with_deadline(&self, timeout: Duration) -> bool {
+        self.cancel.lock().unwrap().store(true, Ordering::SeqCst);
+        let deadline = Instant::now() + timeout;
+        loop {
+            let finished = self
+                .worker
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_none_or(thread::JoinHandle::is_finished);
+            if finished {
+                if let Some(handle) = self.worker.lock().unwrap().take() {
+                    return handle.join().is_ok();
+                }
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(10));
         }
     }
 }
@@ -117,10 +179,11 @@ struct State {
     latest_frame: Arc<RwLock<TelemetryFrame>>,
     benchmarks: Arc<BenchmarkManager>,
     diagnostics: Arc<DiagnosticLogger>,
+    sampling: Arc<SamplingCoordinator>,
 }
 
 // The Linux systemd unit uses an unprivileged service account
-// with CAP_SYS_NICE (for affinity) and/or CAP_PERFMON.
+// with CAP_PERFMON. Privileged affinity writes remain disabled on Linux.
 #[cfg(target_os = "linux")]
 fn has_effective_capability(status: &str, capability: u32) -> bool {
     if capability >= u64::BITS {
@@ -135,16 +198,12 @@ fn has_effective_capability(status: &str, capability: u32) -> bool {
 
 #[cfg(target_os = "linux")]
 fn elevated() -> bool {
-    const CAP_SYS_NICE: u32 = 23;
     const CAP_PERFMON: u32 = 38;
     let is_root = unsafe { libc::geteuid() == 0 };
     is_root
         || std::fs::read_to_string("/proc/self/status")
             .ok()
-            .is_some_and(|status| {
-                has_effective_capability(&status, CAP_SYS_NICE)
-                    || has_effective_capability(&status, CAP_PERFMON)
-            })
+            .is_some_and(|status| has_effective_capability(&status, CAP_PERFMON))
 }
 
 #[cfg(target_os = "macos")]
@@ -163,7 +222,9 @@ fn capabilities() -> Vec<Capability> {
         planora_telemetry::linux_amd_gpu_busy_available(),
         planora_telemetry::linux_rapl_available(),
     );
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
+    let (gpu, power) = (planora_telemetry::windows_gpu_counter_available(), false);
+    #[cfg(not(any(target_os = "linux", windows)))]
     let (gpu, power) = (false, false);
 
     vec![
@@ -173,7 +234,7 @@ fn capabilities() -> Vec<Capability> {
             reason: None,
         },
         Capability {
-            name: "GPU utilization".into(),
+            name: "GPU engine utilization".into(),
             available: gpu,
             reason: (!gpu).then(|| "supported GPU utilization counter unavailable".into()),
         },
@@ -362,7 +423,7 @@ fn set_affinity(_process: &ProcessIdentity, _cpus: &[u16]) -> Result<(Vec<u16>, 
     }
 }
 
-fn dispatch(command: Command, req_id: u64, state: &State) -> Response {
+fn dispatch(command: Command, req_id: u64, connection_id: u64, state: &State) -> Response {
     match command {
         Command::Hello { version } if version == PROTOCOL_VERSION => Response::Hello {
             version,
@@ -383,6 +444,18 @@ fn dispatch(command: Command, req_id: u64, state: &State) -> Response {
             }
         }
         Command::Topology => Response::Topology(planora_topology::discover()),
+        Command::SetSamplingInterval { interval_ms } => {
+            match state.sampling.set(connection_id, interval_ms) {
+                Ok(effective_ms) => Response::SamplingStatus {
+                    requested_ms: interval_ms,
+                    effective_ms,
+                },
+                Err(()) => Response::Error {
+                    code: ErrorCode::InvalidInput,
+                    message: format!("unsupported sampling interval {interval_ms} ms"),
+                },
+            }
+        }
         Command::Snapshot => {
             let frame = state.latest_frame.read().unwrap().clone();
             Response::Snapshot(Box::new(frame))
@@ -390,7 +463,10 @@ fn dispatch(command: Command, req_id: u64, state: &State) -> Response {
         Command::Capabilities => Response::Capabilities(capabilities()),
         Command::RunCacheProbe { job_id, page_mode } => {
             let mut bm_state = state.benchmarks.state.lock().unwrap();
-            if matches!(*bm_state, BenchmarkState::Running { .. }) {
+            if matches!(
+                *bm_state,
+                BenchmarkState::Running { .. } | BenchmarkState::Cancelling { .. }
+            ) {
                 state.diagnostics.log(
                     req_id,
                     ErrorCode::Busy,
@@ -401,7 +477,8 @@ fn dispatch(command: Command, req_id: u64, state: &State) -> Response {
                     message: "a benchmark is already running".into(),
                 };
             }
-            state.benchmarks.cancel.store(false, Ordering::SeqCst);
+            let cancel = Arc::new(AtomicBool::new(false));
+            *state.benchmarks.cancel.lock().unwrap() = cancel.clone();
             state
                 .benchmarks
                 .current_job_id
@@ -413,15 +490,18 @@ fn dispatch(command: Command, req_id: u64, state: &State) -> Response {
 
             let bm = state.benchmarks.clone();
             let diag = state.diagnostics.clone();
-            thread::spawn(move || {
+            let worker = thread::spawn(move || {
                 let _start = Instant::now();
                 let mode = if page_mode {
                     ChaseMode::Page
                 } else {
                     ChaseMode::Line
                 };
-                let res = run_cache_probe(mode, &bm.cancel);
+                let res = run_cache_probe(mode, &cancel);
                 let mut lock = bm.state.lock().unwrap();
+                if bm.current_job_id.load(Ordering::SeqCst) != job_id {
+                    return;
+                }
                 match res {
                     Ok(result) => {
                         *lock = BenchmarkState::Completed { job_id, result };
@@ -453,6 +533,7 @@ fn dispatch(command: Command, req_id: u64, state: &State) -> Response {
                     }
                 }
             });
+            *state.benchmarks.worker.lock().unwrap() = Some(worker);
 
             Response::BenchmarkStatus(BenchmarkState::Running {
                 job_id,
@@ -470,7 +551,10 @@ fn dispatch(command: Command, req_id: u64, state: &State) -> Response {
                 };
             }
             let mut bm_state = state.benchmarks.state.lock().unwrap();
-            if matches!(*bm_state, BenchmarkState::Running { .. }) {
+            if matches!(
+                *bm_state,
+                BenchmarkState::Running { .. } | BenchmarkState::Cancelling { .. }
+            ) {
                 state.diagnostics.log(
                     req_id,
                     ErrorCode::Busy,
@@ -481,7 +565,8 @@ fn dispatch(command: Command, req_id: u64, state: &State) -> Response {
                     message: "a benchmark is already running".into(),
                 };
             }
-            state.benchmarks.cancel.store(false, Ordering::SeqCst);
+            let cancel = Arc::new(AtomicBool::new(false));
+            *state.benchmarks.cancel.lock().unwrap() = cancel.clone();
             state
                 .benchmarks
                 .current_job_id
@@ -493,9 +578,12 @@ fn dispatch(command: Command, req_id: u64, state: &State) -> Response {
 
             let bm = state.benchmarks.clone();
             let diag = state.diagnostics.clone();
-            thread::spawn(move || {
-                let res = run_core_matrix(&logical_cpus, bm.cancel.clone());
+            let worker = thread::spawn(move || {
+                let res = run_core_matrix(&logical_cpus, cancel);
                 let mut lock = bm.state.lock().unwrap();
+                if bm.current_job_id.load(Ordering::SeqCst) != job_id {
+                    return;
+                }
                 match res {
                     Ok(result) => {
                         *lock = BenchmarkState::Completed { job_id, result };
@@ -527,6 +615,7 @@ fn dispatch(command: Command, req_id: u64, state: &State) -> Response {
                     }
                 }
             });
+            *state.benchmarks.worker.lock().unwrap() = Some(worker);
 
             Response::BenchmarkStatus(BenchmarkState::Running {
                 job_id,
@@ -601,9 +690,11 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
     let session_id = planora_telemetry::unix_ms();
     let mut initial_sampler = Sampler::new_with_session(session_id, 1);
     let initial_frame = initial_sampler.sample();
+    initial_frame.validate().map_err(io::Error::other)?;
 
     let latest_frame = Arc::new(RwLock::new(initial_frame));
     let diagnostics = Arc::new(DiagnosticLogger::new());
+    let sampling = Arc::new(SamplingCoordinator::default());
     diagnostics.log(
         0,
         ErrorCode::Internal,
@@ -613,19 +704,36 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
     // Spawn dedicated sampling worker
     let frame_sink = latest_frame.clone();
     let diag_sink = diagnostics.clone();
-    thread::spawn(move || {
+    let sampling_for_worker = sampling.clone();
+    let sampling_worker = thread::spawn(move || {
         let mut sampler = initial_sampler;
+        let mut current_interval = Duration::from_secs(1);
+        let mut next_due = Instant::now() + current_interval;
         while !STOP.load(Ordering::Relaxed) {
-            thread::sleep(Duration::from_millis(100));
+            let interval = Duration::from_millis(sampling_for_worker.effective_ms());
+            if interval != current_interval {
+                current_interval = interval;
+                next_due = Instant::now() + interval;
+            }
+            let now = Instant::now();
+            if now < next_due {
+                thread::sleep((next_due - now).min(Duration::from_millis(25)));
+                continue;
+            }
             let frame = sampler.sample();
             if let Err(err) = frame.validate() {
                 diag_sink.log(
                     0,
                     ErrorCode::Internal,
-                    format!("telemetry frame validation warning: {err}"),
+                    format!("telemetry frame rejected: {err}"),
                 );
+            } else {
+                *frame_sink.write().unwrap() = frame;
             }
-            *frame_sink.write().unwrap() = frame;
+            next_due += interval;
+            if next_due <= Instant::now() {
+                next_due = Instant::now() + interval;
+            }
         }
     });
 
@@ -634,11 +742,12 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
         latest_frame,
         benchmarks: Arc::new(BenchmarkManager::new()),
         diagnostics: diagnostics.clone(),
+        sampling: sampling.clone(),
     });
 
     let listener = listener()?;
     on_ready();
-    eprintln!("Planora helper v2 ready (session {session_id}, local IPC only)");
+    eprintln!("Planora helper protocol v3 ready (session {session_id}, local IPC only)");
 
     for incoming in listener.incoming() {
         if STOP.load(Ordering::Relaxed) {
@@ -683,8 +792,13 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
         }
 
         let state = state.clone();
+        let connection_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
         thread::spawn(move || {
-            let _guard = ConnectionGuard { caller_id: cid };
+            let _guard = ConnectionGuard {
+                caller_id: cid,
+                connection_id,
+                sampling: state.sampling.clone(),
+            };
             state.diagnostics.log(
                 0,
                 ErrorCode::Internal,
@@ -740,7 +854,7 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
                     break;
                 };
 
-                let resp = dispatch(request.command, request.request_id, &state);
+                let resp = dispatch(request.command, request.request_id, connection_id, &state);
                 let env = ResponseEnvelope {
                     request_id: request.request_id,
                     response: resp,
@@ -759,6 +873,23 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
         });
     }
 
+    STOP.store(true, Ordering::Relaxed);
+    if !state.benchmarks.stop_with_deadline(Duration::from_secs(2)) {
+        diagnostics.log(
+            0,
+            ErrorCode::Busy,
+            "benchmark did not acknowledge service shutdown within 2 seconds",
+        );
+    }
+    if sampling_worker.is_finished() {
+        let _ = sampling_worker.join();
+    } else {
+        diagnostics.log(
+            0,
+            ErrorCode::Busy,
+            "sampler still exiting at service shutdown",
+        );
+    }
     Ok(())
 }
 
@@ -848,6 +979,73 @@ fn main() -> io::Result<()> {
     }
 
     run_server(|| {})
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn sampling_interval_uses_fastest_connected_client() {
+        let sampling = SamplingCoordinator::default();
+        assert_eq!(sampling.effective_ms(), 1_000);
+        assert_eq!(sampling.set(1, 500), Ok(500));
+        assert_eq!(sampling.set(2, 100), Ok(100));
+        assert_eq!(sampling.set(3, 2_000), Ok(100));
+        assert_eq!(sampling.set(1, 50), Err(()));
+        assert_eq!(sampling.effective_ms(), 100);
+        sampling.remove(2);
+        assert_eq!(sampling.effective_ms(), 500);
+        sampling.remove(1);
+        sampling.remove(3);
+        assert_eq!(sampling.effective_ms(), 1_000);
+    }
+
+    #[test]
+    fn cancellation_stays_busy_until_worker_acknowledges() {
+        let manager = BenchmarkManager::new();
+        manager.current_job_id.store(42, Ordering::SeqCst);
+        *manager.state.lock().unwrap() = BenchmarkState::Running {
+            job_id: 42,
+            elapsed_ms: 0,
+        };
+        assert!(matches!(
+            manager.cancel(41),
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
+        assert!(matches!(
+            manager.cancel(42),
+            Response::BenchmarkStatus(BenchmarkState::Cancelling { job_id: 42 })
+        ));
+        assert!(manager.cancel.lock().unwrap().load(Ordering::SeqCst));
+        assert!(matches!(
+            manager.status(),
+            BenchmarkState::Cancelling { .. }
+        ));
+        assert!(matches!(
+            manager.cancel(42),
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn shutdown_signals_and_joins_owned_benchmark_worker() {
+        let manager = BenchmarkManager::new();
+        let cancel = manager.cancel.lock().unwrap().clone();
+        *manager.worker.lock().unwrap() = Some(thread::spawn(move || {
+            while !cancel.load(Ordering::SeqCst) {
+                thread::sleep(Duration::from_millis(1));
+            }
+        }));
+        assert!(manager.stop_with_deadline(Duration::from_secs(1)));
+        assert!(manager.worker.lock().unwrap().is_none());
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]

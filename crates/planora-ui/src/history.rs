@@ -1,11 +1,11 @@
-use planora_core::ProcessIdentity;
+use planora_core::{AvailabilityReason, ProcessIdentity};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::VecDeque,
     time::{Duration, Instant},
 };
 
-pub const MAX_HISTORY_DURATION: Duration = Duration::from_secs(300); // 5 minutes
+pub const MAX_HISTORY_DURATION: Duration = Duration::from_secs(900); // 15 minutes
 
 /// Convert a measurement's wall-clock capture time into the local monotonic timeline.
 /// `received_at` and `wall_clock_at_receipt_ms` must be taken together.
@@ -31,6 +31,7 @@ pub enum HistoryRange {
     #[default]
     Sec60,
     Min5,
+    Min15,
 }
 
 impl HistoryRange {
@@ -39,6 +40,7 @@ impl HistoryRange {
             Self::Sec30 => Duration::from_secs(30),
             Self::Sec60 => Duration::from_secs(60),
             Self::Min5 => Duration::from_secs(300),
+            Self::Min15 => Duration::from_secs(900),
         }
     }
 
@@ -47,6 +49,7 @@ impl HistoryRange {
             Self::Sec30 => "30s",
             Self::Sec60 => "60s",
             Self::Min5 => "5m",
+            Self::Min15 => "15m",
         }
     }
 }
@@ -56,6 +59,8 @@ pub struct Sample {
     pub time: Instant,
     pub timestamp_ms: u64,
     pub value: Option<f32>,
+    pub source: String,
+    pub unavailable_reason: Option<AvailabilityReason>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -71,6 +76,17 @@ impl TimeSeries {
     }
 
     pub fn push(&mut self, time: Instant, timestamp_ms: u64, value: Option<f32>) {
+        self.push_with_metadata(time, timestamp_ms, value, "UI history", None);
+    }
+
+    pub fn push_with_metadata(
+        &mut self,
+        time: Instant,
+        timestamp_ms: u64,
+        value: Option<f32>,
+        source: &str,
+        unavailable_reason: Option<&AvailabilityReason>,
+    ) {
         // Repeated reports of a cached measurement are not new observations.
         if self
             .samples
@@ -83,6 +99,8 @@ impl TimeSeries {
             time,
             timestamp_ms,
             value,
+            source: source.to_owned(),
+            unavailable_reason: unavailable_reason.cloned(),
         });
         self.prune_before(
             time.checked_sub(MAX_HISTORY_DURATION + Duration::from_secs(5))

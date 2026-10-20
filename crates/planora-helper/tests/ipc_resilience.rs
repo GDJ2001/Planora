@@ -52,6 +52,10 @@ fn dummy_frame(seq: u64) -> TelemetryFrame {
             1000,
             AvailabilityReason::Unsupported("None".into()),
         ),
+        gpu_engines: Vec::new(),
+        gpu_engine_unavailable_reason: Some(AvailabilityReason::WarmingUp),
+        disks: Vec::new(),
+        network_interfaces: Vec::new(),
         package_power_watts: Metric::unavailable(
             "W",
             "test",
