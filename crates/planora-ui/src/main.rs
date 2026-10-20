@@ -604,7 +604,7 @@ impl App {
                     (Page::Hardware, "Hardware", icons::draw_hardware),
                     (Page::Benchmarks, "Benchmarks", icons::draw_benchmarks),
                     (Page::Capabilities, "Capabilities", icons::draw_capabilities),
-                    (Page::Recordings, "Recordings", icons::draw_benchmarks),
+                    (Page::Recordings, "Recordings", icons::draw_recordings),
                     (Page::Settings, "Settings", icons::draw_settings),
                 ];
 
@@ -659,7 +659,9 @@ impl App {
         // 2. Central Panel
         egui::CentralPanel::default().show(root, |ui| {
             if self.page == Page::Recordings {
-                self.render_recordings_page(ui, frame_opt.clone(), topo_opt.as_ref(), shared_copy.benchmark_state.as_ref(), &shared_copy.diagnostic_logs, &app_state, p);
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    self.render_recordings_page(ui, frame_opt.clone(), topo_opt.as_ref(), shared_copy.benchmark_state.as_ref(), &shared_copy.diagnostic_logs, &app_state, p);
+                });
                 return;
             }
             let render_histories = frozen_histories.as_deref().unwrap_or(&self.histories);
@@ -828,21 +830,23 @@ impl App {
                     p,
                 ),
                 Page::Settings => {
-                    render_settings_view(
-                        ui, &mut self.settings, &mut self.settings_error, &self.poll_ms,
-                        shared_copy.sampling_effective_ms, &shared_copy.diagnostic_logs,
-                        &app_state, &mut self.display_pause, &self.tx, p,
-                    );
-                    #[cfg(windows)] {
-                        ui.separator();
-                        ui.strong("Helper authorization");
-                        ui.label("Revoking stops the local helper until an administrator authorizes it again.");
-                        if ui.add_enabled(self.authorization_child.is_none(), egui::Button::new("Revoke Helper Authorization")).clicked() {
-                            self.launch_helper_script("Revoke-Planora.ps1");
+                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                        render_settings_view(
+                            ui, &mut self.settings, &mut self.settings_error, &self.poll_ms,
+                            shared_copy.sampling_effective_ms, &shared_copy.diagnostic_logs,
+                            &app_state, &mut self.display_pause, &self.tx, p,
+                        );
+                        #[cfg(windows)] {
+                            ui.separator();
+                            ui.strong("Helper authorization");
+                            ui.label("Revoking stops the local helper until an administrator authorizes it again.");
+                            if ui.add_enabled(self.authorization_child.is_none(), egui::Button::new("Revoke Helper Authorization")).clicked() {
+                                self.launch_helper_script("Revoke-Planora.ps1");
+                            }
+                            if self.authorization_child.is_some() { ui.label("Waiting for administrator approval…"); }
+                            if let Some(error) = &self.authorization_error { ui.colored_label(p.error, error); }
                         }
-                        if self.authorization_child.is_some() { ui.label("Waiting for administrator approval…"); }
-                        if let Some(error) = &self.authorization_error { ui.colored_label(p.error, error); }
-                    }
+                    });
                 },
                 Page::Recordings => unreachable!("recordings page rendered before frame selection"),
             }

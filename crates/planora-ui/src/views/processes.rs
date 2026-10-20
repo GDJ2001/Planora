@@ -107,7 +107,7 @@ pub fn render_processes_view(
     ui.horizontal(|ui| {
         ui.add(
             egui::TextEdit::singleline(&mut state.table_state.search_query)
-                .hint_text("🔍 Search by process name or PID...")
+                .hint_text("Search by process name or PID...")
                 .desired_width(280.0),
         );
 

@@ -58,7 +58,7 @@ pub fn render_overview_view(
     if !frame.gpu_engines.is_empty() {
         ui.add_space(8.0);
         egui::CollapsingHeader::new(format!("GPU engine activity ({} instances)", frame.gpu_engines.len()))
-            .default_open(true)
+            .default_open(false)
             .show(ui, |ui| {
                 ui.label(egui::RichText::new("Each row is a Windows counter instance. Values are not summed into a GPU total.").color(p.secondary).size(12.0));
                 let mut engines: Vec<_> = frame.gpu_engines.iter().collect();

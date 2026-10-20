@@ -51,7 +51,7 @@ pub fn render_benchmarks_view(
         .inner_margin(egui::Margin::same(12))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.strong("🛡 Execution Guardrails & Memory Budget:");
+                ui.strong("Execution limits and memory budget");
             });
             ui.add_space(4.0);
             ui.label("• Working Set Ceiling: 64 MiB (strict total process memory allocation limit 72 MiB)");

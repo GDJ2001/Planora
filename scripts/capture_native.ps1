@@ -109,16 +109,11 @@ $resolutions = @(
     @{ W = 1920; H = 1080 }
 )
 foreach ($res in $resolutions) {
-    Capture-NativeWindow -View 'overview' -Theme 'dark' -Width $res.W -Height $res.H
-    Capture-NativeWindow -View 'overview' -Theme 'light' -Width $res.W -Height $res.H
+    foreach ($view in @('overview', 'processes', 'hardware', 'benchmarks', 'capabilities', 'recordings', 'settings')) {
+        Capture-NativeWindow -View $view -Theme 'dark' -Width $res.W -Height $res.H
+        Capture-NativeWindow -View $view -Theme 'light' -Width $res.W -Height $res.H
+    }
 }
-
-foreach ($view in @('processes', 'hardware', 'benchmarks', 'capabilities', 'settings')) {
-    Capture-NativeWindow -View $view -Theme 'dark' -Width 1180 -Height 790
-    Capture-NativeWindow -View $view -Theme 'light' -Width 1180 -Height 790
-}
-Capture-NativeWindow -View 'processes' -Theme 'dark' -Width 1536 -Height 864
-Capture-NativeWindow -View 'processes' -Theme 'light' -Width 1536 -Height 864
 
 $manifest = [pscustomobject]@{
     capturedAt = (Get-Date).ToString('o')
