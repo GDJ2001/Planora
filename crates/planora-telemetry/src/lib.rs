@@ -957,8 +957,8 @@ impl Sampler {
             .iter()
             .enumerate()
             .map(|(idx, cpu)| planora_core::LogicalCpuSample {
-                cpu_index: idx as u16,
-                group: 0,
+                cpu_index: (idx % 64) as u16,
+                group: (idx / 64) as u16,
                 utilization_percent: Metric::available(
                     cpu.cpu_usage().clamp(0.0, 100.0),
                     "%",

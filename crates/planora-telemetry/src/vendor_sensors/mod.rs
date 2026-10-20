@@ -62,6 +62,11 @@ impl VendorSensorSupervisor {
                 SetInformationJobObject,
             };
 
+            if self.job_handle != 0 {
+                windows_sys::Win32::Foundation::CloseHandle(self.job_handle as _);
+                self.job_handle = 0;
+            }
+
             let job = CreateJobObjectW(std::ptr::null_mut(), std::ptr::null());
             if !job.is_null() {
                 let mut info = std::mem::zeroed::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>();
@@ -242,6 +247,13 @@ impl VendorSensorSupervisor {
             let _ = child.kill();
             let _ = child.wait();
         }
+        #[cfg(windows)]
+        if self.job_handle != 0 {
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(self.job_handle as _);
+            }
+            self.job_handle = 0;
+        }
         self.stdin = None;
         self.rx = None;
         self.consecutive_failures += 1;
@@ -253,6 +265,13 @@ impl VendorSensorSupervisor {
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             let _ = child.wait();
+        }
+        #[cfg(windows)]
+        if self.job_handle != 0 {
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(self.job_handle as _);
+            }
+            self.job_handle = 0;
         }
         self.stdin = None;
         self.rx = None;

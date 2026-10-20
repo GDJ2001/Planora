@@ -11,6 +11,10 @@ use windows_sys::Win32::System::Performance::{
     PdhCollectQueryData, PdhGetFormattedCounterArrayW, PdhOpenQueryW,
 };
 
+unsafe extern "system" {
+    fn FreeLibrary(hLibModule: *mut std::ffi::c_void) -> i32;
+}
+
 #[repr(C)]
 struct Guid {
     data1: u32,
@@ -71,6 +75,7 @@ pub fn query_dxgi_adapters() -> Vec<DxgiAdapterInfo> {
             c"CreateDXGIFactory1".as_ptr().cast(),
         );
         let Some(create_factory) = create_factory_ptr else {
+            FreeLibrary(dxgi);
             return results;
         };
         type CreateFactoryFn =
@@ -85,6 +90,7 @@ pub fn query_dxgi_adapters() -> Vec<DxgiAdapterInfo> {
         };
         let mut factory: *mut std::ffi::c_void = ptr::null_mut();
         if create_factory(&iid_factory1, &mut factory) != 0 || factory.is_null() {
+            FreeLibrary(dxgi);
             return results;
         }
 
@@ -175,6 +181,7 @@ pub fn query_dxgi_adapters() -> Vec<DxgiAdapterInfo> {
             release_adapter(adapter);
         }
         release_factory(factory);
+        FreeLibrary(dxgi);
     }
     results
 }
@@ -212,8 +219,12 @@ pub fn parse_instance(name: &str) -> Option<InstanceIdentity> {
     let (pid, luid) = prefix.split_once("_luid_")?;
     let pid = pid.strip_prefix("pid_")?.parse().ok()?;
     let (high, low) = luid.split_once('_')?;
-    let high = u32::from_str_radix(high.strip_prefix("0x")?, 16).ok()?;
-    let low = u32::from_str_radix(low.strip_prefix("0x")?, 16).ok()?;
+    let high_hex = high
+        .strip_prefix("0x")
+        .or_else(|| high.strip_prefix("0X"))?;
+    let low_hex = low.strip_prefix("0x").or_else(|| low.strip_prefix("0X"))?;
+    let high = u32::from_str_radix(high_hex, 16).ok()?;
+    let low = u32::from_str_radix(low_hex, 16).ok()?;
     Some(InstanceIdentity {
         pid,
         luid: ((high as u64) << 32) | low as u64,
@@ -227,8 +238,12 @@ pub fn parse_adapter_memory_instance(name: &str) -> Option<(u64, u32)> {
     let (prefix, phys) = name.rsplit_once("_phys_")?;
     let luid_str = prefix.strip_prefix("luid_")?;
     let (high, low) = luid_str.split_once('_')?;
-    let high = u32::from_str_radix(high.strip_prefix("0x")?, 16).ok()?;
-    let low = u32::from_str_radix(low.strip_prefix("0x")?, 16).ok()?;
+    let high_hex = high
+        .strip_prefix("0x")
+        .or_else(|| high.strip_prefix("0X"))?;
+    let low_hex = low.strip_prefix("0x").or_else(|| low.strip_prefix("0X"))?;
+    let high = u32::from_str_radix(high_hex, 16).ok()?;
+    let low = u32::from_str_radix(low_hex, 16).ok()?;
     let physical: u32 = phys.parse().ok()?;
     Some((((high as u64) << 32) | (low as u64), physical))
 }

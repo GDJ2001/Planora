@@ -352,7 +352,7 @@ fn render_profiling_section(
                 .ok()
                 .map(|pid| planora_core::ProcessIdentity {
                     pid,
-                    started: 0,
+                    started: 1,
                     sequence_number: None,
                     source: planora_core::IdentitySource::SysinfoEpochSeconds,
                 });

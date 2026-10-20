@@ -11,9 +11,10 @@ struct CtlInitArgs {
     size: u32,
     version: u8,
     reserved: [u8; 3],
+    app_version: u32,
     flags: u32,
     supported_version: u32,
-    app_version: u32,
+    application_uid: [u8; 16],
 }
 
 #[allow(dead_code)]
@@ -120,18 +121,24 @@ impl IntelIgclProvider {
             size: std::mem::size_of::<CtlInitArgs>() as u32,
             version: 0,
             reserved: [0; 3],
-            flags: 0,
-            supported_version: (1 << 16),
-            app_version: (1 << 16),
+            app_version: (1 << 16), // CTL_MAKE_VERSION(1, 0)
+            flags: 1,               // CTL_INIT_FLAG_USE_LEVEL_ZERO
+            supported_version: 0,
+            application_uid: [0; 16],
         };
         let mut ctl_api: *mut std::ffi::c_void = ptr::null_mut();
         let status = unsafe { ctl_init(&mut init_args, &mut ctl_api) };
         if status != 0 || ctl_api.is_null() {
             unsafe { FreeLibrary(h_module) };
-            return Err((
-                planora_core::CapabilityState::Unsupported,
-                format!("ctlInit failed with code 0x{status:08x}"),
-            ));
+            let reason = if status == 0x40000020 {
+                "Platform or driver does not support Intel IGCL Control API (0x40000020)"
+                    .to_string()
+            } else if status == 0x40000009 || status == 0x40000021 {
+                format!("Unsupported Intel IGCL version (0x{status:08x})")
+            } else {
+                format!("ctlInit failed with code 0x{status:08x}")
+            };
+            return Err((planora_core::CapabilityState::Unsupported, reason));
         }
 
         let ctl_enum_ptr = unsafe {

@@ -223,14 +223,15 @@ fn render_gpu_tab(ui: &mut egui::Ui, frame: &TelemetryFrame, p: Palette) {
         ui.strong("Adapters");
         egui::Grid::new("resources_gpu_adapters_grid")
             .striped(true)
-            .num_columns(5)
+            .num_columns(6)
             .spacing([18.0, 8.0])
             .show(ui, |ui| {
                 ui.strong("Adapter");
                 ui.strong("LUID");
                 ui.strong("Busiest Engine");
-                ui.strong("Dedicated VRAM");
-                ui.strong("Shared Memory");
+                ui.strong("Dedicated VRAM (Used / Capacity)");
+                ui.strong("Shared Memory (Used / Capacity)");
+                ui.strong("Budget");
                 ui.end_row();
 
                 for adapter in &frame.gpu_adapters {
@@ -238,17 +239,36 @@ fn render_gpu_tab(ui: &mut egui::Ui, frame: &TelemetryFrame, p: Palette) {
                     ui.monospace(format!("0x{:x}", adapter.adapter_luid));
                     ui.monospace(format_percent(adapter.busiest_engine_percent.value));
 
-                    let ded_used = adapter
-                        .dedicated_used_bytes
-                        .value
-                        .map_or_else(|| "—".into(), format_bytes);
-                    ui.monospace(ded_used);
+                    let ded_str = match (
+                        adapter.dedicated_used_bytes.value,
+                        adapter.dedicated_total_bytes.value,
+                    ) {
+                        (Some(u), Some(t)) if t > 0 => {
+                            format!("{} / {}", format_bytes(u), format_bytes(t))
+                        }
+                        (Some(u), _) => format_bytes(u),
+                        _ => "—".into(),
+                    };
+                    ui.monospace(ded_str);
 
-                    let shr_used = adapter
-                        .shared_used_bytes
-                        .value
+                    let shr_str = match (
+                        adapter.shared_used_bytes.value,
+                        adapter.shared_total_bytes.value,
+                    ) {
+                        (Some(u), Some(t)) if t > 0 => {
+                            format!("{} / {}", format_bytes(u), format_bytes(t))
+                        }
+                        (Some(u), _) => format_bytes(u),
+                        _ => "—".into(),
+                    };
+                    ui.monospace(shr_str);
+
+                    let budget_str = adapter
+                        .budget_bytes
+                        .as_ref()
+                        .and_then(|b| b.value)
                         .map_or_else(|| "—".into(), format_bytes);
-                    ui.monospace(shr_used);
+                    ui.monospace(budget_str);
                     ui.end_row();
                 }
             });

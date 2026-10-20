@@ -20,7 +20,14 @@ pub enum WorkerResponse {
     Error { message: String },
 }
 
-pub fn run_worker(_expected_build_id: Option<&str>) {
+pub fn run_worker(expected_build_id: Option<&str>) {
+    if let Some(expected) = expected_build_id {
+        let actual = env!("CARGO_PKG_VERSION");
+        if expected != actual {
+            eprintln!("Sensor worker build ID mismatch: expected {expected}, actual {actual}");
+            std::process::exit(1);
+        }
+    }
     let now = crate::unix_ms();
     let mut intel = IntelIgclProvider::try_init();
     let nvidia = NvidiaNvmlProvider::try_init();

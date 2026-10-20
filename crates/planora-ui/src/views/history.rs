@@ -121,9 +121,15 @@ pub fn render_history_view(
                         for (label, series, unit, color) in rows {
                             ui.colored_label(color, label);
                             if let Some(s) = series.observed_summary(now, state.range) {
-                                ui.monospace(format!("{:.1}", s.average));
-                                ui.monospace(format!("{:.1}", s.minimum));
-                                ui.monospace(format!("{:.1}", s.maximum));
+                                if unit == "%" {
+                                    ui.monospace(format!("{:.1}", s.average));
+                                    ui.monospace(format!("{:.1}", s.minimum));
+                                    ui.monospace(format!("{:.1}", s.maximum));
+                                } else {
+                                    ui.monospace(format_rate(Some(s.average)));
+                                    ui.monospace(format_rate(Some(s.minimum)));
+                                    ui.monospace(format_rate(Some(s.maximum)));
+                                }
                                 ui.label(unit);
                                 ui.label(format!(
                                     "{}/{} s ({:.0}%)",
