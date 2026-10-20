@@ -42,9 +42,13 @@ def main() -> None:
     if missing:
         raise SystemExit(f"Dependencies without declared licenses: {', '.join(missing)}")
 
+    version = next(p["version"] for p in dependencies if p["name"] == "planora-ui" and p["workspace"])
+    version_tokens = {version, version.replace("-", "-0.", 1)}
     artifacts = []
     for path in sorted(dist.iterdir()):
         if not path.is_file() or path.name in {"SHA256SUMS.txt", "provenance.json"}:
+            continue
+        if path.name != "dependency-inventory.json" and not any(token in path.name for token in version_tokens):
             continue
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         artifacts.append({"file": path.name, "sha256": digest, "bytes": path.stat().st_size})
@@ -52,7 +56,6 @@ def main() -> None:
         "".join(f'{item["sha256"]}  {item["file"]}\n' for item in artifacts),
         encoding="utf-8",
     )
-    version = next(p["version"] for p in dependencies if p["name"] == "planora-ui" and p["workspace"])
     provenance = {
         "version": version,
         "source_commit": command("git", "rev-parse", "HEAD"),
