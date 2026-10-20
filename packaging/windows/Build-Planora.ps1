@@ -40,6 +40,14 @@ try {
     if ($LASTEXITCODE -ne 0 -or $identity.version -ne $version -or $identity.gitCommit -ne $commit) {
         throw "UI identity does not match source: version=$($identity.version), commit=$($identity.gitCommit); expected $version, $commit"
     }
+    $helperIdentity = (& $helper --build-info | ConvertFrom-Json)
+    if ($LASTEXITCODE -ne 0 -or $helperIdentity.version -ne $version -or
+        $helperIdentity.gitCommit -ne $commit -or
+        $helperIdentity.protocolVersion -ne $identity.protocolVersion -or
+        $helperIdentity.target -ne $identity.target -or
+        $helperIdentity.profile -ne $identity.profile) {
+        throw "Helper identity does not match UI and source: version=$($helperIdentity.version), commit=$($helperIdentity.gitCommit), protocol=$($helperIdentity.protocolVersion)"
+    }
 
     New-Item -ItemType Directory -Force -Path (Join-Path $root 'dist') | Out-Null
     $msi = Join-Path $root "dist\Planora-$version-x64.msi"
@@ -72,6 +80,7 @@ try {
         target = $identity.target
         profile = $identity.profile
         productVersion = $productVersion
+        protocolVersion = $identity.protocolVersion
         binaries = @(
             [pscustomobject]@{ file = 'planora.exe'; sha256 = (Get-FileHash -LiteralPath $ui -Algorithm SHA256).Hash },
             [pscustomobject]@{ file = 'planora-helper.exe'; sha256 = (Get-FileHash -LiteralPath $helper -Algorithm SHA256).Hash }

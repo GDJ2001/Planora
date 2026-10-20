@@ -1128,6 +1128,19 @@ mod windows_service {
 }
 
 fn main() -> io::Result<()> {
+    if std::env::args().any(|arg| arg == "--build-info") {
+        println!(
+            "{}",
+            serde_json::json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "protocolVersion": PROTOCOL_VERSION,
+                "gitCommit": env!("PLANORA_GIT_COMMIT"),
+                "target": env!("PLANORA_TARGET"),
+                "profile": env!("PLANORA_PROFILE"),
+            })
+        );
+        return Ok(());
+    }
     #[cfg(windows)]
     if std::env::args().any(|arg| arg == "--service") {
         return windows_service::start();
