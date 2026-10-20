@@ -2,7 +2,7 @@
 use super::{amd::AmdAdlxProvider, intel::IntelIgclProvider, nvidia::NvidiaNvmlProvider};
 use planora_core::{Capability, CapabilityState, SensorReading};
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, Write};
+use std::io::Write;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
@@ -28,25 +28,15 @@ pub fn run_worker(expected_build_id: Option<&str>) {
             std::process::exit(1);
         }
     }
-    let now = crate::unix_ms();
     let mut intel = IntelIgclProvider::try_init();
     let nvidia = NvidiaNvmlProvider::try_init();
     let amd = AmdAdlxProvider::try_init();
 
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
-    let mut lines = stdin.lock().lines();
+    let mut input = stdin.lock();
 
-    while let Some(Ok(line)) = lines.next() {
-        if line.len() > 64 * 1024 {
-            let resp = WorkerResponse::Error {
-                message: "line exceeds 64 KiB limit".into(),
-            };
-            let _ = writeln!(stdout, "{}", serde_json::to_string(&resp).unwrap());
-            let _ = stdout.flush();
-            continue;
-        }
-
+    while let Ok(Some(line)) = super::read_line_bounded(&mut input, 64 * 1024) {
         let cmd: WorkerCommand = match serde_json::from_str(&line) {
             Ok(c) => c,
             Err(e) => {
@@ -61,6 +51,7 @@ pub fn run_worker(expected_build_id: Option<&str>) {
 
         match cmd {
             WorkerCommand::Probe => {
+                let now = crate::unix_ms();
                 let make = |name: &str,
                             provider: &str,
                             state: CapabilityState,
@@ -76,14 +67,19 @@ pub fn run_worker(expected_build_id: Option<&str>) {
                 };
 
                 let mut caps = Vec::new();
-                match &intel {
-                    Ok(_) => caps.push(make(
-                        "Intel IGCL telemetry",
-                        "Intel IGCL (Experimental)",
-                        CapabilityState::Available,
-                        None,
-                        None,
-                    )),
+                match &mut intel {
+                    Ok(provider) => {
+                        let has_reading = provider
+                            .sample(crate::unix_ms())
+                            .iter()
+                            .any(|s| s.value.is_available());
+                        caps.push(make(
+                            "Intel IGCL telemetry", "Intel IGCL (Experimental)",
+                            if has_reading { CapabilityState::Available } else { CapabilityState::Unsupported },
+                            (!has_reading).then_some("Runtime initialized but this adapter exposes no supported IGCL measurement".into()),
+                            None,
+                        ));
+                    }
                     Err((state, reason)) => caps.push(make(
                         "Intel IGCL telemetry",
                         "Intel IGCL (Experimental)",
@@ -94,13 +90,26 @@ pub fn run_worker(expected_build_id: Option<&str>) {
                 }
 
                 match &nvidia {
-                    Ok(_) => caps.push(make(
-                        "NVIDIA NVML telemetry",
-                        "NVIDIA NVML (Experimental)",
-                        CapabilityState::Available,
-                        None,
-                        None,
-                    )),
+                    Ok(provider) => {
+                        let has_reading = provider
+                            .sample(crate::unix_ms())
+                            .iter()
+                            .any(|s| s.value.is_available());
+                        caps.push(make(
+                            "NVIDIA NVML telemetry",
+                            "NVIDIA NVML (Experimental)",
+                            if has_reading {
+                                CapabilityState::Available
+                            } else {
+                                CapabilityState::Unsupported
+                            },
+                            (!has_reading).then_some(
+                                "Runtime initialized but no supported NVML sensor returned a value"
+                                    .into(),
+                            ),
+                            None,
+                        ));
+                    }
                     Err((state, reason)) => caps.push(make(
                         "NVIDIA NVML telemetry",
                         "NVIDIA NVML (Experimental)",
@@ -114,8 +123,8 @@ pub fn run_worker(expected_build_id: Option<&str>) {
                     Ok(_) => caps.push(make(
                         "AMD ADLX telemetry",
                         "AMD ADLX (Experimental)",
-                        CapabilityState::Available,
-                        None,
+                        CapabilityState::Unsupported,
+                        Some("ADLX runtime initialized, but metric interface sampling is not implemented in this build".into()),
                         None,
                     )),
                     Err((state, reason)) => caps.push(make(

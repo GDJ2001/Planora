@@ -2,8 +2,8 @@ use interprocess::local_socket::prelude::*;
 use planora_bench::{ChaseMode, run_cache_probe, run_core_matrix};
 use planora_core::{
     BenchmarkState, Capability, CapabilityState, Command, DiagnosticEntry, ErrorCode,
-    PROTOCOL_VERSION, ProcessIdentity, ProfileResult, ProfileState, ProfileTarget, Response,
-    ResponseEnvelope, SUPPORTED_SAMPLE_INTERVALS_MS, TelemetryFrame,
+    PROTOCOL_VERSION, ProcessIdentity, ProfileState, Response, ResponseEnvelope,
+    SUPPORTED_SAMPLE_INTERVALS_MS, TelemetryFrame,
 };
 use planora_helper::{
     HANDSHAKE_TIMEOUT, REQUEST_TIMEOUT, caller_id, listener, peer_authorized,
@@ -358,78 +358,19 @@ fn capabilities() -> Vec<Capability> {
             None,
         ),
         make(
-            "Intel IGCL telemetry",
-            "Intel GPUs",
-            "Intel IGCL (Experimental)",
-            if std::path::Path::new("C:\\Windows\\System32\\ControlLib.dll").exists() {
-                CapabilityState::Available
-            } else {
-                CapabilityState::MissingRuntime
-            },
-            if !std::path::Path::new("C:\\Windows\\System32\\ControlLib.dll").exists() {
-                Some("ControlLib.dll not found in administrator-owned system path")
-            } else {
-                None
-            },
-            Some("Install or update Intel graphics driver"),
-        ),
-        make(
-            "NVIDIA NVML telemetry",
-            "NVIDIA GPUs",
-            "NVIDIA NVML (Experimental)",
-            if std::path::Path::new("C:\\Windows\\System32\\nvml.dll").exists()
-                || std::path::Path::new("C:\\Program Files\\NVIDIA Corporation\\NVSMI\\nvml.dll")
-                    .exists()
-            {
-                CapabilityState::Available
-            } else {
-                CapabilityState::MissingRuntime
-            },
-            Some("nvml.dll not found in administrator-owned system path"),
-            Some("Install NVIDIA GPU driver"),
-        ),
-        make(
-            "AMD ADLX telemetry",
-            "AMD GPUs",
-            "AMD ADLX (Experimental)",
-            if std::path::Path::new("C:\\Windows\\System32\\amdadlx64.dll").exists() {
-                CapabilityState::Available
-            } else {
-                CapabilityState::MissingRuntime
-            },
-            Some("amdadlx64.dll not found in administrator-owned system path"),
-            Some("Install AMD Software: Adrenalin Edition"),
-        ),
-        make(
             "PMU sampled profiling",
             "Selected process",
             "Windows ETW profiling",
-            if cfg!(windows) {
-                CapabilityState::Available
-            } else {
-                CapabilityState::Unsupported
-            },
-            if !cfg!(windows) {
-                Some("PMU sampling provider is not available on this platform")
-            } else {
-                None
-            },
+            CapabilityState::Unsupported,
+            Some("No ETW PMU trace collector is implemented in this build"),
             None,
         ),
         make(
             "Disk I/O profiling",
             "System and processes",
             "Windows ETW profiling",
-            if cfg!(windows) {
-                CapabilityState::Available
-            } else {
-                CapabilityState::Unsupported
-            },
-            if !cfg!(windows) {
-                Some("Disk I/O profiling provider is not available on this platform")
-            } else {
-                None
-            },
+            CapabilityState::Unsupported,
+            Some("No ETW disk trace collector is implemented in this build"),
             None,
         ),
         make(
@@ -815,172 +756,16 @@ fn dispatch(command: Command, req_id: u64, connection_id: u64, state: &State) ->
         }
         Command::CancelBenchmark { job_id } => state.benchmarks.cancel(job_id),
         Command::BenchmarkStatus => Response::BenchmarkStatus(state.benchmarks.status()),
-        Command::StartProfile { job_id, target } => {
-            let bm_state = state.benchmarks.state.lock().unwrap();
-            let mut prof_state = state.profiling.state.lock().unwrap();
-            if matches!(
-                *bm_state,
-                BenchmarkState::Running { .. } | BenchmarkState::Cancelling { .. }
-            ) || matches!(
-                *prof_state,
-                ProfileState::Running { .. } | ProfileState::Cancelling { .. }
-            ) {
-                state.diagnostics.log(
-                    req_id,
-                    ErrorCode::Busy,
-                    "profile rejected: an advanced profile or benchmark is already running",
-                );
-                return Response::Error {
-                    code: ErrorCode::Busy,
-                    message: "an advanced profile or benchmark is already running".into(),
-                };
-            }
-
-            let (target_desc, duration_secs) = match &target {
-                ProfileTarget::DiskIo {
-                    target_process,
-                    duration_seconds,
-                } => {
-                    let d = (*duration_seconds).clamp(1, 60);
-                    let desc = format!(
-                        "Disk I/O ({d}s{})",
-                        target_process
-                            .as_ref()
-                            .map(|p| format!(", PID {}", p.pid))
-                            .unwrap_or_default()
-                    );
-                    (desc, d)
-                }
-                ProfileTarget::PmuSampling {
-                    target_process: _,
-                    duration_seconds,
-                    sources,
-                } => {
-                    if sources.len() > 2 {
-                        state.diagnostics.log(
-                            req_id,
-                            ErrorCode::InvalidInput,
-                            "profile rejected: at most 2 PMU sources allowed",
-                        );
-                        return Response::Error {
-                            code: ErrorCode::InvalidInput,
-                            message: "at most 2 PMU sources allowed".into(),
-                        };
-                    }
-                    let d = (*duration_seconds).clamp(1, 60);
-                    let desc = format!("PMU Sampling ({d}s, sources: {})", sources.join(", "));
-                    (desc, d)
-                }
-            };
-
-            let cancel = Arc::new(AtomicBool::new(false));
-            *state.profiling.cancel.lock().unwrap() = cancel.clone();
-            state
-                .profiling
-                .current_job_id
-                .store(job_id, Ordering::SeqCst);
-            *prof_state = ProfileState::Running {
+        Command::StartProfile { job_id, .. } => {
+            state.diagnostics.log(
                 job_id,
-                target_desc: target_desc.clone(),
-                elapsed_ms: 0,
-                duration_seconds: duration_secs,
-            };
-
-            let prof = state.profiling.clone();
-            let diag = state.diagnostics.clone();
-            let target_clone = target.clone();
-            let worker = thread::spawn(move || {
-                let start = Instant::now();
-                let target_duration = Duration::from_secs(duration_secs as u64);
-                while start.elapsed() < target_duration {
-                    if cancel.load(Ordering::SeqCst) {
-                        let mut lock = prof.state.lock().unwrap();
-                        if prof.current_job_id.load(Ordering::SeqCst) == job_id {
-                            *lock = ProfileState::Cancelled { job_id };
-                        }
-                        diag.log(job_id, ErrorCode::Cancelled, "profile cancelled by request");
-                        return;
-                    }
-                    {
-                        let mut lock = prof.state.lock().unwrap();
-                        if prof.current_job_id.load(Ordering::SeqCst) == job_id
-                            && let ProfileState::Running { elapsed_ms, .. } = &mut *lock
-                        {
-                            *elapsed_ms = start.elapsed().as_millis() as u64;
-                        }
-                    }
-                    thread::sleep(Duration::from_millis(100));
-                }
-
-                let elapsed_ms = start.elapsed().as_millis() as u64;
-                let result = match target_clone {
-                    ProfileTarget::DiskIo { target_process, .. } => {
-                        let records = if let Some(proc) = target_process {
-                            vec![planora_core::DiskIoProfileRecord {
-                                pid: proc.pid,
-                                process_name: "Target Process".into(),
-                                read_bytes: 0,
-                                write_bytes: 0,
-                                read_operations: 0,
-                                write_operations: 0,
-                            }]
-                        } else {
-                            Vec::new()
-                        };
-                        ProfileResult {
-                            target_desc,
-                            duration_seconds: duration_secs,
-                            elapsed_ms,
-                            events_traced: 0,
-                            events_lost: 0,
-                            attribution_coverage_percent: 100.0,
-                            disk_records: records,
-                            pmu_records: Vec::new(),
-                            unattributed_read_bytes: 0,
-                            unattributed_write_bytes: 0,
-                        }
-                    }
-                    ProfileTarget::PmuSampling {
-                        sources,
-                        target_process,
-                        ..
-                    } => {
-                        let pmu_records = sources
-                            .into_iter()
-                            .map(|s| planora_core::PmuProfileRecord {
-                                source: s,
-                                sample_count: 0,
-                                target_pid: target_process.as_ref().map(|p| p.pid),
-                            })
-                            .collect();
-                        ProfileResult {
-                            target_desc,
-                            duration_seconds: duration_secs,
-                            elapsed_ms,
-                            events_traced: 0,
-                            events_lost: 0,
-                            attribution_coverage_percent: 100.0,
-                            disk_records: Vec::new(),
-                            pmu_records,
-                            unattributed_read_bytes: 0,
-                            unattributed_write_bytes: 0,
-                        }
-                    }
-                };
-
-                let mut lock = prof.state.lock().unwrap();
-                if prof.current_job_id.load(Ordering::SeqCst) == job_id {
-                    *lock = ProfileState::Completed { job_id, result };
-                    diag.log(
-                        job_id,
-                        ErrorCode::Internal,
-                        "profile session completed successfully",
-                    );
-                }
-            });
-
-            *state.profiling.worker.lock().unwrap() = Some(worker);
-            Response::ProfileStatus(prof_state.clone())
+                ErrorCode::Unsupported,
+                "profiling requested but no ETW trace provider is implemented",
+            );
+            Response::Error {
+                code: ErrorCode::Unsupported,
+                message: "Disk I/O and PMU profiles require an ETW provider; this build cannot collect them yet".into(),
+            }
         }
         Command::CancelProfile { job_id } => state.profiling.cancel(job_id),
         Command::ProfileStatus => Response::ProfileStatus(state.profiling.status()),
@@ -1344,15 +1129,6 @@ mod windows_service {
 
 fn main() -> io::Result<()> {
     #[cfg(windows)]
-    if std::env::args().any(|arg| arg == "--sensor-worker") {
-        let expected = std::env::args()
-            .position(|a| a == "--build-id")
-            .and_then(|idx| std::env::args().nth(idx + 1));
-        planora_telemetry::vendor_sensors::run_worker(expected.as_deref());
-        return Ok(());
-    }
-
-    #[cfg(windows)]
     if std::env::args().any(|arg| arg == "--service") {
         return windows_service::start();
     }
@@ -1363,6 +1139,39 @@ fn main() -> io::Result<()> {
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
+
+    #[test]
+    fn unsupported_profile_never_starts_worker_or_fabricates_result() {
+        let state = State {
+            session_id: 1,
+            latest_frame: Arc::new(RwLock::new(Sampler::new().sample())),
+            benchmarks: Arc::new(BenchmarkManager::new()),
+            profiling: Arc::new(ProfileManager::new()),
+            diagnostics: Arc::new(DiagnosticLogger::new()),
+            sampling: Arc::new(SamplingCoordinator::default()),
+        };
+        let response = dispatch(
+            Command::StartProfile {
+                job_id: 17,
+                target: planora_core::ProfileTarget::DiskIo {
+                    target_process: None,
+                    duration_seconds: 15,
+                },
+            },
+            17,
+            1,
+            &state,
+        );
+        assert!(matches!(
+            response,
+            Response::Error {
+                code: ErrorCode::Unsupported,
+                ..
+            }
+        ));
+        assert!(matches!(state.profiling.status(), ProfileState::Idle));
+        assert!(state.profiling.worker.lock().unwrap().is_none());
+    }
 
     #[cfg(windows)]
     #[test]

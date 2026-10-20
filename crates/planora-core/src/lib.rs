@@ -241,7 +241,8 @@ pub struct LogicalCpuSample {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct GpuAdapterSample {
     pub adapter_luid: u64,
-    pub physical_adapter: u32,
+    #[serde(default)]
+    pub physical_adapter: Option<u32>,
     pub name: String,
     pub busiest_engine_percent: Metric<f32>,
     pub dedicated_used_bytes: Metric<u64>,

@@ -75,16 +75,23 @@ unsafe impl Sync for IntelIgclProvider {}
 impl IntelIgclProvider {
     pub fn try_init() -> Result<Self, (planora_core::CapabilityState, String)> {
         // Enforce documented, administrator-owned system path: System32 only
-        let system_dir = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
-        let dll_path = format!("{system_dir}\\System32\\ControlLib.dll");
-        if !std::path::Path::new(&dll_path).exists() {
+        let dll_path = super::trusted_system_dll("ControlLib.dll").ok_or((
+            planora_core::CapabilityState::TemporarilyFailed,
+            "Could not resolve the Windows system directory".into(),
+        ))?;
+        if !dll_path.exists() {
             return Err((
                 planora_core::CapabilityState::MissingRuntime,
                 "ControlLib.dll not found in System32".into(),
             ));
         }
 
-        let wide_path: Vec<u16> = dll_path.encode_utf16().chain(std::iter::once(0)).collect();
+        use std::os::windows::ffi::OsStrExt;
+        let wide_path: Vec<u16> = dll_path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
         let h_module = unsafe {
             windows_sys::Win32::System::LibraryLoader::LoadLibraryExW(
                 wide_path.as_ptr(),

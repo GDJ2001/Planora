@@ -198,6 +198,7 @@ pub struct WindowsGpu {
     cached_adapters: Vec<GpuAdapterSample>,
     cached_disk_metrics: HashMap<String, (Option<f32>, Option<f32>)>,
     dxgi_adapters: Vec<DxgiAdapterInfo>,
+    last_dxgi_refresh: Instant,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -210,7 +211,15 @@ pub struct InstanceIdentity {
 }
 
 pub fn parse_instance(name: &str) -> Option<InstanceIdentity> {
-    let (prefix, engine_type) = name.split_once("_engtype_")?;
+    let (prefix, raw_engine_type) = name.split_once("_engtype_")?;
+    let engine_type = match raw_engine_type.rsplit_once('#') {
+        Some((kind, duplicate))
+            if !duplicate.is_empty() && duplicate.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            kind
+        }
+        _ => raw_engine_type,
+    };
     if engine_type.is_empty() || engine_type.len() > 64 {
         return None;
     }
@@ -246,6 +255,55 @@ pub fn parse_adapter_memory_instance(name: &str) -> Option<(u64, u32)> {
     let low = u32::from_str_radix(low_hex, 16).ok()?;
     let physical: u32 = phys.parse().ok()?;
     Some((((high as u64) << 32) | (low as u64), physical))
+}
+
+/// PDH GPU Engine instances describe process contributions. Combine only
+/// distinct process instances for the same adapter, physical device and engine.
+/// Duplicate PDH instance names are not another contribution.
+fn busiest_physical_engine(engines: &[GpuEngineSample], luid: u64) -> Option<Metric<f32>> {
+    let mut contributions: HashMap<(u32, u32, String, u32), (f32, u64)> = HashMap::new();
+    for sample in engines
+        .iter()
+        .filter(|sample| sample.adapter_luid == Some(luid))
+    {
+        let (Some(physical), Some(engine), Some(pid), Some(value)) = (
+            sample.physical_adapter,
+            sample.engine_id,
+            sample.process_pid,
+            sample.utilization_percent.value,
+        ) else {
+            continue;
+        };
+        let key = (physical, engine, sample.engine_type.clone(), pid);
+        let candidate = (value, sample.utilization_percent.sampled_at_ms);
+        contributions
+            .entry(key)
+            .and_modify(|current| {
+                if candidate.0 > current.0 {
+                    *current = candidate;
+                }
+            })
+            .or_insert(candidate);
+    }
+    let mut totals: HashMap<(u32, u32, String), (f32, u64)> = HashMap::new();
+    for ((physical, engine, kind, _pid), (value, sampled_at)) in contributions {
+        let total = totals
+            .entry((physical, engine, kind))
+            .or_insert((0.0, sampled_at));
+        total.0 += value;
+        total.1 = total.1.max(sampled_at);
+    }
+    totals
+        .into_values()
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(value, sampled_at)| {
+            Metric::available(
+                value.min(100.0),
+                "%",
+                "Windows PDH physical GPU engine",
+                sampled_at,
+            )
+        })
 }
 
 fn add_counter(query: PDH_HQUERY, path_str: &str) -> Option<PDH_HCOUNTER> {
@@ -349,6 +407,7 @@ impl WindowsGpu {
             cached_adapters: Vec::new(),
             cached_disk_metrics: HashMap::new(),
             dxgi_adapters,
+            last_dxgi_refresh: Instant::now(),
         })
     }
 
@@ -369,9 +428,11 @@ impl WindowsGpu {
         }
         self.last = Some(Instant::now());
 
-        // Refresh DXGI adapters if empty
-        if self.dxgi_adapters.is_empty() {
+        // DXGI adapter identities can change after dock/undock, sleep or driver
+        // restart. Re-enumeration is intentionally slower than PDH polling.
+        if self.last_dxgi_refresh.elapsed() >= Duration::from_secs(30) {
             self.dxgi_adapters = query_dxgi_adapters();
+            self.last_dxgi_refresh = Instant::now();
         }
 
         // Sample GPU engines
@@ -401,54 +462,70 @@ impl WindowsGpu {
         }
 
         // Sample adapter memory counters
-        let mut dedicated_map: HashMap<u64, u64> = HashMap::new();
+        let mut dedicated_map: HashMap<(u64, u32), u64> = HashMap::new();
         if let Some(counter) = self.dedicated_mem_counter {
             for (name, val) in query_counter_items(counter as PDH_HCOUNTER) {
-                if let Some((luid, _)) = parse_adapter_memory_instance(&name)
+                if let Some(identity) = parse_adapter_memory_instance(&name)
                     && val >= 0.0
                 {
-                    dedicated_map.insert(luid, val as u64);
+                    dedicated_map.insert(identity, val as u64);
                 }
             }
         }
 
-        let mut shared_map: HashMap<u64, u64> = HashMap::new();
+        let mut shared_map: HashMap<(u64, u32), u64> = HashMap::new();
         if let Some(counter) = self.shared_mem_counter {
             for (name, val) in query_counter_items(counter as PDH_HCOUNTER) {
-                if let Some((luid, _)) = parse_adapter_memory_instance(&name)
+                if let Some(identity) = parse_adapter_memory_instance(&name)
                     && val >= 0.0
                 {
-                    shared_map.insert(luid, val as u64);
+                    shared_map.insert(identity, val as u64);
                 }
             }
         }
 
         // Build GpuAdapterSample per DXGI adapter
         let mut adapters = Vec::new();
-        for (phys_idx, dxgi) in self.dxgi_adapters.iter().enumerate() {
-            let busiest = engines
+        for dxgi in &self.dxgi_adapters {
+            let busiest = busiest_physical_engine(&engines, dxgi.luid).unwrap_or_else(|| {
+                Metric::unavailable(
+                    "%",
+                    "Windows PDH physical GPU engine",
+                    stamp,
+                    AvailabilityReason::WarmingUp,
+                )
+            });
+            let physical_ids: std::collections::HashSet<u32> = engines
                 .iter()
-                .filter(|e| e.adapter_luid == Some(dxgi.luid))
-                .filter_map(|e| e.utilization_percent.value)
-                .max_by(f32::total_cmp)
-                .unwrap_or(0.0);
-
-            let dedicated_used = dedicated_map
-                .get(&dxgi.luid)
-                .copied()
+                .filter(|engine| engine.adapter_luid == Some(dxgi.luid))
+                .filter_map(|engine| engine.physical_adapter)
+                .chain(
+                    dedicated_map
+                        .keys()
+                        .filter(|(luid, _)| *luid == dxgi.luid)
+                        .map(|(_, physical)| *physical),
+                )
+                .chain(
+                    shared_map
+                        .keys()
+                        .filter(|(luid, _)| *luid == dxgi.luid)
+                        .map(|(_, physical)| *physical),
+                )
+                .collect();
+            let physical_adapter = (physical_ids.len() == 1)
+                .then(|| physical_ids.iter().copied().next())
+                .flatten();
+            let dedicated_used = physical_adapter
+                .and_then(|physical| dedicated_map.get(&(dxgi.luid, physical)).copied())
                 .or(dxgi.current_usage_bytes);
-            let shared_used = shared_map.get(&dxgi.luid).copied();
+            let shared_used = physical_adapter
+                .and_then(|physical| shared_map.get(&(dxgi.luid, physical)).copied());
 
             adapters.push(GpuAdapterSample {
                 adapter_luid: dxgi.luid,
-                physical_adapter: phys_idx as u32,
+                physical_adapter,
                 name: dxgi.name.clone(),
-                busiest_engine_percent: Metric::available(
-                    busiest,
-                    "%",
-                    "Windows PDH busiest engine",
-                    stamp,
-                ),
+                busiest_engine_percent: busiest,
                 dedicated_used_bytes: match dedicated_used {
                     Some(v) => {
                         Metric::available(v, "bytes", "Windows PDH GPU Adapter Memory", stamp)
@@ -538,6 +615,41 @@ pub fn counter_available() -> bool {
 mod tests {
     use super::*;
 
+    fn engine(
+        luid: u64,
+        physical: u32,
+        engine: u32,
+        pid: u32,
+        value: f32,
+        stamp: u64,
+    ) -> GpuEngineSample {
+        GpuEngineSample {
+            instance: format!("pid_{pid}"),
+            engine_type: "3D".into(),
+            adapter_luid: Some(luid),
+            physical_adapter: Some(physical),
+            engine_id: Some(engine),
+            process_pid: Some(pid),
+            utilization_percent: Metric::available(value, "%", "fixture", stamp),
+        }
+    }
+
+    #[test]
+    fn adapter_summary_combines_only_distinct_contributions_to_same_engine() {
+        let samples = vec![
+            engine(7, 0, 1, 10, 22.0, 100),
+            engine(7, 0, 1, 10, 22.0, 100), // duplicate counter instance
+            engine(7, 0, 1, 11, 18.0, 100),
+            engine(7, 0, 2, 12, 35.0, 100),
+            engine(7, 1, 1, 13, 30.0, 100),
+            engine(8, 0, 1, 14, 90.0, 100),
+        ];
+        let summary = busiest_physical_engine(&samples, 7).unwrap();
+        assert_eq!(summary.value, Some(40.0));
+        assert_eq!(summary.sampled_at_ms, 100);
+        assert!(busiest_physical_engine(&samples, 9).is_none());
+    }
+
     #[test]
     fn parses_all_gpu_engine_identity_fields_without_guessing() {
         let parsed =
@@ -547,6 +659,10 @@ mod tests {
         assert_eq!(parsed.physical, 0);
         assert_eq!(parsed.engine, 2);
         assert_eq!(parsed.engine_type, "3D");
+        let duplicate =
+            parse_instance("pid_12608_luid_0x00000000_0x0000ddf1_phys_0_eng_2_engtype_3D#1")
+                .unwrap();
+        assert_eq!(duplicate.engine_type, "3D");
         assert!(parse_instance("pid_1_engtype_3D").is_none());
         assert!(parse_instance("pid_1_luid_bad_0x1_phys_0_eng_0_engtype_3D").is_none());
     }

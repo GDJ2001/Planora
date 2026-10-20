@@ -48,6 +48,12 @@ pub struct App {
     shared: Arc<Mutex<Shared>>,
     tx: SyncSender<Command>,
     poll_ms: Arc<AtomicU64>,
+    #[cfg(windows)]
+    sensor_stop: Option<Arc<std::sync::atomic::AtomicBool>>,
+    #[cfg(windows)]
+    sensor_refresh: Option<Arc<std::sync::atomic::AtomicBool>>,
+    #[cfg(windows)]
+    sensor_worker: Option<std::thread::JoinHandle<()>>,
     settings: UserSettings,
     settings_error: Option<String>,
     recorder: Recorder,
@@ -136,10 +142,56 @@ impl App {
             })
             .expect("failed to spawn client worker thread");
 
+        #[cfg(windows)]
+        let sensor_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        #[cfg(windows)]
+        let sensor_refresh = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        #[cfg(windows)]
+        let sensor_worker = {
+            let worker_shared = shared.clone();
+            let stop = sensor_stop.clone();
+            let refresh = sensor_refresh.clone();
+            let context = cc.egui_ctx.clone();
+            std::thread::Builder::new()
+                .name("planora-vendor-sensors".into())
+                .spawn(move || {
+                    let mut supervisor =
+                        planora_telemetry::vendor_sensors::VendorSensorSupervisor::new(env!(
+                            "CARGO_PKG_VERSION"
+                        ));
+                    {
+                        worker_shared.lock().unwrap().sensor_capabilities =
+                            Arc::new(supervisor.probe_capabilities());
+                    }
+                    let mut last_probe = Instant::now();
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        if refresh.swap(false, std::sync::atomic::Ordering::SeqCst)
+                            || last_probe.elapsed() >= std::time::Duration::from_secs(30)
+                        {
+                            supervisor.restart();
+                            worker_shared.lock().unwrap().sensor_capabilities =
+                                Arc::new(supervisor.probe_capabilities());
+                            last_probe = Instant::now();
+                        }
+                        let readings = supervisor.poll_sensors();
+                        worker_shared.lock().unwrap().sensor_readings = Arc::new(readings);
+                        context.request_repaint();
+                        std::thread::park_timeout(std::time::Duration::from_secs(1));
+                    }
+                })
+                .ok()
+        };
+
         Self {
             shared,
             tx,
             poll_ms,
+            #[cfg(windows)]
+            sensor_stop: Some(sensor_stop),
+            #[cfg(windows)]
+            sensor_refresh: Some(sensor_refresh),
+            #[cfg(windows)]
+            sensor_worker,
             settings,
             settings_error: None,
             recorder: Recorder::default(),
@@ -381,7 +433,7 @@ impl App {
         let p = self.palette(&ctx);
 
         self.replay.poll();
-        let (mut app_state, mut frame_opt, mut topo_opt, caps, shared_copy) = {
+        let (mut app_state, mut frame_opt, mut topo_opt, mut caps, shared_copy) = {
             let shared = self.shared.lock().unwrap();
             let state = shared.state.clone().unwrap_or(AppState::Connecting);
             let frame = shared.frame.clone();
@@ -393,6 +445,10 @@ impl App {
                 frame: shared.frame.clone(),
                 topology: shared.topology.clone(),
                 capabilities: shared.capabilities.clone(),
+                #[cfg(windows)]
+                sensor_readings: shared.sensor_readings.clone(),
+                #[cfg(windows)]
+                sensor_capabilities: shared.sensor_capabilities.clone(),
                 benchmark_state: shared.benchmark_state.clone(),
                 profile_state: shared.profile_state.clone(),
                 sampling_effective_ms: shared.sampling_effective_ms,
@@ -402,6 +458,8 @@ impl App {
             };
             (state, frame, topo, caps, shared_copy)
         };
+        #[cfg(windows)]
+        caps.extend(shared_copy.sensor_capabilities.iter().cloned());
 
         if self.replay.is_active() {
             app_state = AppState::Replay;
@@ -410,7 +468,12 @@ impl App {
         } else if app_state == AppState::Live
             && let Some(frame) = &frame_opt
         {
-            self.recorder.record(frame, self.selected.as_ref());
+            #[cfg(windows)]
+            let recording_sensors = shared_copy.sensor_readings.as_ref();
+            #[cfg(not(windows))]
+            let recording_sensors = &frame.sensors;
+            self.recorder
+                .record(frame, self.selected.as_ref(), recording_sensors);
         }
 
         // Evaluate staleness if in Live state
@@ -780,6 +843,12 @@ impl App {
                             render_resources_view(
                                 ui,
                                 frame,
+                                {
+                                    #[cfg(windows)]
+                                    { if app_state == AppState::Replay { &frame.sensors } else { shared_copy.sensor_readings.as_ref() } }
+                                    #[cfg(not(windows))]
+                                    { &frame.sensors }
+                                },
                                 &mut self.resources_state,
                                 &app_state,
                                 &mut self.display_pause,
@@ -871,6 +940,12 @@ impl App {
                     &mut self.display_pause,
                     current_poll,
                     &self.tx,
+                    {
+                        #[cfg(windows)]
+                        { self.sensor_refresh.as_ref() }
+                        #[cfg(not(windows))]
+                        { None }
+                    },
                     p,
                 ),
                 Page::Settings => {
@@ -901,6 +976,21 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.render_ui(root);
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        {
+            if let Some(stop) = &self.sensor_stop {
+                stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            if let Some(worker) = self.sensor_worker.take() {
+                worker.thread().unpark();
+                let _ = worker.join();
+            }
+        }
     }
 }
 

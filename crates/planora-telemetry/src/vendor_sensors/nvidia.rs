@@ -18,26 +18,23 @@ unsafe impl Sync for NvidiaNvmlProvider {}
 
 impl NvidiaNvmlProvider {
     pub fn try_init() -> Result<Self, (planora_core::CapabilityState, String)> {
-        let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
-        let prog_files =
-            std::env::var("ProgramFiles").unwrap_or_else(|_| "C:\\Program Files".into());
-
-        let candidates = [
-            format!("{system_root}\\System32\\nvml.dll"),
-            format!("{prog_files}\\NVIDIA Corporation\\NVSMI\\nvml.dll"),
-        ];
-
-        let valid_path = candidates
-            .into_iter()
-            .find(|p| std::path::Path::new(p).exists());
-        let Some(dll_path) = valid_path else {
+        let dll_path = super::trusted_system_dll("nvml.dll").ok_or((
+            planora_core::CapabilityState::TemporarilyFailed,
+            "Could not resolve the Windows system directory".into(),
+        ))?;
+        if !dll_path.exists() {
             return Err((
                 planora_core::CapabilityState::MissingRuntime,
-                "nvml.dll not found in administrator-owned system path".into(),
+                "nvml.dll not found in the Windows system directory".into(),
             ));
-        };
+        }
 
-        let wide_path: Vec<u16> = dll_path.encode_utf16().chain(std::iter::once(0)).collect();
+        use std::os::windows::ffi::OsStrExt;
+        let wide_path: Vec<u16> = dll_path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
         let h_module = unsafe {
             windows_sys::Win32::System::LibraryLoader::LoadLibraryExW(
                 wide_path.as_ptr(),

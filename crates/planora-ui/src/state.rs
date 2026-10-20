@@ -237,6 +237,10 @@ pub struct Shared {
     pub frame: Option<Arc<TelemetryFrame>>,
     pub topology: Option<Topology>,
     pub capabilities: Vec<Capability>,
+    #[cfg(windows)]
+    pub sensor_readings: Arc<Vec<planora_core::SensorReading>>,
+    #[cfg(windows)]
+    pub sensor_capabilities: Arc<Vec<Capability>>,
     pub benchmark_state: Option<BenchmarkState>,
     pub profile_state: Option<planora_core::ProfileState>,
     pub sampling_effective_ms: Option<u64>,

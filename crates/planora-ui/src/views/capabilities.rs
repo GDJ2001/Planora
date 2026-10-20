@@ -37,6 +37,7 @@ pub fn render_capabilities_view(
     pause_state: &mut DisplayPause,
     poll_interval_ms: u64,
     tx: &SyncSender<planora_core::Command>,
+    sensor_refresh: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
     p: Palette,
 ) {
     // 1. Page Header
@@ -63,6 +64,9 @@ pub fn render_capabilities_view(
         );
         if ui.button("Refresh capabilities").clicked() {
             let _ = tx.try_send(planora_core::Command::RefreshCapabilities);
+            if let Some(refresh) = sensor_refresh {
+                refresh.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
         }
         ui.selectable_value(
             &mut state.filter,

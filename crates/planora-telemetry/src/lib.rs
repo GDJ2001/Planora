@@ -331,8 +331,6 @@ pub struct Sampler {
     gpu_validated_pids: HashSet<u32>,
     #[cfg(windows)]
     gpu_last_sample_ms: u64,
-    #[cfg(windows)]
-    vendor_sensors: Option<vendor_sensors::VendorSensorSupervisor>,
     sequence: u64,
     session_id: u64,
     topology_generation: u64,
@@ -370,10 +368,6 @@ impl Sampler {
             gpu_validated_pids: HashSet::new(),
             #[cfg(windows)]
             gpu_last_sample_ms: 0,
-            #[cfg(windows)]
-            vendor_sensors: Some(vendor_sensors::VendorSensorSupervisor::new(env!(
-                "CARGO_PKG_VERSION"
-            ))),
             sequence: 0,
             session_id,
             topology_generation,
@@ -826,8 +820,9 @@ impl Sampler {
         let (gpu_adapters, gpu_engines, gpu_engine_unavailable_reason) =
             match self.windows_gpu.as_mut() {
                 Some(provider) => match provider.sample(stamp) {
-                    Ok((adapters, engines)) if !engines.is_empty() || !adapters.is_empty() => {
-                        (adapters, engines, None)
+                    Ok((adapters, engines)) if !engines.is_empty() => (adapters, engines, None),
+                    Ok((adapters, engines)) if !adapters.is_empty() => {
+                        (adapters, engines, Some(AvailabilityReason::WarmingUp))
                     }
                     Ok(_) => (
                         Vec::new(),
@@ -914,10 +909,19 @@ impl Sampler {
         #[cfg(windows)]
         let gpu = if let Some(busiest) = gpu_adapters
             .iter()
-            .filter_map(|a| a.busiest_engine_percent.value)
-            .max_by(f32::total_cmp)
-        {
-            Metric::available(busiest, "%", "Windows PDH busiest adapter engine", stamp)
+            .filter(|a| a.busiest_engine_percent.value.is_some())
+            .max_by(|a, b| {
+                a.busiest_engine_percent
+                    .value
+                    .unwrap()
+                    .total_cmp(&b.busiest_engine_percent.value.unwrap())
+            }) {
+            Metric::available(
+                busiest.busiest_engine_percent.value.unwrap(),
+                "%",
+                "Windows PDH busiest adapter engine",
+                busiest.busiest_engine_percent.sampled_at_ms,
+            )
         } else {
             Metric::unavailable(
                 "%",
@@ -1034,13 +1038,6 @@ impl Sampler {
             ),
         );
 
-        #[cfg(windows)]
-        let sensors = self
-            .vendor_sensors
-            .as_mut()
-            .map(|s| s.poll_sensors())
-            .unwrap_or_default();
-        #[cfg(not(windows))]
         let sensors = Vec::new();
 
         let mut frame = TelemetryFrame {

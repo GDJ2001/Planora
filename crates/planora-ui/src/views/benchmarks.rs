@@ -5,10 +5,7 @@ use crate::{
     theme::{CORNER_RADIUS, Palette},
 };
 use eframe::egui::{self, CornerRadius, Pos2, Rect, Stroke, Vec2};
-use planora_core::{
-    BenchmarkPoint, BenchmarkResult, BenchmarkState, Command, ProfileResult, ProfileState,
-    ProfileTarget,
-};
+use planora_core::{BenchmarkPoint, BenchmarkResult, BenchmarkState, Command, ProfileState};
 use std::sync::mpsc::SyncSender;
 
 pub struct BenchmarksViewState {
@@ -55,7 +52,7 @@ pub fn render_benchmarks_view(
     render_page_header(
         ui,
         "Probing & Profiling",
-        "Deterministic single-cycle Sattolo cache line/page probes, inter-core latency, and bounded ETW profiling",
+        "Cancellable cache and inter-core probes with measured methodology",
         app_state,
         pause_state,
         poll_interval_ms,
@@ -253,304 +250,22 @@ fn render_probes_section(
 
 fn render_profiling_section(
     ui: &mut egui::Ui,
-    profile_state: Option<&ProfileState>,
-    benchmark_state: Option<&BenchmarkState>,
-    state: &mut BenchmarksViewState,
-    app_state: &AppState,
-    tx: &SyncSender<Command>,
+    _profile_state: Option<&ProfileState>,
+    _benchmark_state: Option<&BenchmarkState>,
+    _state: &mut BenchmarksViewState,
+    _app_state: &AppState,
+    _tx: &SyncSender<Command>,
     p: Palette,
 ) {
     egui::Frame::group(ui.style())
         .fill(p.surface)
         .stroke(Stroke::new(1.0, p.border))
         .corner_radius(CornerRadius::same(CORNER_RADIUS as u8))
-        .inner_margin(egui::Margin::same(12))
+        .inner_margin(egui::Margin::same(14))
         .show(ui, |ui| {
-            ui.strong("Bounded Advanced Profiling (ETW & PMU)");
-            ui.add_space(4.0);
-            ui.label("• Default session: 15 seconds (maximum 60 seconds)");
-            ui.label("• Single session mutual exclusion: at most one active profile or benchmark at a time");
-            ui.label("• Memory-bounded tracing: buffers and result queues strictly bounded to 128 MiB combined");
-            ui.label("• PMU Sampling: OS-enumerated sources only; sample counts are statistical hits, not exact IPC");
-        });
-
-    ui.add_space(12.0);
-
-    let is_live = *app_state == AppState::Live;
-    let bm_busy = benchmark_state.is_some_and(|b| {
-        matches!(
-            b,
-            BenchmarkState::Running { .. } | BenchmarkState::Cancelling { .. }
-        )
-    });
-    let prof_running = profile_state.is_some_and(|s| {
-        matches!(
-            s,
-            ProfileState::Running { .. } | ProfileState::Cancelling { .. }
-        )
-    });
-    let can_start = is_live && !bm_busy && !prof_running;
-
-    // Controls Configuration
-    ui.horizontal(|ui| {
-        ui.label("Profile Type:");
-        ui.radio_value(&mut state.profile_type, 0, "Physical Disk I/O");
-        ui.radio_value(&mut state.profile_type, 1, "PMU Event Sampling");
-    });
-
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        ui.label("Duration (seconds):");
-        ui.add(egui::Slider::new(&mut state.duration_seconds, 1..=60).suffix(" s"));
-        if ui.button("15s (default)").clicked() {
-            state.duration_seconds = 15;
-        }
-    });
-
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        ui.label("Target Process PID (optional):");
-        ui.add(
-            egui::TextEdit::singleline(&mut state.target_pid_input)
-                .hint_text("System-wide (leave empty)")
-                .desired_width(120.0),
-        );
-    });
-
-    if state.profile_type == 1 {
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.label("PMU Sources (select up to 2):");
-            ui.checkbox(&mut state.pmu_source_cycles, "TotalCycles");
-            ui.checkbox(&mut state.pmu_source_instructions, "InstructionRetired");
-            ui.checkbox(&mut state.pmu_source_branches, "BranchInstructions");
-        });
-    }
-
-    ui.add_space(10.0);
-
-    // Launch & Cancel Buttons
-    ui.horizontal(|ui| {
-        let mut start_btn = ui.add_enabled(can_start, egui::Button::new("Start Profiling Session"));
-        if !is_live {
-            start_btn = start_btn
-                .on_disabled_hover_text("Profiling requires an active, live helper connection.");
-        } else if bm_busy {
-            start_btn =
-                start_btn.on_disabled_hover_text("A benchmark probe is currently executing.");
-        } else if prof_running {
-            start_btn = start_btn.on_disabled_hover_text("A profiling session is already running.");
-        }
-
-        if start_btn.clicked() {
-            let job_id = planora_telemetry::unix_ms();
-            let duration = state.duration_seconds.clamp(1, 60);
-            let target_proc = state
-                .target_pid_input
-                .trim()
-                .parse::<u32>()
-                .ok()
-                .map(|pid| planora_core::ProcessIdentity {
-                    pid,
-                    started: 1,
-                    sequence_number: None,
-                    source: planora_core::IdentitySource::SysinfoEpochSeconds,
-                });
-
-            let target = if state.profile_type == 0 {
-                ProfileTarget::DiskIo {
-                    target_process: target_proc,
-                    duration_seconds: duration,
-                }
-            } else {
-                let mut sources = Vec::new();
-                if state.pmu_source_cycles {
-                    sources.push("TotalCycles".into());
-                }
-                if state.pmu_source_instructions {
-                    sources.push("InstructionRetired".into());
-                }
-                if state.pmu_source_branches && sources.len() < 2 {
-                    sources.push("BranchInstructions".into());
-                }
-                if sources.is_empty() {
-                    sources.push("TotalCycles".into());
-                }
-                ProfileTarget::PmuSampling {
-                    target_process: target_proc,
-                    duration_seconds: duration,
-                    sources,
-                }
-            };
-
-            let _ = tx.send(Command::StartProfile { job_id, target });
-        }
-
-        if prof_running
-            && let Some(ProfileState::Running { job_id, .. }) = profile_state
-            && ui.button("Cancel Profiling Session ✖").clicked()
-        {
-            let _ = tx.send(Command::CancelProfile { job_id: *job_id });
-        }
-    });
-
-    ui.add_space(14.0);
-
-    // Profile Status & Results
-    match profile_state.unwrap_or(&ProfileState::Idle) {
-        ProfileState::Running {
-            job_id,
-            target_desc,
-            elapsed_ms,
-            duration_seconds,
-        } => {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.colored_label(
-                    p.primary,
-                    format!(
-                        "Profile #{job_id} running ({target_desc}): {elapsed_ms} ms / {} ms...",
-                        duration_seconds * 1000
-                    ),
-                );
-            });
-            ui.add_space(8.0);
-        }
-        ProfileState::Cancelling { job_id } => {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.colored_label(
-                    p.warning,
-                    format!("Cancelling profile #{job_id}; stopping trace sessions safely..."),
-                );
-            });
-            ui.add_space(8.0);
-        }
-        ProfileState::Failed { message, .. } => {
-            ui.colored_label(p.error, format!("Profile Error: {message}"));
-            ui.add_space(8.0);
-        }
-        ProfileState::Cancelled { job_id } => {
-            ui.colored_label(
-                p.warning,
-                format!("Profile #{job_id} was cancelled. Tracing session closed."),
-            );
-            ui.add_space(8.0);
-        }
-        ProfileState::Completed { result, .. } => {
-            render_profile_result(ui, result, p);
-        }
-        ProfileState::Idle => {
-            ui.label(
-                egui::RichText::new(
-                    "Configure parameters above and click 'Start Profiling Session'.",
-                )
-                .color(p.secondary),
-            );
-        }
-    }
-}
-
-fn render_profile_result(ui: &mut egui::Ui, result: &ProfileResult, p: Palette) {
-    egui::Frame::group(ui.style())
-        .fill(p.surface)
-        .stroke(Stroke::new(1.0, p.border))
-        .corner_radius(CornerRadius::same(CORNER_RADIUS as u8))
-        .inner_margin(egui::Margin::same(12))
-        .show(ui, |ui| {
-            ui.heading(format!("Profile Results: {}", result.target_desc));
-            ui.add_space(6.0);
-
-            egui::Grid::new("profile_summary_grid")
-                .striped(true)
-                .num_columns(4)
-                .spacing([20.0, 6.0])
-                .show(ui, |ui| {
-                    ui.strong("Configured Duration");
-                    ui.strong("Elapsed Time");
-                    ui.strong("Traced Events");
-                    ui.strong("Attribution Coverage");
-                    ui.end_row();
-
-                    ui.monospace(format!("{} s", result.duration_seconds));
-                    ui.monospace(format!("{} ms", result.elapsed_ms));
-                    ui.monospace(format!("{} (Lost: {})", result.events_traced, result.events_lost));
-                    ui.monospace(format!("{:.1}%", result.attribution_coverage_percent));
-                    ui.end_row();
-                });
-
-            ui.add_space(12.0);
-
-            // Disk records table
-            if !result.disk_records.is_empty() {
-                ui.strong(format!("Attributed Process Disk Activity ({})", result.disk_records.len()));
-                egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
-                    egui::Grid::new("profile_disk_records_grid")
-                        .striped(true)
-                        .num_columns(5)
-                        .spacing([18.0, 6.0])
-                        .show(ui, |ui| {
-                            ui.strong("PID");
-                            ui.strong("Process Name");
-                            ui.strong("Read Bytes");
-                            ui.strong("Write Bytes");
-                            ui.strong("Event Count");
-                            ui.end_row();
-
-                            for rec in &result.disk_records {
-                                ui.monospace(format!("PID {}", rec.pid));
-                                ui.label(&rec.process_name);
-                                ui.monospace(format_bytes(rec.read_bytes));
-                                ui.monospace(format_bytes(rec.write_bytes));
-                                ui.monospace((rec.read_operations + rec.write_operations).to_string());
-                                ui.end_row();
-                            }
-                        });
-                });
-
-                if result.unattributed_read_bytes > 0 || result.unattributed_write_bytes > 0 {
-                    ui.add_space(6.0);
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "Unattributed physical disk activity: Read {}, Write {}",
-                            format_bytes(result.unattributed_read_bytes),
-                            format_bytes(result.unattributed_write_bytes)
-                        ))
-                        .size(11.5)
-                        .color(p.secondary),
-                    );
-                }
-            }
-
-            // PMU records table
-            if !result.pmu_records.is_empty() {
-                ui.strong("PMU Event Sample Counts");
-                egui::Grid::new("profile_pmu_records_grid")
-                    .striped(true)
-                    .num_columns(4)
-                    .spacing([20.0, 6.0])
-                    .show(ui, |ui| {
-                        ui.strong("Target");
-                        ui.strong("PMU Event Source");
-                        ui.strong("Sample Count");
-                        ui.strong("Unit / Note");
-                        ui.end_row();
-
-                        for rec in &result.pmu_records {
-                            ui.monospace(rec.target_pid.map_or_else(|| "System-wide".into(), |pid| format!("PID {pid}")));
-                            ui.label(&rec.source);
-                            ui.monospace(rec.sample_count.to_string());
-                            ui.label("Samples (statistical hits)");
-                            ui.end_row();
-                        }
-                    });
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new("PMU samples reflect interrupt sampling frequency, not exact instruction retirement counts.")
-                        .size(11.0)
-                        .color(p.secondary),
-                );
-            }
+            ui.heading("Advanced profiling unavailable");
+            ui.label("This build does not collect ETW disk events or sampled PMU data. No event counts or attribution percentages are inferred.");
+            ui.label("The capability table records this limitation. Profiling controls will be enabled after a measured provider and cancellation path pass native tests.");
         });
 }
 

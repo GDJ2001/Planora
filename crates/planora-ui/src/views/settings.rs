@@ -10,14 +10,25 @@ use planora_core::{Command, DiagnosticEntry};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
-    mpsc::SyncSender,
+    mpsc::{self, Receiver, SyncSender},
 };
+
+use std::{
+    io,
+    path::{Path, PathBuf},
+};
+
+enum LocalDataResult {
+    Preview(io::Result<Vec<(PathBuf, u64)>>),
+    Deleted(io::Result<()>),
+}
 
 #[derive(Default)]
 pub struct SettingsViewState {
     pub show_confirm_modal: bool,
-    pub preview_files: Vec<(String, u64)>,
+    preview_files: Vec<(PathBuf, u64)>,
     pub status_message: Option<(bool, String)>,
+    local_data_task: Option<Receiver<LocalDataResult>>,
 }
 
 fn is_reparse_point_or_symlink(path: &std::path::Path) -> bool {
@@ -38,6 +49,125 @@ fn is_reparse_point_or_symlink(path: &std::path::Path) -> bool {
     false
 }
 
+fn reject_reparse_ancestors(path: &Path) -> io::Result<()> {
+    for ancestor in path.ancestors() {
+        if is_reparse_point_or_symlink(ancestor) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "Refusing to traverse a symbolic link or reparse point: {}",
+                    ancestor.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn planora_local_paths() -> io::Result<(PathBuf, PathBuf)> {
+    let settings = UserSettings::file_path().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "configuration directory unavailable",
+        )
+    })?;
+    let recordings = crate::recording::recordings_dir()?;
+    reject_reparse_ancestors(&settings)?;
+    reject_reparse_ancestors(&recordings)?;
+    Ok((settings, recordings))
+}
+
+fn preview_planora_data() -> io::Result<Vec<(PathBuf, u64)>> {
+    let (settings, recordings) = planora_local_paths()?;
+    let mut files = Vec::new();
+    if settings.exists() {
+        let meta = std::fs::symlink_metadata(&settings)?;
+        if !meta.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "settings path is not a regular file",
+            ));
+        }
+        files.push((settings, meta.len()));
+    }
+    if recordings.is_dir() {
+        for entry in std::fs::read_dir(&recordings)? {
+            let path = entry?.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if !name.starts_with("planora-") || !name.ends_with(".planora.jsonl") {
+                continue;
+            }
+            let meta = std::fs::symlink_metadata(&path)?;
+            if is_reparse_point_or_symlink(&path) || !meta.is_file() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "recording path is not a regular file",
+                ));
+            }
+            files.push((path, meta.len()));
+            if files.len() > 10_000 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "too many recording files to preview",
+                ));
+            }
+        }
+    }
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(files)
+}
+
+fn delete_planora_data(expected: &[(PathBuf, u64)]) -> io::Result<()> {
+    let (settings, recordings) = planora_local_paths()?;
+    delete_planora_data_from(&settings, &recordings, expected)
+}
+
+fn delete_planora_data_from(
+    settings: &Path,
+    recordings: &Path,
+    expected: &[(PathBuf, u64)],
+) -> io::Result<()> {
+    reject_reparse_ancestors(settings)?;
+    reject_reparse_ancestors(recordings)?;
+    for (path, _) in expected {
+        let allowed_settings = path == settings;
+        let allowed_recording = path.parent() == Some(recordings)
+            && path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|name| {
+                    name.starts_with("planora-") && name.ends_with(".planora.jsonl")
+                });
+        if !allowed_settings && !allowed_recording {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "unexpected Planora data path",
+            ));
+        }
+        reject_reparse_ancestors(path)?;
+        match std::fs::symlink_metadata(path) {
+            Ok(meta) if meta.is_file() => std::fs::remove_file(path)?,
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "data file changed type since preview",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    // Leave unrelated files and user exports untouched. Empty Planora-owned
+    // directories are removed only if the OS confirms that they are empty.
+    let _ = std::fs::remove_dir(recordings);
+    if let Some(parent) = settings.parent() {
+        let _ = std::fs::remove_dir(parent);
+    }
+    Ok(())
+}
+
 pub fn render_settings_view(
     ui: &mut egui::Ui,
     settings: &mut UserSettings,
@@ -52,6 +182,47 @@ pub fn render_settings_view(
     p: Palette,
 ) {
     let current_poll = poll_ms.load(Ordering::Relaxed);
+    if let Some(task) = &state.local_data_task {
+        match task.try_recv() {
+            Ok(LocalDataResult::Preview(Ok(files))) => {
+                state.preview_files = files;
+                state.show_confirm_modal = !state.preview_files.is_empty();
+                if !state.show_confirm_modal {
+                    state.status_message = Some((
+                        false,
+                        "No Planora settings or in-app recordings were found.".into(),
+                    ));
+                }
+                state.local_data_task = None;
+            }
+            Ok(LocalDataResult::Preview(Err(error))) => {
+                state.status_message =
+                    Some((true, format!("Could not inspect local data: {error}")));
+                state.local_data_task = None;
+            }
+            Ok(LocalDataResult::Deleted(Ok(()))) => {
+                *settings = UserSettings::default();
+                poll_ms.store(settings.poll_interval_ms, Ordering::Relaxed);
+                state.preview_files.clear();
+                state.status_message = Some((
+                    false,
+                    "Planora settings and in-app recordings were deleted. Exports were preserved."
+                        .into(),
+                ));
+                state.local_data_task = None;
+            }
+            Ok(LocalDataResult::Deleted(Err(error))) => {
+                state.status_message =
+                    Some((true, format!("Could not delete all selected data: {error}")));
+                state.local_data_task = None;
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                state.status_message = Some((true, "Local data task ended unexpectedly.".into()));
+                state.local_data_task = None;
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+    }
 
     // 1. Page Header
     render_page_header(
@@ -247,7 +418,7 @@ pub fn render_settings_view(
                         .color(p.secondary),
                 );
                 ui.label(
-                    egui::RichText::new("You can explicitly inspect and purge all current-user configuration and stored data.")
+                    egui::RichText::new("Inspect and delete Planora settings and in-app recordings. Exported files are preserved.")
                         .size(11.5)
                         .color(p.secondary),
                 );
@@ -259,30 +430,15 @@ pub fn render_settings_view(
                 }
 
                 if !state.show_confirm_modal {
-                    if ui.button("Inspect & Delete Local Planora Data...").clicked() {
+                    if ui.add_enabled(state.local_data_task.is_none(), egui::Button::new("Inspect & Delete Local Planora Data...")).clicked() {
                         state.status_message = None;
-                        if let Some(dir) = UserSettings::file_path().and_then(|p| p.parent().map(|p| p.to_path_buf())) {
-                            if is_reparse_point_or_symlink(&dir) {
-                                state.status_message = Some((
-                                    true,
-                                    "Security check failed: Planora data folder is a symlink or junction point.".into(),
-                                ));
-                            } else if dir.is_dir() {
-                                let mut files = Vec::new();
-                                if let Ok(entries) = std::fs::read_dir(&dir) {
-                                    for entry in entries.flatten() {
-                                        let name = entry.file_name().to_string_lossy().into_owned();
-                                        let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
-                                        files.push((name, size));
-                                    }
-                                }
-                                state.preview_files = files;
-                                state.show_confirm_modal = true;
-                            } else {
-                                state.status_message = Some((false, "No local Planora data directory exists on disk.".into()));
-                            }
-                        }
+                        let (sender, receiver) = mpsc::sync_channel(1);
+                        state.local_data_task = Some(receiver);
+                        std::thread::spawn(move || {
+                            let _ = sender.send(LocalDataResult::Preview(preview_planora_data()));
+                        });
                     }
+                    if state.local_data_task.is_some() { ui.label("Checking Planora-owned files…"); }
                 } else {
                     egui::Frame::group(ui.style())
                         .fill(p.surface_raised)
@@ -291,12 +447,15 @@ pub fn render_settings_view(
                         .inner_margin(egui::Margin::same(12))
                         .show(ui, |ui| {
                             ui.colored_label(p.error, "Confirm Permanent Data Deletion");
-                            ui.label("The following files in your current-user Planora folder will be permanently deleted:");
+                            ui.label("The following settings and in-app recordings will be permanently deleted. Exports will remain:");
                             ui.add_space(4.0);
 
                             let total_bytes: u64 = state.preview_files.iter().map(|(_, sz)| sz).sum();
-                            for (fname, sz) in &state.preview_files {
-                                ui.label(format!("• {fname} ({})", format_bytes(*sz)));
+                            for (path, sz) in state.preview_files.iter().take(100) {
+                                ui.label(format!("• {} ({})", path.display(), format_bytes(*sz)));
+                            }
+                            if state.preview_files.len() > 100 {
+                                ui.label(format!("… and {} more Planora recordings", state.preview_files.len() - 100));
                             }
                             ui.add_space(4.0);
                             ui.strong(format!("Total Size: {}", format_bytes(total_bytes)));
@@ -304,30 +463,12 @@ pub fn render_settings_view(
 
                             ui.horizontal(|ui| {
                                 if ui.button(egui::RichText::new("Yes, Delete My Planora Data").color(p.error)).clicked() {
-                                    if let Some(dir) = UserSettings::file_path().and_then(|p| p.parent().map(|p| p.to_path_buf())) {
-                                        if is_reparse_point_or_symlink(&dir) {
-                                            state.status_message = Some((
-                                                true,
-                                                "Deletion rejected: data directory is a symlink or reparse point.".into(),
-                                            ));
-                                        } else {
-                                            match std::fs::remove_dir_all(&dir) {
-                                                Ok(()) => {
-                                                    *settings = UserSettings::default();
-                                                    state.status_message = Some((
-                                                        false,
-                                                        "Local Planora data deleted successfully. Settings reset to defaults.".into(),
-                                                    ));
-                                                }
-                                                Err(e) => {
-                                                    state.status_message = Some((
-                                                        true,
-                                                        format!("Failed to delete data folder: {e}"),
-                                                    ));
-                                                }
-                                            }
-                                        }
-                                    }
+                                    let files = state.preview_files.clone();
+                                    let (sender, receiver) = mpsc::sync_channel(1);
+                                    state.local_data_task = Some(receiver);
+                                    std::thread::spawn(move || {
+                                        let _ = sender.send(LocalDataResult::Deleted(delete_planora_data(&files)));
+                                    });
                                     state.show_confirm_modal = false;
                                 }
 
@@ -391,4 +532,42 @@ fn persist(settings: &UserSettings, error: &mut Option<String>) {
         .save()
         .err()
         .map(|e| format!("Could not save preferences: {e}"));
+}
+
+#[cfg(test)]
+mod local_data_tests {
+    use super::*;
+
+    #[test]
+    fn deletion_is_limited_to_previewed_planora_files_and_preserves_exports() {
+        let root = std::env::temp_dir().join(format!(
+            "planora-data-test-{}-{}",
+            std::process::id(),
+            planora_telemetry::unix_ms()
+        ));
+        let config = root.join("config").join("Planora");
+        let recordings = root.join("Documents").join("Planora").join("Recordings");
+        let exports = root.join("Documents").join("Planora").join("Exports");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::create_dir_all(&recordings).unwrap();
+        std::fs::create_dir_all(&exports).unwrap();
+        let settings = config.join("settings.json");
+        let recording = recordings.join("planora-123.planora.jsonl");
+        let export = exports.join("keep.csv");
+        std::fs::write(&settings, b"{}").unwrap();
+        std::fs::write(&recording, b"sample").unwrap();
+        std::fs::write(&export, b"keep").unwrap();
+        assert!(delete_planora_data_from(&settings, &recordings, &[(export.clone(), 4)]).is_err());
+        assert!(export.exists());
+        delete_planora_data_from(
+            &settings,
+            &recordings,
+            &[(settings.clone(), 2), (recording.clone(), 6)],
+        )
+        .unwrap();
+        assert!(!settings.exists());
+        assert!(!recording.exists());
+        assert!(export.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

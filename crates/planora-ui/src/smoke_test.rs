@@ -200,6 +200,10 @@ pub fn create_test_app(theme: Theme, page: Page) -> App {
         last_frame_received: Some(Instant::now()),
         frame: Some(Arc::new(frame)),
         topology: Some(topo),
+        #[cfg(windows)]
+        sensor_readings: Arc::new(Vec::new()),
+        #[cfg(windows)]
+        sensor_capabilities: Arc::new(Vec::new()),
         capabilities: vec![
             Capability {
                 name: "System CPU Utilization".into(),
@@ -268,6 +272,12 @@ pub fn create_test_app(theme: Theme, page: Page) -> App {
         shared,
         tx,
         poll_ms: Arc::new(AtomicU64::new(100)),
+        #[cfg(windows)]
+        sensor_stop: None,
+        #[cfg(windows)]
+        sensor_refresh: None,
+        #[cfg(windows)]
+        sensor_worker: None,
         settings,
         settings_error: None,
         recorder: crate::recording::Recorder::default(),

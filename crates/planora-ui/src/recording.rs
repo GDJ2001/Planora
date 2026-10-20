@@ -263,14 +263,20 @@ impl Recorder {
         self.tx = None;
     }
 
-    pub fn record(&mut self, frame: &TelemetryFrame, selected: Option<&ProcessIdentity>) {
+    pub fn record(
+        &mut self,
+        frame: &TelemetryFrame,
+        selected: Option<&ProcessIdentity>,
+        sensors: &[planora_core::SensorReading],
+    ) {
         if !self.is_active() || frame.sampled_at_ms < self.last_sampled_at_ms.saturating_add(1_000)
         {
             return;
         }
         self.last_sampled_at_ms = frame.sampled_at_ms;
         let selected = if self.record_selected { selected } else { None };
-        let snapshot = RecordedSnapshot::from_frame(frame, selected);
+        let mut snapshot = RecordedSnapshot::from_frame(frame, selected);
+        snapshot.sensors = sensors.to_vec();
         let dropped_before = self.dropped_pending.swap(0, Ordering::Relaxed);
         if let Some(tx) = &self.tx {
             match tx.try_send(RecordLine::Sample {

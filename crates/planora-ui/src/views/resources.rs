@@ -5,7 +5,7 @@ use crate::{
     theme::{CORNER_RADIUS, Palette},
 };
 use eframe::egui::{self, CornerRadius, Rect, Stroke, Vec2};
-use planora_core::TelemetryFrame;
+use planora_core::{SensorReading, TelemetryFrame};
 
 #[derive(Default)]
 pub struct ResourcesViewState {
@@ -16,6 +16,7 @@ pub struct ResourcesViewState {
 pub fn render_resources_view(
     ui: &mut egui::Ui,
     frame: &TelemetryFrame,
+    sensors: &[SensorReading],
     state: &mut ResourcesViewState,
     app_state: &AppState,
     pause_state: &mut DisplayPause,
@@ -67,7 +68,7 @@ pub fn render_resources_view(
             2 => render_gpu_tab(ui, frame, p),
             3 => render_storage_tab(ui, frame, p),
             4 => render_network_tab(ui, frame, p),
-            5 => render_sensors_tab(ui, frame, p),
+            5 => render_sensors_tab(ui, sensors, p),
             _ => state.active_tab = 0,
         });
 }
@@ -431,7 +432,7 @@ fn render_network_tab(ui: &mut egui::Ui, frame: &TelemetryFrame, p: Palette) {
         });
 }
 
-fn render_sensors_tab(ui: &mut egui::Ui, frame: &TelemetryFrame, p: Palette) {
+fn render_sensors_tab(ui: &mut egui::Ui, sensors: &[SensorReading], p: Palette) {
     ui.heading("Hardware Sensors & Telemetry Providers");
     ui.label(
         egui::RichText::new(
@@ -442,7 +443,7 @@ fn render_sensors_tab(ui: &mut egui::Ui, frame: &TelemetryFrame, p: Palette) {
     );
     ui.add_space(8.0);
 
-    if frame.sensors.is_empty() {
+    if sensors.is_empty() {
         ui.label("No active vendor sensors reported. Sensors require supported GPU hardware and driver runtimes.");
         ui.label(
             egui::RichText::new(
@@ -466,16 +467,28 @@ fn render_sensors_tab(ui: &mut egui::Ui, frame: &TelemetryFrame, p: Palette) {
             ui.strong("Provider");
             ui.end_row();
 
-            for sensor in &frame.sensors {
+            for sensor in sensors {
                 ui.label(&sensor.scope);
                 ui.label(&sensor.name);
                 ui.monospace(format!("{:?}", sensor.sensor_type));
 
-                let val_str = sensor.value.value.map_or_else(
-                    || "Unavailable".into(),
-                    |v| format!("{v:.1} {}", sensor.value.unit),
+                let age_ms =
+                    planora_telemetry::unix_ms().saturating_sub(sensor.value.sampled_at_ms);
+                let val_str = if age_ms > 5_000 {
+                    format!("Stale ({} s)", age_ms / 1_000)
+                } else {
+                    sensor.value.value.map_or_else(
+                        || "Unavailable".into(),
+                        |v| format!("{v:.1} {}", sensor.value.unit),
+                    )
+                };
+                ui.monospace(val_str).on_hover_text(
+                    sensor
+                        .value
+                        .unavailable_reason
+                        .as_ref()
+                        .map_or_else(|| format!("Sampled {} ms ago", age_ms), ToString::to_string),
                 );
-                ui.monospace(val_str);
 
                 ui.label(&sensor.provider);
                 ui.end_row();
