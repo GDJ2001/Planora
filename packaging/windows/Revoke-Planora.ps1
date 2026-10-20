@@ -7,6 +7,8 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 }
 $service = Get-Service -Name 'PlanoraHelper' -ErrorAction Stop
 if ($service.Status -eq 'Running') { Stop-Service -Name 'PlanoraHelper' -ErrorAction Stop }
-$key = 'HKLM:\SYSTEM\CurrentControlSet\Services\PlanoraHelper'
-Remove-ItemProperty -LiteralPath $key -Name Environment -ErrorAction SilentlyContinue
+$key = 'HKLM:\SOFTWARE\Planora'
+Remove-ItemProperty -LiteralPath $key -Name AuthorizedSid -ErrorAction SilentlyContinue
+Remove-ItemProperty -LiteralPath $key -Name AuthorizedEnvironment -ErrorAction SilentlyContinue
+Remove-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\PlanoraHelper' -Name Environment -ErrorAction SilentlyContinue
 Write-Host 'Planora helper authorization revoked. Reauthorize from the application to monitor again.'

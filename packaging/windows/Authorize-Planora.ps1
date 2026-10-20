@@ -10,8 +10,11 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
   exit $process.ExitCode
 }
 $service = Get-Service -Name 'PlanoraHelper' -ErrorAction Stop
-$key = 'HKLM:\SYSTEM\CurrentControlSet\Services\PlanoraHelper'
-New-ItemProperty -LiteralPath $key -Name Environment -PropertyType MultiString -Value @("PLANORA_ALLOWED_SID=$UserSid") -Force | Out-Null
+$key = 'HKLM:\SOFTWARE\Planora'
+New-Item -Path $key -Force | Out-Null
+New-ItemProperty -LiteralPath $key -Name AuthorizedSid -PropertyType String -Value $UserSid -Force | Out-Null
+Remove-ItemProperty -LiteralPath $key -Name AuthorizedEnvironment -ErrorAction SilentlyContinue
+Remove-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\PlanoraHelper' -Name Environment -ErrorAction SilentlyContinue
 if ($service.Status -eq 'Running') { Stop-Service -Name 'PlanoraHelper' -ErrorAction Stop }
 Start-Service -Name 'PlanoraHelper' -ErrorAction Stop
 Write-Host "Planora helper authorized for $UserSid."
