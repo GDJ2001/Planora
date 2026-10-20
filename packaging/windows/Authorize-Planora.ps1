@@ -11,7 +11,9 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 }
 $service = Get-Service -Name 'PlanoraHelper' -ErrorAction Stop
 $key = 'HKLM:\SOFTWARE\Planora'
-New-Item -Path $key -Force | Out-Null
+# The MSI creates this key. New-Item -Force on an existing key also opens the
+# HKLM\SOFTWARE parent for writing, which can fail even for an elevated caller.
+if (-not (Test-Path -LiteralPath $key)) { New-Item -Path $key -Force | Out-Null }
 New-ItemProperty -LiteralPath $key -Name AuthorizedSid -PropertyType String -Value $UserSid -Force | Out-Null
 Remove-ItemProperty -LiteralPath $key -Name AuthorizedEnvironment -ErrorAction SilentlyContinue
 Remove-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\PlanoraHelper' -Name Environment -ErrorAction SilentlyContinue
