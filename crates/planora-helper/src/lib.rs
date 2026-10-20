@@ -617,19 +617,26 @@ pub fn transact(command: &Command) -> io::Result<Response> {
 
 #[cfg(windows)]
 fn registry_string(name: &str) -> io::Result<String> {
-    use windows_sys::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
+    use windows_sys::Win32::System::Registry::{
+        HKEY_LOCAL_MACHINE, RRF_RT_REG_MULTI_SZ, RRF_RT_REG_SZ, RegGetValueW,
+    };
     let key: Vec<u16> = "SOFTWARE\\Planora"
         .encode_utf16()
         .chain(std::iter::once(0))
         .collect();
     let value: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    let value_kind = if name == "AuthorizedEnvironment" {
+        RRF_RT_REG_MULTI_SZ
+    } else {
+        RRF_RT_REG_SZ
+    };
     let mut bytes = 0u32;
     let status = unsafe {
         RegGetValueW(
             HKEY_LOCAL_MACHINE,
             key.as_ptr(),
             value.as_ptr(),
-            RRF_RT_REG_SZ,
+            value_kind,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             &mut bytes,
@@ -650,7 +657,7 @@ fn registry_string(name: &str) -> io::Result<String> {
             HKEY_LOCAL_MACHINE,
             key.as_ptr(),
             value.as_ptr(),
-            RRF_RT_REG_SZ,
+            value_kind,
             std::ptr::null_mut(),
             data.as_mut_ptr().cast(),
             &mut bytes,
@@ -894,5 +901,12 @@ mod tests {
         );
         assert_eq!(parse_authorized_sid("S-1-"), None);
         assert_eq!(parse_authorized_sid(""), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires an installed Planora authorization registry value"]
+    fn installed_authorization_registry_value_is_readable() {
+        assert!(authorized_sid().is_ok());
     }
 }

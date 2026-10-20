@@ -7,6 +7,9 @@
     <Property Id="PLANORA_PREVIOUS_ENV">
       <RegistrySearch Id="FindPlanoraLegacyEnvironment" Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\PlanoraHelper" Name="Environment" Type="raw" Bitness="always64" />
     </Property>
+    <Property Id="PLANORA_PERSISTENT_ENV">
+      <RegistrySearch Id="FindPlanoraPersistedEnvironment" Root="HKLM" Key="SOFTWARE\Planora" Name="AuthorizedEnvironment" Type="raw" Bitness="always64" />
+    </Property>
     <MediaTemplate EmbedCab="yes" />
     <Icon Id="PlanoraIcon.ico" SourceFile="$(var.ProjectDir)\assets\brand\platforms\windows\planora.ico" />
     <Property Id="ARPPRODUCTICON" Value="PlanoraIcon.ico" />
@@ -42,7 +45,7 @@
         <Component Id="PersistedAuthorization" Guid="*" Bitness="always64">
           <RegistryValue Root="HKLM" Key="SOFTWARE\Planora" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
           <RegistryValue Root="HKLM" Key="SOFTWARE\Planora" Name="AuthorizedSid" Type="string" Value="[PLANORA_PREVIOUS_SID]" />
-          <RegistryValue Root="HKLM" Key="SOFTWARE\Planora" Name="AuthorizedEnvironment" Type="string" Value="[PLANORA_PREVIOUS_ENV]" />
+          <RegistryValue Root="HKLM" Key="SOFTWARE\Planora" Name="AuthorizedEnvironment" Type="string" Value="[PLANORA_PREVIOUS_ENV][PLANORA_PERSISTENT_ENV]" />
           <RemoveRegistryKey Root="HKLM" Key="SOFTWARE\Planora" Action="removeOnUninstall" />
         </Component>
       </Directory>
