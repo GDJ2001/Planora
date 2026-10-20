@@ -12,6 +12,9 @@ install -Dm644 "$root/packaging/linux/planora-helper.service" "$stage/usr/lib/sy
 install -Dm644 "$root/packaging/linux/planora.sysusers" "$stage/usr/lib/sysusers.d/planora.conf"
 install -Dm644 "$root/packaging/linux/org.planora.authorize.policy" "$stage/usr/share/polkit-1/actions/org.planora.authorize.policy"
 install -Dm644 "$root/packaging/linux/planora.desktop" "$stage/usr/share/applications/planora.desktop"
+for license_file in LICENSE-MIT LICENSE-APACHE NOTICE; do
+  install -Dm644 "$root/$license_file" "$stage/usr/share/doc/planora/$license_file"
+done
 for size in 16 24 32 48 64 128 256 512; do
   install -Dm644 "$root/assets/brand/platforms/linux/planora-$size.png" "$stage/usr/share/icons/hicolor/${size}x${size}/apps/planora.png"
 done

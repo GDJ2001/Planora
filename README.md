@@ -6,7 +6,7 @@
 
 Planora is a Rust 2024 desktop resource monitor and hardware visualizer. Its native interface uses `eframe`/`egui` 0.37 and the [Planora design tokens](assets/design-tokens.json). The workspace targets Windows 10/11 x86-64, Linux x86-64, and Apple Silicon macOS 13+; it does not include a browser edition.
 
-The current implementation includes system and process telemetry, topology discovery, an overview, process search/sort and inspector, a hardware canvas, resource charts, explicit cancellable probes, and Windows process-affinity editing. Monitoring requires a locally authorized privileged helper. Measurements that lack a supported source are shown as **Unavailable** with a reason. See [development status and verification](docs/development-status.md) and [implementation audit status](docs/implementation-status.md) for platform-specific limits and release gates.
+The current 0.2.0-beta.1 source includes system and process telemetry, topology discovery, resource charts and device details, explicit cancellable probes, Windows process-affinity editing, optional local recording/replay, and CSV/JSON exports. Monitoring requires a locally authorized privileged helper. Measurements that lack a supported source are shown as **Unavailable** with a reason. See the [beta capability and verification matrix](docs/beta-readiness.md) for current release gates; the [implementation audit](docs/implementation-status.md) is historical.
 
 ## Build and test
 
@@ -19,9 +19,9 @@ cargo test --workspace --locked
 cargo build --release --bins --locked
 ```
 
-The binaries are `planora` and `planora-helper`. The UI connects to the helper using **Protocol v2** (`PROTOCOL_VERSION = 2`) over an authenticated local IPC channel with a 64 KiB request ceiling, 8 MiB response ceiling, a 16-connection ceiling (max 4 per caller), and strict 2s handshake and 5s request deadlines. Monitoring requires an authorized local privileged helper; the GUI remains unelevated.
+The binaries are `planora` and `planora-helper`. The UI connects to the helper using **Protocol v3** (`PROTOCOL_VERSION = 3`) over an authenticated local IPC channel with a 64 KiB request ceiling, 8 MiB response ceiling, a 16-connection ceiling (max 4 per caller), and strict 2s handshake and 5s request deadlines. The local endpoint retains its `planora-v2` name for upgrade detection; a mismatched helper receives an incompatibility screen. Monitoring requires an authorized local privileged helper; the GUI remains unelevated.
 
-The helper runs a dedicated background sampling worker that publishes an atomic `Arc<TelemetryFrame>`, preventing competing client requests from triggering redundant sampling cycles. The default 100 ms collection cadence is configurable from 50 ms to 1000 ms; CPU utilization refreshes no faster than `sysinfo::MINIMUM_CPU_UPDATE_INTERVAL` and preserves its original sample timestamp. Unavailable measurements remain visibly marked as `Unavailable` with typed reasons (e.g., `Unsupported`, `PermissionDenied`, `TemporarilyFailed`, `WarmingUp`, `Stale`) and never appear as synthetic zeros.
+The helper runs a dedicated background sampling worker. The default 100 ms collection cadence can be set to 100, 250, 500, 1,000, or 2,000 ms. The fastest active client's request wins; with no clients it samples once per second. CPU utilization refreshes no faster than `sysinfo::MINIMUM_CPU_UPDATE_INTERVAL` and preserves its original sample timestamp. Invalid frames are rejected before publication. Unavailable measurements remain visibly marked as `Unavailable` with typed reasons (e.g., `Unsupported`, `PermissionDenied`, `TemporarilyFailed`, `WarmingUp`, `Stale`) and never appear as synthetic zeros.
 
 The in-memory UI smoke test runs with `cargo test --workspace --locked`. The optional `planora --headless-smoke-test` command writes labeled, simulated SVG/Edge fixtures under `dist/fixture-smoke`; these are diagnostic renders, not native-window screenshots. Use [capture_native.ps1](scripts/capture_native.ps1) on Windows for native evidence.
 
@@ -33,12 +33,12 @@ The in-memory UI smoke test runs with `cargo test --workspace --locked`. The opt
 
 ## Packages and authorization
 
-- **Windows:** After committing the source, run [Build-Planora.ps1](packaging/windows/Build-Planora.ps1). It builds both release binaries, derives the MSI version from Cargo, validates the MSI, and writes a SHA-256 manifest. The installed `PlanoraHelper` service starts on demand after an administrator runs [Authorize-Planora.ps1](packaging/windows/Authorize-Planora.ps1) for the intended user, including after a major MSI upgrade resets its authorization. Its named pipe is `planora-v2`, restricted by a SID-specific ACL (`FILE_GENERIC_READ | FILE_GENERIC_WRITE`). Use [capture_native.ps1](scripts/capture_native.ps1) after installation to capture native Windows UI evidence from the installed binary.
+- **Windows:** After committing the source, run [Build-Planora.ps1](packaging/windows/Build-Planora.ps1). It builds both release binaries, uses numeric MSI ProductVersion `0.2.0` for the `0.2.0-beta.1` prerelease, validates the MSI, and writes a SHA-256 manifest. An administrator can [authorize](packaging/windows/Authorize-Planora.ps1) or [revoke](packaging/windows/Revoke-Planora.ps1) the intended user. The named pipe retains the `planora-v2` endpoint name, restricted by a SID-specific ACL (`FILE_GENERIC_READ | FILE_GENERIC_WRITE`). The current authorization value is in the service registry key; major-upgrade preservation still needs an acceptance fix. Use [capture_native.ps1](scripts/capture_native.ps1) for installed UI evidence.
 - **Ubuntu 24.04:** After a release build, run [build-deb.sh](packaging/linux/build-deb.sh). The package installs the systemd service and polkit authorization action. The local socket is `/run/planora/planora-v2.sock` with mode `0660` restricted to the `planora-users` group; the helper runs with `CAP_PERFMON` rather than broad `CAP_SYS_ADMIN`.
 - **Fedora:** After a release build, run [build-rpm.sh](packaging/linux/build-rpm.sh). The RPM uses the same helper and authorization model.
 - **Apple Silicon macOS:** Run [build-package.sh](packaging/macos/build-package.sh) on a Mac. The package includes an SMAppService LaunchDaemon in the app bundle. Its installer records the exact console-user UID for local IPC access; the user must still approve daemon registration through macOS. The app ZIP alone has no authorized helper. The package is unsigned by default and has signing/notarization hooks.
 
-The Windows 0.1.5 MSI was upgraded, uninstalled, reinstalled, and smoke-tested on this machine; [release evidence](docs/release-evidence-0.1.5.md) records hashes, live snapshots, and installed native captures. Debian and RPM packages were built under Ubuntu WSL but have not been installed on their target distributions. Other Windows display scaling modes and Apple Silicon macOS remain unverified release gates.
+The installed Windows 0.1.5 release remains the verified baseline; its [historical release evidence](docs/release-evidence-0.1.5.md) records hashes, live snapshots, and installed native captures. The 0.2.0-beta.1 source is not yet accepted as a public beta; see [beta readiness](docs/beta-readiness.md). Linux and macOS remain previews until native tests pass.
 
 ## Repository
 
@@ -57,4 +57,4 @@ The supplied [hardware visualizer development document](docs/hwviz_%20Micro-Arch
 
 ## License
 
-A distribution license has not yet been added to this repository. Do not assume an open-source license until the project owner selects one and commits the corresponding license file.
+The source declares `MIT OR Apache-2.0`; see [LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE), and [NOTICE](NOTICE). Approval of the public distribution terms and signing credentials remain release gates.

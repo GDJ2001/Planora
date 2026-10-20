@@ -20,6 +20,12 @@
         </Component>
         <Component Id="AuthorizationScript" Guid="*" Bitness="always64">
           <File Id="AuthorizationFile" Source="$(var.ProjectDir)\packaging\windows\Authorize-Planora.ps1" KeyPath="yes" />
+          <File Id="RevocationFile" Source="$(var.ProjectDir)\packaging\windows\Revoke-Planora.ps1" />
+        </Component>
+        <Component Id="LicenseFiles" Guid="*" Bitness="always64">
+          <File Id="LicenseMit" Source="$(var.ProjectDir)\LICENSE-MIT" KeyPath="yes" />
+          <File Id="LicenseApache" Source="$(var.ProjectDir)\LICENSE-APACHE" />
+          <File Id="Notice" Source="$(var.ProjectDir)\NOTICE" />
         </Component>
       </Directory>
     </StandardDirectory>
@@ -28,6 +34,7 @@
       <ComponentRef Id="PlanoraShortcut" />
       <ComponentRef Id="PlanoraHelper" />
       <ComponentRef Id="AuthorizationScript" />
+      <ComponentRef Id="LicenseFiles" />
     </Feature>
   </Package>
 </Wix>
