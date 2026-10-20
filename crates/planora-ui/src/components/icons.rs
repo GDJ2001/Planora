@@ -308,3 +308,28 @@ pub fn draw_search(p: &Painter, r: Rect, c: Color32) {
     let p2 = r.max - Vec2::new(r.width() * 0.2, r.height() * 0.2);
     p.line_segment([p1, p2], Stroke::new(2.0, c));
 }
+
+pub fn draw_resources(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(1.5, c);
+    let pad_x = r.width() * 0.15;
+    let w = r.width() - pad_x * 2.0;
+    for (i, width_factor) in [(0.25, 0.9), (0.50, 0.65), (0.75, 0.45)] {
+        let y = r.min.y + r.height() * i;
+        p.line_segment(
+            [
+                Pos2::new(r.min.x + pad_x, y),
+                Pos2::new(r.min.x + pad_x + w * width_factor, y),
+            ],
+            s,
+        );
+    }
+}
+
+pub fn draw_history(p: &Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(1.5, c);
+    let center = r.center();
+    let radius = r.width().min(r.height()) * 0.35;
+    p.circle_stroke(center, radius, s);
+    p.line_segment([center, center + Vec2::new(0.0, -radius * 0.55)], s);
+    p.line_segment([center, center + Vec2::new(radius * 0.45, 0.0)], s);
+}

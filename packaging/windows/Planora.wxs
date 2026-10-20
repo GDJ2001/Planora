@@ -20,6 +20,7 @@
         </Component>
         <Component Id="PlanoraShortcut" Guid="*" Bitness="always64">
           <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="Planora" Target="[INSTALLFOLDER]planora.exe" Icon="PlanoraIcon.ico" WorkingDirectory="INSTALLFOLDER" />
+          <Shortcut Id="UninstallShortcut" Directory="ProgramMenuFolder" Name="Uninstall Planora" Target="[SystemFolder]WindowsPowerShell\v1.0\powershell.exe" Arguments="-NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]Uninstall-Planora.ps1&quot;" Icon="PlanoraIcon.ico" WorkingDirectory="INSTALLFOLDER" />
           <RegistryValue Root="HKCU" Key="Software\Planora" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
         </Component>
         <Component Id="PlanoraHelper" Guid="*" Bitness="always64">
@@ -32,6 +33,9 @@
         </Component>
         <Component Id="RevocationScript" Guid="*" Bitness="always64">
           <File Id="RevocationFile" Source="$(var.ProjectDir)\packaging\windows\Revoke-Planora.ps1" />
+        </Component>
+        <Component Id="UninstallScript" Guid="*" Bitness="always64">
+          <File Id="UninstallFile" Source="$(var.ProjectDir)\packaging\windows\Uninstall-Planora.ps1" KeyPath="yes" />
         </Component>
         <Component Id="LicenseMitFile" Guid="*" Bitness="always64">
           <File Id="LicenseMit" Source="$(var.ProjectDir)\LICENSE-MIT" KeyPath="yes" />
@@ -56,6 +60,7 @@
       <ComponentRef Id="PlanoraHelper" />
       <ComponentRef Id="AuthorizationScript" />
       <ComponentRef Id="RevocationScript" />
+      <ComponentRef Id="UninstallScript" />
       <ComponentRef Id="LicenseMitFile" />
       <ComponentRef Id="LicenseApacheFile" />
       <ComponentRef Id="NoticeFile" />

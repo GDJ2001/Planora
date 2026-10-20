@@ -5,9 +5,11 @@ use crate::{
 };
 use eframe::egui::{self, CornerRadius, Stroke, Vec2};
 use planora_core::Capability;
+use std::sync::mpsc::SyncSender;
 
 pub struct CapabilitiesViewState {
     pub filter: CapabilitiesFilter,
+    pub search_query: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -22,6 +24,7 @@ impl Default for CapabilitiesViewState {
     fn default() -> Self {
         Self {
             filter: CapabilitiesFilter::All,
+            search_query: String::new(),
         }
     }
 }
@@ -33,6 +36,7 @@ pub fn render_capabilities_view(
     app_state: &AppState,
     pause_state: &mut DisplayPause,
     poll_interval_ms: u64,
+    tx: &SyncSender<planora_core::Command>,
     p: Palette,
 ) {
     // 1. Page Header
@@ -48,6 +52,8 @@ pub fn render_capabilities_view(
 
     // 2. Filter Toolbar
     ui.horizontal(|ui| {
+        ui.label("Search:");
+        ui.add(egui::TextEdit::singleline(&mut state.search_query).desired_width(180.0));
         ui.label("Filter:");
         ui.selectable_value(&mut state.filter, CapabilitiesFilter::All, "All");
         ui.selectable_value(
@@ -55,6 +61,9 @@ pub fn render_capabilities_view(
             CapabilitiesFilter::AvailableOnly,
             "Available Only",
         );
+        if ui.button("Refresh capabilities").clicked() {
+            let _ = tx.try_send(planora_core::Command::RefreshCapabilities);
+        }
         ui.selectable_value(
             &mut state.filter,
             CapabilitiesFilter::UnavailableOnly,
@@ -66,10 +75,17 @@ pub fn render_capabilities_view(
 
     let filtered: Vec<&Capability> = capabilities
         .iter()
+        .filter(|cap| {
+            let query = state.search_query.trim().to_lowercase();
+            query.is_empty()
+                || [cap.name.as_str(), cap.scope.as_str(), cap.provider.as_str()]
+                    .iter()
+                    .any(|field| field.to_lowercase().contains(&query))
+        })
         .filter(|cap| match state.filter {
             CapabilitiesFilter::All => true,
-            CapabilitiesFilter::AvailableOnly => cap.available,
-            CapabilitiesFilter::UnavailableOnly => !cap.available,
+            CapabilitiesFilter::AvailableOnly => cap.available(),
+            CapabilitiesFilter::UnavailableOnly => !cap.available(),
         })
         .collect();
 
@@ -90,18 +106,20 @@ pub fn render_capabilities_view(
             egui::ScrollArea::vertical().show(ui, |ui| {
                 egui::Grid::new("capabilities_grid")
                     .striped(true)
-                    .num_columns(3)
+                    .num_columns(5)
                     .spacing([24.0, 10.0])
                     .show(ui, |ui| {
                         ui.strong("Capability");
                         ui.strong("Status");
-                        ui.strong("Provider / Reason Details");
+                        ui.strong("Scope");
+                        ui.strong("Provider");
+                        ui.strong("Reason / Recovery");
                         ui.end_row();
 
                         for cap in filtered {
                             ui.label(&cap.name);
 
-                            if cap.available {
+                            if cap.available() {
                                 let (rect, _) = ui.allocate_exact_size(
                                     Vec2::new(64.0, 18.0),
                                     egui::Sense::hover(),
@@ -120,7 +138,7 @@ pub fn render_capabilities_view(
                                 );
                             } else {
                                 let (rect, resp) = ui.allocate_exact_size(
-                                    Vec2::new(76.0, 18.0),
+                                    Vec2::new(138.0, 24.0),
                                     egui::Sense::hover(),
                                 );
                                 ui.painter().rect_filled(
@@ -137,7 +155,7 @@ pub fn render_capabilities_view(
                                 ui.painter().text(
                                     rect.center(),
                                     egui::Align2::CENTER_CENTER,
-                                    "Unavailable",
+                                    format!("{:?}", cap.state),
                                     egui::FontId::proportional(11.0),
                                     p.secondary,
                                 );
@@ -146,12 +164,19 @@ pub fn render_capabilities_view(
                                 }
                             }
 
+                            ui.label(&cap.scope);
+                            ui.label(&cap.provider);
                             match &cap.reason {
                                 Some(r) => {
                                     ui.label(
-                                        egui::RichText::new(r.as_str())
-                                            .size(12.0)
-                                            .color(p.secondary),
+                                        egui::RichText::new(format!(
+                                            "{r}{}",
+                                            cap.recovery_action
+                                                .as_ref()
+                                                .map_or(String::new(), |a| format!(" · {a}"))
+                                        ))
+                                        .size(12.0)
+                                        .color(p.secondary),
                                     );
                                 }
                                 None => {

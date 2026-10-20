@@ -1,0 +1,18 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal">
+  <Bundle Name="Planora" Manufacturer="Planora"
+          Version="$(var.BundleVersion)"
+          UpgradeCode="13B50E2D-BB95-4458-8244-C1E60187216E"
+          Compressed="yes"
+          IconSourceFile="$(var.ProjectDir)\assets\brand\platforms\windows\planora.ico">
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication
+          Theme="hyperlinkLicense"
+          LicenseUrl="https://github.com/GDJ2001/Planora/blob/main/LICENSE-MIT"
+          LogoFile="$(var.ProjectDir)\assets\brand\platforms\windows\planora-64.png" />
+    </BootstrapperApplication>
+    <Chain>
+      <MsiPackage SourceFile="$(var.MsiPath)" Visible="no" Vital="yes" />
+    </Chain>
+  </Bundle>
+</Wix>

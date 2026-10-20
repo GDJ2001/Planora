@@ -12,9 +12,13 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'cargo metadata failed' }
     $version = ($metadata.packages | Where-Object { $_.name -eq 'planora-ui' } | Select-Object -First 1).version
     if (-not $version) { throw 'Could not determine Planora version' }
-    # Windows Installer ProductVersion accepts three numeric fields; keep the
-    # prerelease label in the file name and manifest while MSI upgrades use 0.2.0.
-    $productVersionExpected = ($version -split '-', 2)[0]
+    # Windows Installer ignores prerelease text. 0.3.0-beta.1 intentionally
+    # upgrades 0.2.0 while leaving room for later betas and 0.3.0 stable.
+    $productVersionExpected = if ($version -match '^0\.3\.0-beta\.(\d+)$') {
+        "0.2.$(1000 + [int]$Matches[1])"
+    } else {
+        ($version -split '-', 2)[0]
+    }
     if ($productVersionExpected -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid MSI numeric version: $productVersionExpected" }
     $commit = (git rev-parse --short HEAD).Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Could not determine source commit' }
@@ -56,6 +60,12 @@ try {
         throw "MSI ProductVersion $productVersion differs from expected $productVersionExpected"
     }
 
+    $setup = Join-Path $root "dist\Planora-$version-x64-Setup.exe"
+    wix build 'packaging/windows/Planora-Bundle.wxs' -arch x64 `
+        -ext WixToolset.BootstrapperApplications.wixext `
+        -d "BundleVersion=$productVersion" -d "ProjectDir=$root" -d "MsiPath=$msi" -o $setup
+    if ($LASTEXITCODE -ne 0) { throw 'WiX Burn setup build failed' }
+
     $manifest = [pscustomobject]@{
         version = $version
         sourceCommit = $commit
@@ -67,10 +77,11 @@ try {
             [pscustomobject]@{ file = 'planora-helper.exe'; sha256 = (Get-FileHash -LiteralPath $helper -Algorithm SHA256).Hash }
         )
         msi = [pscustomobject]@{ file = [IO.Path]::GetFileName($msi); sha256 = (Get-FileHash -LiteralPath $msi -Algorithm SHA256).Hash }
+        setup = [pscustomobject]@{ file = [IO.Path]::GetFileName($setup); sha256 = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash }
     }
     $manifestPath = Join-Path $root "dist\Planora-$version-x64.manifest.json"
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestPath -Encoding utf8
-    Write-Host "Built $msi from $commit; manifest $manifestPath"
+    Write-Host "Built $msi and $setup from $commit; manifest $manifestPath"
 } finally {
     Pop-Location
 }

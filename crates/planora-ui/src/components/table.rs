@@ -13,6 +13,8 @@ pub enum SortColumn {
     #[default]
     Cpu,
     Memory,
+    IoRead,
+    IoWrite,
     DiskRead,
     DiskWrite,
     Gpu,
@@ -23,6 +25,8 @@ pub struct TableColumnsConfig {
     pub show_pid: bool,
     pub show_cpu: bool,
     pub show_memory: bool,
+    pub show_io_read: bool,
+    pub show_io_write: bool,
     pub show_disk_read: bool,
     pub show_disk_write: bool,
     pub show_gpu: bool,
@@ -34,6 +38,8 @@ impl Default for TableColumnsConfig {
             show_pid: true,
             show_cpu: true,
             show_memory: true,
+            show_io_read: false,
+            show_io_write: false,
             show_disk_read: false,
             show_disk_write: false,
             show_gpu: false,
@@ -71,6 +77,18 @@ pub fn sort_processes<'a>(
         (None, Some(_)) => std::cmp::Ordering::Greater,
         (None, None) => std::cmp::Ordering::Equal,
     };
+    let compare_integer = |a: Option<u64>, b: Option<u64>| match (a, b) {
+        (Some(a), Some(b)) => {
+            if sort_descending {
+                b.cmp(&a)
+            } else {
+                a.cmp(&b)
+            }
+        }
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    };
 
     rows.sort_by(|a, b| {
         let primary = match sort_column {
@@ -89,17 +107,21 @@ pub fn sort_processes<'a>(
                 }
             }
             SortColumn::Cpu => compare_optional(a.cpu_percent.value, b.cpu_percent.value),
-            SortColumn::Memory => compare_optional(
-                a.memory_bytes.value.map(|v| v as f32),
-                b.memory_bytes.value.map(|v| v as f32),
+            SortColumn::Memory => compare_integer(a.memory_bytes.value, b.memory_bytes.value),
+            SortColumn::IoRead => {
+                compare_integer(a.io_read_bytes_per_sec.value, b.io_read_bytes_per_sec.value)
+            }
+            SortColumn::IoWrite => compare_integer(
+                a.io_write_bytes_per_sec.value,
+                b.io_write_bytes_per_sec.value,
             ),
-            SortColumn::DiskRead => compare_optional(
-                a.disk_read_bytes_per_sec.value.map(|v| v as f32),
-                b.disk_read_bytes_per_sec.value.map(|v| v as f32),
+            SortColumn::DiskRead => compare_integer(
+                a.disk_read_bytes_per_sec.value,
+                b.disk_read_bytes_per_sec.value,
             ),
-            SortColumn::DiskWrite => compare_optional(
-                a.disk_write_bytes_per_sec.value.map(|v| v as f32),
-                b.disk_write_bytes_per_sec.value.map(|v| v as f32),
+            SortColumn::DiskWrite => compare_integer(
+                a.disk_write_bytes_per_sec.value,
+                b.disk_write_bytes_per_sec.value,
             ),
             SortColumn::Gpu => compare_optional(a.gpu_percent.value, b.gpu_percent.value),
         };
@@ -142,6 +164,10 @@ pub struct ProcessColumnLayout {
     pub col_cpu_w: f32,
     pub show_memory: bool,
     pub col_mem_w: f32,
+    pub show_io_read: bool,
+    pub col_io_r_w: f32,
+    pub show_io_write: bool,
+    pub col_io_w_w: f32,
     pub show_disk_read: bool,
     pub col_disk_r_w: f32,
     pub show_disk_write: bool,
@@ -153,6 +179,27 @@ pub struct ProcessColumnLayout {
 }
 
 impl ProcessColumnLayout {
+    pub fn minimum_width(config: &TableColumnsConfig) -> f32 {
+        let mut width = 120.0 + 16.0;
+        let mut columns = 1;
+        for (show, size) in [
+            (config.show_pid, 64.0),
+            (config.show_cpu, 95.0),
+            (config.show_memory, 95.0),
+            (config.show_io_read, 85.0),
+            (config.show_io_write, 85.0),
+            (config.show_disk_read, 85.0),
+            (config.show_disk_write, 85.0),
+            (config.show_gpu, 75.0),
+        ] {
+            if show {
+                width += size;
+                columns += 1;
+            }
+        }
+        width + (columns - 1) as f32 * 8.0
+    }
+
     pub fn compute(available_w: f32, config: &TableColumnsConfig) -> Self {
         let col_spacing = 8.0;
         let inner_margin_x = 8.0;
@@ -160,18 +207,18 @@ impl ProcessColumnLayout {
         let col_pid_w = 64.0;
         let col_cpu_w = 95.0;
         let col_mem_w = 95.0;
+        let col_io_r_w = 85.0;
+        let col_io_w_w = 85.0;
         let col_disk_r_w = 85.0;
         let col_disk_w_w = 85.0;
         let col_gpu_w = 75.0;
 
-        // Adaptive column visibility based on available width:
-        // < 640px: hide GPU and Disk Write
-        // < 500px: hide Disk Read
-        // < 420px: hide PID
-        let show_gpu = config.show_gpu && available_w >= 640.0;
-        let show_disk_write = config.show_disk_write && available_w >= 640.0;
-        let show_disk_read = config.show_disk_read && available_w >= 500.0;
-        let show_pid = config.show_pid && available_w >= 420.0;
+        let show_gpu = config.show_gpu;
+        let show_disk_write = config.show_disk_write;
+        let show_disk_read = config.show_disk_read;
+        let show_io_write = config.show_io_write;
+        let show_io_read = config.show_io_read;
+        let show_pid = config.show_pid;
         let show_cpu = config.show_cpu;
         let show_memory = config.show_memory;
 
@@ -187,6 +234,14 @@ impl ProcessColumnLayout {
         }
         if show_memory {
             fixed_w += col_mem_w;
+            num_cols += 1;
+        }
+        if show_io_read {
+            fixed_w += col_io_r_w;
+            num_cols += 1;
+        }
+        if show_io_write {
+            fixed_w += col_io_w_w;
             num_cols += 1;
         }
         if show_disk_read {
@@ -213,6 +268,10 @@ impl ProcessColumnLayout {
             col_cpu_w,
             show_memory,
             col_mem_w,
+            show_io_read,
+            col_io_r_w,
+            show_io_write,
+            col_io_w_w,
             show_disk_read,
             col_disk_r_w,
             show_disk_write,
@@ -226,6 +285,25 @@ impl ProcessColumnLayout {
 }
 
 pub fn render_process_table(
+    ui: &mut egui::Ui,
+    rows: &[&ProcessRecord],
+    selected_identity: &mut Option<ProcessIdentity>,
+    state: &mut ProcessTableState,
+    row_height: f32,
+    p: Palette,
+) {
+    let min_width = ProcessColumnLayout::minimum_width(&state.columns);
+    if ui.available_width() < min_width {
+        egui::ScrollArea::horizontal().show(ui, |ui| {
+            ui.set_min_width(min_width);
+            render_process_table_inner(ui, rows, selected_identity, state, row_height, p);
+        });
+    } else {
+        render_process_table_inner(ui, rows, selected_identity, state, row_height, p);
+    }
+}
+
+fn render_process_table_inner(
     ui: &mut egui::Ui,
     rows: &[&ProcessRecord],
     selected_identity: &mut Option<ProcessIdentity>,
@@ -399,6 +477,70 @@ pub fn render_process_table(
                             state.sort_descending = !state.sort_descending;
                         } else {
                             state.sort_column = SortColumn::Memory;
+                            state.sort_descending = true;
+                        }
+                    }
+                }
+
+                // I/O Read header
+                if layout.show_io_read {
+                    let (rect, resp) = ui.allocate_exact_size(
+                        Vec2::new(layout.col_io_r_w, 20.0),
+                        egui::Sense::click(),
+                    );
+                    let arrow = if state.sort_column == SortColumn::IoRead {
+                        if state.sort_descending {
+                            " ▼"
+                        } else {
+                            " ▲"
+                        }
+                    } else {
+                        ""
+                    };
+                    ui.painter().text(
+                        Pos2::new(rect.max.x - 4.0, rect.center().y),
+                        egui::Align2::RIGHT_CENTER,
+                        format!("I/O R{arrow}"),
+                        egui::FontId::proportional(12.0),
+                        p.text,
+                    );
+                    if resp.clicked() {
+                        if state.sort_column == SortColumn::IoRead {
+                            state.sort_descending = !state.sort_descending;
+                        } else {
+                            state.sort_column = SortColumn::IoRead;
+                            state.sort_descending = true;
+                        }
+                    }
+                }
+
+                // I/O Write header
+                if layout.show_io_write {
+                    let (rect, resp) = ui.allocate_exact_size(
+                        Vec2::new(layout.col_io_w_w, 20.0),
+                        egui::Sense::click(),
+                    );
+                    let arrow = if state.sort_column == SortColumn::IoWrite {
+                        if state.sort_descending {
+                            " ▼"
+                        } else {
+                            " ▲"
+                        }
+                    } else {
+                        ""
+                    };
+                    ui.painter().text(
+                        Pos2::new(rect.max.x - 4.0, rect.center().y),
+                        egui::Align2::RIGHT_CENTER,
+                        format!("I/O W{arrow}"),
+                        egui::FontId::proportional(12.0),
+                        p.text,
+                    );
+                    if resp.clicked() {
+                        if state.sort_column == SortColumn::IoWrite {
+                            state.sort_descending = !state.sort_descending;
+                        } else {
+                            state.sort_column = SortColumn::IoWrite;
                             state.sort_descending = true;
                         }
                     }
@@ -651,6 +793,46 @@ pub fn render_process_table(
                                 }
                             }
 
+                            // I/O Read
+                            if layout.show_io_read {
+                                let (io_r_rect, io_r_resp) = ui.allocate_exact_size(
+                                    Vec2::new(layout.col_io_r_w, cell_h),
+                                    egui::Sense::click(),
+                                );
+                                ui.painter().text(
+                                    Pos2::new(io_r_rect.max.x - 4.0, io_r_rect.center().y),
+                                    egui::Align2::RIGHT_CENTER,
+                                    format_rate(
+                                        process.io_read_bytes_per_sec.value.map(|v| v as f32),
+                                    ),
+                                    egui::FontId::monospace(12.0),
+                                    p.secondary,
+                                );
+                                if io_r_resp.clicked() {
+                                    *selected_identity = Some(process.identity.clone());
+                                }
+                            }
+
+                            // I/O Write
+                            if layout.show_io_write {
+                                let (io_w_rect, io_w_resp) = ui.allocate_exact_size(
+                                    Vec2::new(layout.col_io_w_w, cell_h),
+                                    egui::Sense::click(),
+                                );
+                                ui.painter().text(
+                                    Pos2::new(io_w_rect.max.x - 4.0, io_w_rect.center().y),
+                                    egui::Align2::RIGHT_CENTER,
+                                    format_rate(
+                                        process.io_write_bytes_per_sec.value.map(|v| v as f32),
+                                    ),
+                                    egui::FontId::monospace(12.0),
+                                    p.secondary,
+                                );
+                                if io_w_resp.clicked() {
+                                    *selected_identity = Some(process.identity.clone());
+                                }
+                            }
+
                             // Disk Read
                             if layout.show_disk_read {
                                 let (dr_rect, dr_resp) = ui.allocate_exact_size(
@@ -728,7 +910,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_process_column_layout_adaptive_hiding() {
+    fn selected_columns_remain_visible_at_narrow_widths() {
         let config = TableColumnsConfig {
             show_gpu: true,
             show_disk_read: true,
@@ -736,41 +918,10 @@ mod tests {
             ..Default::default()
         };
 
-        // 1. Wide width (700px): all configured columns visible
-        let wide = ProcessColumnLayout::compute(700.0, &config);
-        assert!(wide.show_pid);
-        assert!(wide.show_cpu);
-        assert!(wide.show_memory);
-        assert!(wide.show_disk_read);
-        assert!(wide.show_disk_write);
-        assert!(wide.show_gpu);
-
-        // 2. Medium-narrow width (600px): GPU and Disk Write hidden (< 640px)
-        let med = ProcessColumnLayout::compute(600.0, &config);
-        assert!(med.show_pid);
-        assert!(med.show_cpu);
-        assert!(med.show_memory);
-        assert!(med.show_disk_read);
-        assert!(!med.show_disk_write);
-        assert!(!med.show_gpu);
-
-        // 3. Narrow width (480px): Disk Read also hidden (< 500px)
-        let narrow = ProcessColumnLayout::compute(480.0, &config);
-        assert!(narrow.show_pid);
-        assert!(narrow.show_cpu);
-        assert!(narrow.show_memory);
-        assert!(!narrow.show_disk_read);
-        assert!(!narrow.show_disk_write);
-        assert!(!narrow.show_gpu);
-
-        // 4. Very narrow width (380px): PID also hidden (< 420px)
-        let v_narrow = ProcessColumnLayout::compute(380.0, &config);
-        assert!(!v_narrow.show_pid);
-        assert!(v_narrow.show_cpu);
-        assert!(v_narrow.show_memory);
-        assert!(!v_narrow.show_disk_read);
-        assert!(!v_narrow.show_disk_write);
-        assert!(!v_narrow.show_gpu);
+        let layout = ProcessColumnLayout::compute(380.0, &config);
+        assert!(layout.show_pid && layout.show_cpu && layout.show_memory);
+        assert!(layout.show_disk_read && layout.show_disk_write && layout.show_gpu);
+        assert!(ProcessColumnLayout::minimum_width(&config) > 380.0);
     }
 
     #[test]

@@ -17,7 +17,7 @@ use std::{
     time::Duration,
 };
 
-const FORMAT_VERSION: u32 = 2;
+const FORMAT_VERSION: u32 = 3;
 const MAX_RECORDING_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_RECORDING_MS: u64 = 2 * 60 * 60 * 1_000;
 const MAX_LINE_BYTES: u64 = 8 * 1024 * 1024;
@@ -30,13 +30,23 @@ pub struct RecordedSnapshot {
     pub topology_generation: u64,
     pub collection_duration_ms: f32,
     pub cpu_percent: Metric<f32>,
+    #[serde(default)]
+    pub logical_cpus: Vec<planora_core::LogicalCpuSample>,
     pub memory_used_bytes: Metric<u64>,
+    #[serde(default)]
+    pub memory_available_bytes: Metric<u64>,
     pub memory_total_bytes: Metric<u64>,
+    #[serde(default)]
+    pub commit_used_bytes: Metric<u64>,
+    #[serde(default)]
+    pub commit_total_bytes: Metric<u64>,
     pub disk_read_bytes_per_sec: Metric<u64>,
     pub disk_write_bytes_per_sec: Metric<u64>,
     pub network_rx_bytes_per_sec: Metric<u64>,
     pub network_tx_bytes_per_sec: Metric<u64>,
     pub gpu_percent: Metric<f32>,
+    #[serde(default)]
+    pub gpu_adapters: Vec<planora_core::GpuAdapterSample>,
     pub gpu_engines: Vec<planora_core::GpuEngineSample>,
     #[serde(default)]
     pub gpu_engine_unavailable_reason: Option<planora_core::AvailabilityReason>,
@@ -45,6 +55,8 @@ pub struct RecordedSnapshot {
     #[serde(default)]
     pub network_interfaces: Vec<planora_core::ResourceDeviceSample>,
     pub package_power_watts: Metric<f32>,
+    #[serde(default)]
+    pub sensors: Vec<planora_core::SensorReading>,
     pub selected_process: Option<ProcessRecord>,
 }
 
@@ -57,18 +69,24 @@ impl RecordedSnapshot {
             topology_generation: frame.topology_generation,
             collection_duration_ms: frame.collection_duration_ms,
             cpu_percent: frame.cpu_percent.clone(),
+            logical_cpus: frame.logical_cpus.clone(),
             memory_used_bytes: frame.memory_used_bytes.clone(),
+            memory_available_bytes: frame.memory_available_bytes.clone(),
             memory_total_bytes: frame.memory_total_bytes.clone(),
+            commit_used_bytes: frame.commit_used_bytes.clone(),
+            commit_total_bytes: frame.commit_total_bytes.clone(),
             disk_read_bytes_per_sec: frame.disk_read_bytes_per_sec.clone(),
             disk_write_bytes_per_sec: frame.disk_write_bytes_per_sec.clone(),
             network_rx_bytes_per_sec: frame.network_rx_bytes_per_sec.clone(),
             network_tx_bytes_per_sec: frame.network_tx_bytes_per_sec.clone(),
             gpu_percent: frame.gpu_percent.clone(),
+            gpu_adapters: frame.gpu_adapters.clone(),
             gpu_engines: frame.gpu_engines.clone(),
             gpu_engine_unavailable_reason: frame.gpu_engine_unavailable_reason.clone(),
             disks: frame.disks.clone(),
             network_interfaces: frame.network_interfaces.clone(),
             package_power_watts: frame.package_power_watts.clone(),
+            sensors: frame.sensors.clone(),
             selected_process: selected
                 .and_then(|id| frame.processes.iter().find(|p| &p.identity == id).cloned()),
         }
@@ -83,18 +101,24 @@ impl RecordedSnapshot {
             sampled_at_ms: self.sampled_at_ms,
             collection_duration_ms: self.collection_duration_ms,
             cpu_percent: self.cpu_percent,
+            logical_cpus: self.logical_cpus,
             memory_used_bytes: self.memory_used_bytes,
+            memory_available_bytes: self.memory_available_bytes,
             memory_total_bytes: self.memory_total_bytes,
+            commit_used_bytes: self.commit_used_bytes,
+            commit_total_bytes: self.commit_total_bytes,
             disk_read_bytes_per_sec: self.disk_read_bytes_per_sec,
             disk_write_bytes_per_sec: self.disk_write_bytes_per_sec,
             network_rx_bytes_per_sec: self.network_rx_bytes_per_sec,
             network_tx_bytes_per_sec: self.network_tx_bytes_per_sec,
             gpu_percent: self.gpu_percent,
+            gpu_adapters: self.gpu_adapters,
             gpu_engines: self.gpu_engines,
             gpu_engine_unavailable_reason: self.gpu_engine_unavailable_reason,
             disks: self.disks,
             network_interfaces: self.network_interfaces,
             package_power_watts: self.package_power_watts,
+            sensors: self.sensors,
             processes: self.selected_process.into_iter().collect(),
         }
     }

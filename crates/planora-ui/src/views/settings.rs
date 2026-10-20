@@ -1,5 +1,6 @@
 use crate::{
     components::header::render_page_header,
+    formatting::format_bytes,
     history::HistoryRange,
     state::{AppState, BUILD_INFO, DisplayPause, UserSettings},
     theme::{CORNER_RADIUS, Density, Palette, Theme},
@@ -12,10 +13,36 @@ use std::sync::{
     mpsc::SyncSender,
 };
 
+#[derive(Default)]
+pub struct SettingsViewState {
+    pub show_confirm_modal: bool,
+    pub preview_files: Vec<(String, u64)>,
+    pub status_message: Option<(bool, String)>,
+}
+
+fn is_reparse_point_or_symlink(path: &std::path::Path) -> bool {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    if meta.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn render_settings_view(
     ui: &mut egui::Ui,
     settings: &mut UserSettings,
     settings_error: &mut Option<String>,
+    state: &mut SettingsViewState,
     poll_ms: &Arc<AtomicU64>,
     effective_ms: Option<u64>,
     diagnostic_logs: &[DiagnosticEntry],
@@ -145,7 +172,7 @@ pub fn render_settings_view(
                 ui.add_space(10.0);
 
                 ui.horizontal(|ui| {
-                    ui.label("Default Chart Time Window:");
+                    ui.label("Default History Time Window:");
                     ui.add_space(8.0);
                     let mut changed = false;
                     changed |= ui.selectable_value(&mut settings.default_history_range, HistoryRange::Sec30, "30 seconds").changed();
@@ -205,7 +232,116 @@ pub fn render_settings_view(
 
         ui.add_space(14.0);
 
-        // Group 4: Build & System Information
+        // Group 4: Local Data & Personal Privacy
+        egui::Frame::group(ui.style())
+            .fill(p.surface)
+            .stroke(Stroke::new(1.0, p.border))
+            .corner_radius(CornerRadius::same(CORNER_RADIUS as u8))
+            .inner_margin(egui::Margin::same(16))
+            .show(ui, |ui| {
+                ui.strong("Local Data & Personal Privacy");
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("Planora preserves your personal preferences and recording sessions by default.")
+                        .size(11.5)
+                        .color(p.secondary),
+                );
+                ui.label(
+                    egui::RichText::new("You can explicitly inspect and purge all current-user configuration and stored data.")
+                        .size(11.5)
+                        .color(p.secondary),
+                );
+                ui.add_space(8.0);
+
+                if let Some((is_err, msg)) = &state.status_message {
+                    ui.colored_label(if *is_err { p.error } else { p.success }, msg);
+                    ui.add_space(4.0);
+                }
+
+                if !state.show_confirm_modal {
+                    if ui.button("Inspect & Delete Local Planora Data...").clicked() {
+                        state.status_message = None;
+                        if let Some(dir) = UserSettings::file_path().and_then(|p| p.parent().map(|p| p.to_path_buf())) {
+                            if is_reparse_point_or_symlink(&dir) {
+                                state.status_message = Some((
+                                    true,
+                                    "Security check failed: Planora data folder is a symlink or junction point.".into(),
+                                ));
+                            } else if dir.is_dir() {
+                                let mut files = Vec::new();
+                                if let Ok(entries) = std::fs::read_dir(&dir) {
+                                    for entry in entries.flatten() {
+                                        let name = entry.file_name().to_string_lossy().into_owned();
+                                        let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                                        files.push((name, size));
+                                    }
+                                }
+                                state.preview_files = files;
+                                state.show_confirm_modal = true;
+                            } else {
+                                state.status_message = Some((false, "No local Planora data directory exists on disk.".into()));
+                            }
+                        }
+                    }
+                } else {
+                    egui::Frame::group(ui.style())
+                        .fill(p.surface_raised)
+                        .stroke(Stroke::new(1.0, p.error))
+                        .corner_radius(CornerRadius::same(CORNER_RADIUS as u8))
+                        .inner_margin(egui::Margin::same(12))
+                        .show(ui, |ui| {
+                            ui.colored_label(p.error, "Confirm Permanent Data Deletion");
+                            ui.label("The following files in your current-user Planora folder will be permanently deleted:");
+                            ui.add_space(4.0);
+
+                            let total_bytes: u64 = state.preview_files.iter().map(|(_, sz)| sz).sum();
+                            for (fname, sz) in &state.preview_files {
+                                ui.label(format!("• {fname} ({})", format_bytes(*sz)));
+                            }
+                            ui.add_space(4.0);
+                            ui.strong(format!("Total Size: {}", format_bytes(total_bytes)));
+                            ui.add_space(8.0);
+
+                            ui.horizontal(|ui| {
+                                if ui.button(egui::RichText::new("Yes, Delete My Planora Data").color(p.error)).clicked() {
+                                    if let Some(dir) = UserSettings::file_path().and_then(|p| p.parent().map(|p| p.to_path_buf())) {
+                                        if is_reparse_point_or_symlink(&dir) {
+                                            state.status_message = Some((
+                                                true,
+                                                "Deletion rejected: data directory is a symlink or reparse point.".into(),
+                                            ));
+                                        } else {
+                                            match std::fs::remove_dir_all(&dir) {
+                                                Ok(()) => {
+                                                    *settings = UserSettings::default();
+                                                    state.status_message = Some((
+                                                        false,
+                                                        "Local Planora data deleted successfully. Settings reset to defaults.".into(),
+                                                    ));
+                                                }
+                                                Err(e) => {
+                                                    state.status_message = Some((
+                                                        true,
+                                                        format!("Failed to delete data folder: {e}"),
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                    }
+                                    state.show_confirm_modal = false;
+                                }
+
+                                if ui.button("Cancel").clicked() {
+                                    state.show_confirm_modal = false;
+                                }
+                            });
+                        });
+                }
+            });
+
+        ui.add_space(14.0);
+
+        // Group 5: Build & System Information
         egui::Frame::group(ui.style())
             .fill(p.surface)
             .stroke(Stroke::new(1.0, p.border))

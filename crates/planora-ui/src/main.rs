@@ -31,9 +31,11 @@ use views::{
     benchmarks::{BenchmarksViewState, render_benchmarks_view},
     capabilities::{CapabilitiesViewState, render_capabilities_view},
     hardware::{HardwareViewState, render_hardware_view},
+    history::{HistoryViewState, render_history_view},
     overview::{OverviewViewState, render_overview_view},
     processes::{ProcessesViewState, render_processes_view},
-    settings::render_settings_view,
+    resources::{ResourcesViewState, render_resources_view},
+    settings::{SettingsViewState, render_settings_view},
 };
 
 #[cfg(target_os = "macos")]
@@ -69,10 +71,13 @@ pub struct App {
 
     // View specific state
     overview_state: OverviewViewState,
+    resources_state: ResourcesViewState,
     processes_state: ProcessesViewState,
+    history_state: HistoryViewState,
     hardware_state: HardwareViewState,
     benchmarks_state: BenchmarksViewState,
     capabilities_state: CapabilitiesViewState,
+    settings_state: SettingsViewState,
     auto_close: Option<(Instant, std::time::Duration)>,
     screenshot_out: Option<std::path::PathBuf>,
     frames_rendered: usize,
@@ -153,10 +158,13 @@ impl App {
             logo_cache: LogoCache::new(),
             histories: ResourceHistories::default(),
             overview_state: OverviewViewState::default(),
+            resources_state: ResourcesViewState::default(),
             processes_state,
+            history_state: HistoryViewState::default(),
             hardware_state: HardwareViewState::default(),
             benchmarks_state: BenchmarksViewState::default(),
             capabilities_state: CapabilitiesViewState::default(),
+            settings_state: SettingsViewState::default(),
             auto_close: None,
             screenshot_out: None,
             frames_rendered: 0,
@@ -278,10 +286,10 @@ impl App {
                         self.recording_error = Some(format!("Process export failed: {error}"));
                     }
                 }
-                if ui.button("Export Visible Chart Ranges CSV").clicked() {
-                    let ranges = [self.overview_state.cpu_chart.range, self.overview_state.mem_chart.range, self.overview_state.disk_chart.range, self.overview_state.net_chart.range];
+                if ui.button("Export Visible History CSV").clicked() {
+                    let ranges = [self.overview_state.range; 4];
                     if let Err(error) = self.exporter.charts(self.histories.clone(), ranges, Instant::now()) {
-                        self.recording_error = Some(format!("Chart export failed: {error}"));
+                        self.recording_error = Some(format!("History export failed: {error}"));
                     }
                 }
                 if let Some(benchmark) = benchmark
@@ -386,6 +394,7 @@ impl App {
                 topology: shared.topology.clone(),
                 capabilities: shared.capabilities.clone(),
                 benchmark_state: shared.benchmark_state.clone(),
+                profile_state: shared.profile_state.clone(),
                 sampling_effective_ms: shared.sampling_effective_ms,
                 diagnostic_logs: shared.diagnostic_logs.clone(),
                 affinity: shared.affinity.clone(),
@@ -600,7 +609,9 @@ impl App {
                         "Overview",
                         icons::draw_overview as fn(&egui::Painter, Rect, Color32),
                     ),
+                    (Page::Resources, "Resources", icons::draw_resources),
                     (Page::Processes, "Processes", icons::draw_processes),
+                    (Page::History, "History", icons::draw_history),
                     (Page::Hardware, "Hardware", icons::draw_hardware),
                     (Page::Benchmarks, "Benchmarks", icons::draw_benchmarks),
                     (Page::Capabilities, "Capabilities", icons::draw_capabilities),
@@ -762,6 +773,21 @@ impl App {
                             );
                         });
                 },
+                Page::Resources => {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            render_resources_view(
+                                ui,
+                                frame,
+                                &mut self.resources_state,
+                                &app_state,
+                                &mut self.display_pause,
+                                current_poll,
+                                p,
+                            );
+                        });
+                },
                 Page::Processes => {
                     render_processes_view(
                         ui,
@@ -789,6 +815,22 @@ impl App {
                         self.settings_error = self.settings.save().err().map(|e| format!("Could not save preferences: {e}"));
                     }
                 },
+                Page::History => {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            render_history_view(
+                                ui,
+                                render_histories,
+                                &mut self.history_state,
+                                &app_state,
+                                &mut self.display_pause,
+                                current_poll,
+                                render_now,
+                                p,
+                            );
+                        });
+                },
                 Page::Hardware => {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
@@ -811,6 +853,7 @@ impl App {
                             render_benchmarks_view(
                                 ui,
                                 shared_copy.benchmark_state.as_ref(),
+                                shared_copy.profile_state.as_ref(),
                                 &mut self.benchmarks_state,
                                 &app_state,
                                 &mut self.display_pause,
@@ -827,12 +870,13 @@ impl App {
                     &app_state,
                     &mut self.display_pause,
                     current_poll,
+                    &self.tx,
                     p,
                 ),
                 Page::Settings => {
                     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                         render_settings_view(
-                            ui, &mut self.settings, &mut self.settings_error, &self.poll_ms,
+                            ui, &mut self.settings, &mut self.settings_error, &mut self.settings_state, &self.poll_ms,
                             shared_copy.sampling_effective_ms, &shared_copy.diagnostic_logs,
                             &app_state, &mut self.display_pause, &self.tx, p,
                         );
@@ -861,6 +905,15 @@ impl eframe::App for App {
 }
 
 fn main() -> eframe::Result<()> {
+    #[cfg(windows)]
+    if std::env::args().any(|a| a == "--sensor-worker") {
+        let expected = std::env::args()
+            .position(|a| a == "--build-id")
+            .and_then(|idx| std::env::args().nth(idx + 1));
+        planora_telemetry::vendor_sensors::run_worker(expected.as_deref());
+        return Ok(());
+    }
+
     if std::env::args().any(|a| a == "--build-info") {
         let info = state::BUILD_INFO;
         println!(
@@ -900,7 +953,9 @@ fn main() -> eframe::Result<()> {
             "--view" if i + 1 < args.len() => {
                 initial_page = match args[i + 1].to_lowercase().as_str() {
                     "overview" => Page::Overview,
+                    "resources" => Page::Resources,
                     "processes" => Page::Processes,
+                    "history" => Page::History,
                     "hardware" => Page::Hardware,
                     "benchmarks" => Page::Benchmarks,
                     "capabilities" => Page::Capabilities,
@@ -1036,8 +1091,12 @@ mod tests {
                 1,
                 AvailabilityReason::Unsupported("missing".into()),
             ),
+            logical_cpus: Vec::new(),
             memory_used_bytes: m.clone(),
+            memory_available_bytes: m.clone(),
             memory_total_bytes: m.clone(),
+            commit_used_bytes: m.clone(),
+            commit_total_bytes: m.clone(),
             disk_read_bytes_per_sec: m.clone(),
             disk_write_bytes_per_sec: m.clone(),
             network_rx_bytes_per_sec: m.clone(),
@@ -1048,6 +1107,7 @@ mod tests {
                 1,
                 AvailabilityReason::Unsupported("missing".into()),
             ),
+            gpu_adapters: Vec::new(),
             gpu_engines: Vec::new(),
             gpu_engine_unavailable_reason: Some(planora_core::AvailabilityReason::WarmingUp),
             disks: Vec::new(),
@@ -1058,6 +1118,7 @@ mod tests {
                 1,
                 AvailabilityReason::Unsupported("missing".into()),
             ),
+            sensors: Vec::new(),
             processes: vec![
                 make(4, 1, "Alpha", Metric::available(20.0, "%", "fixture", 1)),
                 make(

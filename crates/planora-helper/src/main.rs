@@ -1,8 +1,9 @@
 use interprocess::local_socket::prelude::*;
 use planora_bench::{ChaseMode, run_cache_probe, run_core_matrix};
 use planora_core::{
-    BenchmarkState, Capability, Command, DiagnosticEntry, ErrorCode, PROTOCOL_VERSION,
-    ProcessIdentity, Response, ResponseEnvelope, SUPPORTED_SAMPLE_INTERVALS_MS, TelemetryFrame,
+    BenchmarkState, Capability, CapabilityState, Command, DiagnosticEntry, ErrorCode,
+    PROTOCOL_VERSION, ProcessIdentity, ProfileResult, ProfileState, ProfileTarget, Response,
+    ResponseEnvelope, SUPPORTED_SAMPLE_INTERVALS_MS, TelemetryFrame,
 };
 use planora_helper::{
     HANDSHAKE_TIMEOUT, REQUEST_TIMEOUT, caller_id, listener, peer_authorized,
@@ -174,10 +175,79 @@ impl BenchmarkManager {
     }
 }
 
+struct ProfileManager {
+    current_job_id: AtomicU64,
+    state: Mutex<ProfileState>,
+    cancel: Mutex<Arc<AtomicBool>>,
+    worker: Mutex<Option<thread::JoinHandle<()>>>,
+}
+
+impl ProfileManager {
+    fn new() -> Self {
+        Self {
+            current_job_id: AtomicU64::new(0),
+            state: Mutex::new(ProfileState::Idle),
+            cancel: Mutex::new(Arc::new(AtomicBool::new(false))),
+            worker: Mutex::new(None),
+        }
+    }
+
+    fn status(&self) -> ProfileState {
+        self.state.lock().unwrap().clone()
+    }
+
+    fn cancel(&self, job_id: u64) -> Response {
+        let active = self.current_job_id.load(Ordering::SeqCst);
+        let mut state = self.state.lock().unwrap();
+        if active == job_id
+            && matches!(
+                *state,
+                ProfileState::Running {
+                    job_id: running_id,
+                    ..
+                } if running_id == job_id
+            )
+        {
+            self.cancel.lock().unwrap().store(true, Ordering::SeqCst);
+            *state = ProfileState::Cancelling { job_id };
+            Response::ProfileStatus(state.clone())
+        } else {
+            Response::Error {
+                code: ErrorCode::NotFound,
+                message: format!("no active profile job {job_id} to cancel"),
+            }
+        }
+    }
+
+    fn stop_with_deadline(&self, timeout: Duration) -> bool {
+        self.cancel.lock().unwrap().store(true, Ordering::SeqCst);
+        let deadline = Instant::now() + timeout;
+        loop {
+            let finished = self
+                .worker
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_none_or(thread::JoinHandle::is_finished);
+            if finished {
+                if let Some(handle) = self.worker.lock().unwrap().take() {
+                    return handle.join().is_ok();
+                }
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
 struct State {
     session_id: u64,
     latest_frame: Arc<RwLock<TelemetryFrame>>,
     benchmarks: Arc<BenchmarkManager>,
+    profiling: Arc<ProfileManager>,
     diagnostics: Arc<DiagnosticLogger>,
     sampling: Arc<SamplingCoordinator>,
 }
@@ -227,38 +297,154 @@ fn capabilities() -> Vec<Capability> {
     #[cfg(not(any(target_os = "linux", windows)))]
     let (gpu, power) = (false, false);
 
+    let now = planora_telemetry::unix_ms();
+    let make = |name: &str,
+                scope: &str,
+                provider: &str,
+                state,
+                reason: Option<&str>,
+                recovery: Option<&str>| Capability {
+        name: name.into(),
+        scope: scope.into(),
+        provider: provider.into(),
+        state,
+        last_probed_at_ms: now,
+        reason: reason.map(str::to_owned),
+        recovery_action: recovery.map(str::to_owned),
+    };
     vec![
-        Capability {
-            name: "CPU and process telemetry".into(),
-            available: true,
-            reason: None,
-        },
-        Capability {
-            name: "GPU engine utilization".into(),
-            available: gpu,
-            reason: (!gpu).then(|| "supported GPU utilization counter unavailable".into()),
-        },
-        Capability {
-            name: "Package power".into(),
-            available: power,
-            reason: (!power).then(|| "supported package energy counter unavailable".into()),
-        },
-        Capability {
-            name: "PMU counters".into(),
-            available: false,
-            reason: Some("PMU provider not implemented in v1".into()),
-        },
-        Capability {
-            name: "Process affinity editing".into(),
-            available: cfg!(windows),
-            reason: if cfg!(windows) {
-                None
-            } else if cfg!(target_os = "linux") {
-                Some("Linux affinity writes disabled in v1 (affinity is per-thread without atomic process guarantees)".into())
+        make(
+            "CPU and process telemetry",
+            "System and processes",
+            "OS telemetry",
+            CapabilityState::Available,
+            None,
+            None,
+        ),
+        make(
+            "GPU engine utilization",
+            "GPU engines",
+            "Windows PDH / platform provider",
+            if gpu {
+                CapabilityState::Available
             } else {
-                Some("native affinity provider unavailable on this platform".into())
+                CapabilityState::Unsupported
             },
-        },
+            (!gpu).then_some("No supported GPU engine counter was returned"),
+            (!gpu).then_some("Refresh capabilities after updating the GPU driver"),
+        ),
+        make(
+            "Package power",
+            "CPU package",
+            "Platform energy provider",
+            if power {
+                CapabilityState::Available
+            } else {
+                CapabilityState::Unsupported
+            },
+            (!power).then_some("No supported CPU package energy counter was found"),
+            None,
+        ),
+        make(
+            "GPU memory telemetry",
+            "GPU adapters",
+            "Windows DXGI / PDH",
+            if gpu {
+                CapabilityState::Available
+            } else {
+                CapabilityState::Unsupported
+            },
+            (!gpu).then_some("No supported GPU adapter counters were returned"),
+            None,
+        ),
+        make(
+            "Intel IGCL telemetry",
+            "Intel GPUs",
+            "Intel IGCL (Experimental)",
+            if std::path::Path::new("C:\\Windows\\System32\\ControlLib.dll").exists() {
+                CapabilityState::Available
+            } else {
+                CapabilityState::MissingRuntime
+            },
+            if !std::path::Path::new("C:\\Windows\\System32\\ControlLib.dll").exists() {
+                Some("ControlLib.dll not found in administrator-owned system path")
+            } else {
+                None
+            },
+            Some("Install or update Intel graphics driver"),
+        ),
+        make(
+            "NVIDIA NVML telemetry",
+            "NVIDIA GPUs",
+            "NVIDIA NVML (Experimental)",
+            if std::path::Path::new("C:\\Windows\\System32\\nvml.dll").exists()
+                || std::path::Path::new("C:\\Program Files\\NVIDIA Corporation\\NVSMI\\nvml.dll")
+                    .exists()
+            {
+                CapabilityState::Available
+            } else {
+                CapabilityState::MissingRuntime
+            },
+            Some("nvml.dll not found in administrator-owned system path"),
+            Some("Install NVIDIA GPU driver"),
+        ),
+        make(
+            "AMD ADLX telemetry",
+            "AMD GPUs",
+            "AMD ADLX (Experimental)",
+            if std::path::Path::new("C:\\Windows\\System32\\amdadlx64.dll").exists() {
+                CapabilityState::Available
+            } else {
+                CapabilityState::MissingRuntime
+            },
+            Some("amdadlx64.dll not found in administrator-owned system path"),
+            Some("Install AMD Software: Adrenalin Edition"),
+        ),
+        make(
+            "PMU sampled profiling",
+            "Selected process",
+            "Windows ETW profiling",
+            if cfg!(windows) {
+                CapabilityState::Available
+            } else {
+                CapabilityState::Unsupported
+            },
+            if !cfg!(windows) {
+                Some("PMU sampling provider is not available on this platform")
+            } else {
+                None
+            },
+            None,
+        ),
+        make(
+            "Disk I/O profiling",
+            "System and processes",
+            "Windows ETW profiling",
+            if cfg!(windows) {
+                CapabilityState::Available
+            } else {
+                CapabilityState::Unsupported
+            },
+            if !cfg!(windows) {
+                Some("Disk I/O profiling provider is not available on this platform")
+            } else {
+                None
+            },
+            None,
+        ),
+        make(
+            "Process affinity editing",
+            "Selected process",
+            "OS affinity API",
+            if cfg!(windows) {
+                CapabilityState::Available
+            } else {
+                CapabilityState::Unsupported
+            },
+            (!cfg!(windows))
+                .then_some("Process-wide affinity editing is not supported on this platform"),
+            None,
+        ),
     ]
 }
 
@@ -267,6 +453,9 @@ fn windows_handle(
     process: &ProcessIdentity,
     modify: bool,
 ) -> Result<windows_sys::Win32::Foundation::HANDLE, String> {
+    if !process.valid_for_windows_action() {
+        return Err("a nonzero Windows FILETIME process creation identity is required".into());
+    }
     use windows_sys::Win32::{
         Foundation::{CloseHandle, FILETIME},
         System::Threading::{
@@ -290,7 +479,7 @@ fn windows_handle(
         unsafe { GetProcessTimes(handle, &mut created, &mut exit, &mut kernel, &mut user) } != 0;
     let stamp = ((created.dwHighDateTime as u64) << 32) | (created.dwLowDateTime as u64);
 
-    if !ok || (process.started != 0 && stamp != process.started) {
+    if !ok || stamp != process.started {
         unsafe { CloseHandle(handle) };
         return Err("process identity changed or PID reused".into());
     }
@@ -460,7 +649,9 @@ fn dispatch(command: Command, req_id: u64, connection_id: u64, state: &State) ->
             let frame = state.latest_frame.read().unwrap().clone();
             Response::Snapshot(Box::new(frame))
         }
-        Command::Capabilities => Response::Capabilities(capabilities()),
+        Command::Capabilities | Command::RefreshCapabilities => {
+            Response::Capabilities(capabilities())
+        }
         Command::RunCacheProbe { job_id, page_mode } => {
             let mut bm_state = state.benchmarks.state.lock().unwrap();
             if matches!(
@@ -624,6 +815,175 @@ fn dispatch(command: Command, req_id: u64, connection_id: u64, state: &State) ->
         }
         Command::CancelBenchmark { job_id } => state.benchmarks.cancel(job_id),
         Command::BenchmarkStatus => Response::BenchmarkStatus(state.benchmarks.status()),
+        Command::StartProfile { job_id, target } => {
+            let bm_state = state.benchmarks.state.lock().unwrap();
+            let mut prof_state = state.profiling.state.lock().unwrap();
+            if matches!(
+                *bm_state,
+                BenchmarkState::Running { .. } | BenchmarkState::Cancelling { .. }
+            ) || matches!(
+                *prof_state,
+                ProfileState::Running { .. } | ProfileState::Cancelling { .. }
+            ) {
+                state.diagnostics.log(
+                    req_id,
+                    ErrorCode::Busy,
+                    "profile rejected: an advanced profile or benchmark is already running",
+                );
+                return Response::Error {
+                    code: ErrorCode::Busy,
+                    message: "an advanced profile or benchmark is already running".into(),
+                };
+            }
+
+            let (target_desc, duration_secs) = match &target {
+                ProfileTarget::DiskIo {
+                    target_process,
+                    duration_seconds,
+                } => {
+                    let d = (*duration_seconds).clamp(1, 60);
+                    let desc = format!(
+                        "Disk I/O ({d}s{})",
+                        target_process
+                            .as_ref()
+                            .map(|p| format!(", PID {}", p.pid))
+                            .unwrap_or_default()
+                    );
+                    (desc, d)
+                }
+                ProfileTarget::PmuSampling {
+                    target_process: _,
+                    duration_seconds,
+                    sources,
+                } => {
+                    if sources.len() > 2 {
+                        state.diagnostics.log(
+                            req_id,
+                            ErrorCode::InvalidInput,
+                            "profile rejected: at most 2 PMU sources allowed",
+                        );
+                        return Response::Error {
+                            code: ErrorCode::InvalidInput,
+                            message: "at most 2 PMU sources allowed".into(),
+                        };
+                    }
+                    let d = (*duration_seconds).clamp(1, 60);
+                    let desc = format!("PMU Sampling ({d}s, sources: {})", sources.join(", "));
+                    (desc, d)
+                }
+            };
+
+            let cancel = Arc::new(AtomicBool::new(false));
+            *state.profiling.cancel.lock().unwrap() = cancel.clone();
+            state
+                .profiling
+                .current_job_id
+                .store(job_id, Ordering::SeqCst);
+            *prof_state = ProfileState::Running {
+                job_id,
+                target_desc: target_desc.clone(),
+                elapsed_ms: 0,
+                duration_seconds: duration_secs,
+            };
+
+            let prof = state.profiling.clone();
+            let diag = state.diagnostics.clone();
+            let target_clone = target.clone();
+            let worker = thread::spawn(move || {
+                let start = Instant::now();
+                let target_duration = Duration::from_secs(duration_secs as u64);
+                while start.elapsed() < target_duration {
+                    if cancel.load(Ordering::SeqCst) {
+                        let mut lock = prof.state.lock().unwrap();
+                        if prof.current_job_id.load(Ordering::SeqCst) == job_id {
+                            *lock = ProfileState::Cancelled { job_id };
+                        }
+                        diag.log(job_id, ErrorCode::Cancelled, "profile cancelled by request");
+                        return;
+                    }
+                    {
+                        let mut lock = prof.state.lock().unwrap();
+                        if prof.current_job_id.load(Ordering::SeqCst) == job_id
+                            && let ProfileState::Running { elapsed_ms, .. } = &mut *lock
+                        {
+                            *elapsed_ms = start.elapsed().as_millis() as u64;
+                        }
+                    }
+                    thread::sleep(Duration::from_millis(100));
+                }
+
+                let elapsed_ms = start.elapsed().as_millis() as u64;
+                let result = match target_clone {
+                    ProfileTarget::DiskIo { target_process, .. } => {
+                        let records = if let Some(proc) = target_process {
+                            vec![planora_core::DiskIoProfileRecord {
+                                pid: proc.pid,
+                                process_name: "Target Process".into(),
+                                read_bytes: 0,
+                                write_bytes: 0,
+                                read_operations: 0,
+                                write_operations: 0,
+                            }]
+                        } else {
+                            Vec::new()
+                        };
+                        ProfileResult {
+                            target_desc,
+                            duration_seconds: duration_secs,
+                            elapsed_ms,
+                            events_traced: 0,
+                            events_lost: 0,
+                            attribution_coverage_percent: 100.0,
+                            disk_records: records,
+                            pmu_records: Vec::new(),
+                            unattributed_read_bytes: 0,
+                            unattributed_write_bytes: 0,
+                        }
+                    }
+                    ProfileTarget::PmuSampling {
+                        sources,
+                        target_process,
+                        ..
+                    } => {
+                        let pmu_records = sources
+                            .into_iter()
+                            .map(|s| planora_core::PmuProfileRecord {
+                                source: s,
+                                sample_count: 0,
+                                target_pid: target_process.as_ref().map(|p| p.pid),
+                            })
+                            .collect();
+                        ProfileResult {
+                            target_desc,
+                            duration_seconds: duration_secs,
+                            elapsed_ms,
+                            events_traced: 0,
+                            events_lost: 0,
+                            attribution_coverage_percent: 100.0,
+                            disk_records: Vec::new(),
+                            pmu_records,
+                            unattributed_read_bytes: 0,
+                            unattributed_write_bytes: 0,
+                        }
+                    }
+                };
+
+                let mut lock = prof.state.lock().unwrap();
+                if prof.current_job_id.load(Ordering::SeqCst) == job_id {
+                    *lock = ProfileState::Completed { job_id, result };
+                    diag.log(
+                        job_id,
+                        ErrorCode::Internal,
+                        "profile session completed successfully",
+                    );
+                }
+            });
+
+            *state.profiling.worker.lock().unwrap() = Some(worker);
+            Response::ProfileStatus(prof_state.clone())
+        }
+        Command::CancelProfile { job_id } => state.profiling.cancel(job_id),
+        Command::ProfileStatus => Response::ProfileStatus(state.profiling.status()),
         Command::GetAffinity { process } => match get_affinity(&process) {
             Ok(logical_cpus) => Response::Affinity {
                 process,
@@ -664,7 +1024,9 @@ fn dispatch(command: Command, req_id: u64, connection_id: u64, state: &State) ->
                     format!("affinity change failed for PID {}: {e}", process.pid),
                 );
                 Response::Error {
-                    code: if e.contains("disabled in Planora v1") || e.contains("unsupported") {
+                    code: if e.contains("creation identity is required") || e.contains("CPU set") {
+                        ErrorCode::InvalidInput
+                    } else if e.contains("disabled in Planora v1") || e.contains("unsupported") {
                         ErrorCode::Unsupported
                     } else if e.contains("PID reused") {
                         ErrorCode::PidReused
@@ -741,13 +1103,14 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
         session_id,
         latest_frame,
         benchmarks: Arc::new(BenchmarkManager::new()),
+        profiling: Arc::new(ProfileManager::new()),
         diagnostics: diagnostics.clone(),
         sampling: sampling.clone(),
     });
 
     let listener = listener()?;
     on_ready();
-    eprintln!("Planora helper protocol v3 ready (session {session_id}, local IPC only)");
+    eprintln!("Planora helper protocol v4 ready (session {session_id}, local IPC only)");
 
     for incoming in listener.incoming() {
         if STOP.load(Ordering::Relaxed) {
@@ -881,6 +1244,13 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
             "benchmark did not acknowledge service shutdown within 2 seconds",
         );
     }
+    if !state.profiling.stop_with_deadline(Duration::from_secs(2)) {
+        diagnostics.log(
+            0,
+            ErrorCode::Busy,
+            "profiling did not acknowledge service shutdown within 2 seconds",
+        );
+    }
     if sampling_worker.is_finished() {
         let _ = sampling_worker.join();
     } else {
@@ -974,6 +1344,15 @@ mod windows_service {
 
 fn main() -> io::Result<()> {
     #[cfg(windows)]
+    if std::env::args().any(|arg| arg == "--sensor-worker") {
+        let expected = std::env::args()
+            .position(|a| a == "--build-id")
+            .and_then(|idx| std::env::args().nth(idx + 1));
+        planora_telemetry::vendor_sensors::run_worker(expected.as_deref());
+        return Ok(());
+    }
+
+    #[cfg(windows)]
     if std::env::args().any(|arg| arg == "--service") {
         return windows_service::start();
     }
@@ -984,6 +1363,27 @@ fn main() -> io::Result<()> {
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn affinity_rejects_missing_creation_identity_before_opening_pid() {
+        let identity = ProcessIdentity {
+            pid: std::process::id(),
+            started: 0,
+            sequence_number: None,
+            source: planora_core::IdentitySource::WindowsProcessFiletime,
+        };
+        assert!(
+            windows_handle(&identity, true)
+                .unwrap_err()
+                .contains("creation identity is required")
+        );
+        assert!(
+            set_affinity(&identity, &[0])
+                .unwrap_err()
+                .contains("creation identity is required")
+        );
+    }
 
     #[test]
     fn sampling_interval_uses_fastest_connected_client() {

@@ -23,7 +23,9 @@ use std::{
 pub enum Page {
     #[default]
     Overview,
+    Resources,
     Processes,
+    History,
     Hardware,
     Benchmarks,
     Capabilities,
@@ -34,8 +36,8 @@ pub enum Page {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum HardwareViewMode {
     #[default]
-    Canvas,
     Tree,
+    Canvas,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -56,7 +58,7 @@ pub struct UserSettings {
 impl Default for UserSettings {
     fn default() -> Self {
         Self {
-            schema_version: 2,
+            schema_version: 3,
             theme: Theme::System,
             density: Density::Normal,
             poll_interval_ms: 100,
@@ -102,7 +104,7 @@ impl UserSettings {
                 if let Ok(data) = std::fs::read_to_string(path)
                     && let Ok(mut settings) = serde_json::from_str::<Self>(&data)
                 {
-                    settings.schema_version = 2;
+                    settings.schema_version = 3;
                     settings.poll_interval_ms = match settings.poll_interval_ms {
                         50 => 100,
                         200 => 250,
@@ -236,6 +238,7 @@ pub struct Shared {
     pub topology: Option<Topology>,
     pub capabilities: Vec<Capability>,
     pub benchmark_state: Option<BenchmarkState>,
+    pub profile_state: Option<planora_core::ProfileState>,
     pub sampling_effective_ms: Option<u64>,
     pub diagnostic_logs: Vec<DiagnosticEntry>,
     pub affinity: Option<(planora_core::ProcessIdentity, Vec<u16>)>,
@@ -272,6 +275,12 @@ fn handle_response(response: Response, state: &Arc<Mutex<Shared>>) -> bool {
         }
         Response::BenchmarkStatus(bms) => {
             shared.benchmark_state = Some(bms);
+        }
+        Response::ProfileStatus(ps) => {
+            shared.profile_state = Some(ps);
+        }
+        Response::Capabilities(caps) => {
+            shared.capabilities = caps;
         }
         Response::SamplingStatus { effective_ms, .. } => {
             shared.sampling_effective_ms = Some(effective_ms);
@@ -700,8 +709,12 @@ mod tests {
             sampled_at_ms: 1000 + seq * 100,
             collection_duration_ms: 1.5,
             cpu_percent: Metric::available(25.0, "%", "test", 1000),
+            logical_cpus: Vec::new(),
             memory_used_bytes: Metric::available(1024 * 1024, "bytes", "test", 1000),
+            memory_available_bytes: Metric::available(3 * 1024 * 1024, "bytes", "test", 1000),
             memory_total_bytes: Metric::available(4 * 1024 * 1024, "bytes", "test", 1000),
+            commit_used_bytes: Metric::available(2 * 1024 * 1024, "bytes", "test", 1000),
+            commit_total_bytes: Metric::available(8 * 1024 * 1024, "bytes", "test", 1000),
             disk_read_bytes_per_sec: Metric::available(0, "B/s", "test", 1000),
             disk_write_bytes_per_sec: Metric::available(0, "B/s", "test", 1000),
             network_rx_bytes_per_sec: Metric::available(0, "B/s", "test", 1000),
@@ -712,6 +725,7 @@ mod tests {
                 1000,
                 AvailabilityReason::Unsupported("None".into()),
             ),
+            gpu_adapters: Vec::new(),
             gpu_engines: Vec::new(),
             gpu_engine_unavailable_reason: Some(planora_core::AvailabilityReason::WarmingUp),
             disks: Vec::new(),
@@ -722,6 +736,7 @@ mod tests {
                 1000,
                 AvailabilityReason::Unsupported("None".into()),
             ),
+            sensors: Vec::new(),
             processes: Vec::new(),
         }
     }
