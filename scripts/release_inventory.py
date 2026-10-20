@@ -11,6 +11,14 @@ def command(*args: str) -> str:
     return subprocess.check_output(args, text=True).strip()
 
 
+def is_release_artifact(name: str, version_tokens: set[str]) -> bool:
+    if not any(token in name for token in version_tokens):
+        return False
+    return name.endswith(
+        (".msi", ".deb", ".rpm", ".pkg", ".dmg", ".AppImage", ".zip", ".tar.gz", ".manifest.json")
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dist", default="dist")
@@ -48,7 +56,7 @@ def main() -> None:
     for path in sorted(dist.iterdir()):
         if not path.is_file() or path.name in {"SHA256SUMS.txt", "provenance.json"}:
             continue
-        if path.name != "dependency-inventory.json" and not any(token in path.name for token in version_tokens):
+        if path.name != "dependency-inventory.json" and not is_release_artifact(path.name, version_tokens):
             continue
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         artifacts.append({"file": path.name, "sha256": digest, "bytes": path.stat().st_size})
