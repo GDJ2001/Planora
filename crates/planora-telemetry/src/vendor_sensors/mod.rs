@@ -106,6 +106,7 @@ pub struct VendorSensorSupervisor {
     child: Option<Child>,
     stdin: Option<ChildStdin>,
     rx: Option<mpsc::Receiver<String>>,
+    reader: Option<std::thread::JoinHandle<()>>,
     job_handle: usize,
     last_poll: Option<Instant>,
     last_readings: Vec<SensorReading>,
@@ -120,6 +121,7 @@ impl VendorSensorSupervisor {
             child: None,
             stdin: None,
             rx: None,
+            reader: None,
             job_handle: 0,
             last_poll: None,
             last_readings: Vec::new(),
@@ -191,6 +193,11 @@ impl VendorSensorSupervisor {
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
 
         let Ok(mut child) = cmd.spawn() else {
             self.consecutive_failures += 1;
@@ -216,7 +223,7 @@ impl VendorSensorSupervisor {
 
         if let (Some(stdin), Some(stdout)) = (stdin, stdout) {
             let (tx, rx) = mpsc::sync_channel(4);
-            std::thread::Builder::new()
+            let reader = std::thread::Builder::new()
                 .name("sensor-worker-reader".into())
                 .spawn(move || {
                     let mut reader = BufReader::new(stdout);
@@ -231,6 +238,7 @@ impl VendorSensorSupervisor {
             self.child = Some(child);
             self.stdin = Some(stdin);
             self.rx = Some(rx);
+            self.reader = reader;
             self.next_restart_at = None;
             self.consecutive_failures = 0;
         }
@@ -345,6 +353,9 @@ impl VendorSensorSupervisor {
         }
         self.stdin = None;
         self.rx = None;
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
         self.consecutive_failures += 1;
         let backoff_secs = (1 << self.consecutive_failures.min(4)).min(16);
         self.next_restart_at = Some(Instant::now() + Duration::from_secs(backoff_secs));
@@ -364,6 +375,9 @@ impl VendorSensorSupervisor {
         }
         self.stdin = None;
         self.rx = None;
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
         self.next_restart_at = None;
         self.consecutive_failures = 0;
         self.ensure_worker_started();
@@ -390,6 +404,11 @@ impl Drop for VendorSensorSupervisor {
             }
             let _ = child.kill();
             let _ = child.wait();
+        }
+        self.stdin = None;
+        self.rx = None;
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
         }
         #[cfg(windows)]
         if self.job_handle != 0 {

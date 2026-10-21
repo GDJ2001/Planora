@@ -155,6 +155,7 @@ pub struct RecordingStatus {
 
 pub struct Recorder {
     tx: Option<SyncSender<RecordLine>>,
+    worker: Option<thread::JoinHandle<()>>,
     status: Arc<Mutex<RecordingStatus>>,
     dropped_pending: AtomicU64,
     last_sampled_at_ms: u64,
@@ -165,6 +166,7 @@ impl Default for Recorder {
     fn default() -> Self {
         Self {
             tx: None,
+            worker: None,
             status: Arc::new(Mutex::new(RecordingStatus::default())),
             dropped_pending: AtomicU64::new(0),
             last_sampled_at_ms: 0,
@@ -218,6 +220,7 @@ impl Recorder {
                 "recording already active",
             ));
         }
+        self.stop();
         let created_at_ms = planora_telemetry::unix_ms();
         let path = recordings_dir()?.join(format!("planora-{created_at_ms}.planora.jsonl"));
         let (tx, rx) = mpsc::sync_channel::<RecordLine>(64);
@@ -237,7 +240,7 @@ impl Recorder {
             dropped: 0,
             message: "Starting recording".into(),
         };
-        if let Err(error) = thread::Builder::new()
+        let worker = thread::Builder::new()
             .name("planora-recording".into())
             .spawn(move || {
                 let result = write_recording(&worker_path, header, rx, &status, created_at_ms);
@@ -247,11 +250,15 @@ impl Recorder {
                     Ok(()) => "Recording saved".into(),
                     Err(e) => format!("Recording stopped: {e}"),
                 };
-            })
-        {
-            self.status.lock().unwrap().active = false;
-            return Err(error);
-        }
+            });
+        let worker = match worker {
+            Ok(worker) => worker,
+            Err(error) => {
+                self.status.lock().unwrap().active = false;
+                return Err(error);
+            }
+        };
+        self.worker = Some(worker);
         self.tx = Some(tx);
         self.record_selected = record_selected;
         self.last_sampled_at_ms = 0;
@@ -261,6 +268,9 @@ impl Recorder {
 
     pub fn stop(&mut self) {
         self.tx = None;
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
     }
 
     pub fn record(
@@ -352,6 +362,7 @@ enum ReplayMessage {
 #[derive(Default)]
 pub struct Replay {
     receiver: Option<Receiver<ReplayMessage>>,
+    worker: Option<thread::JoinHandle<()>>,
     stop: Arc<AtomicBool>,
     pub frame: Option<Arc<TelemetryFrame>>,
     pub topology: Option<Topology>,
@@ -366,6 +377,9 @@ impl Replay {
     pub fn stop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         self.receiver = None;
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
         self.frame = None;
         self.topology = None;
         self.path = None;
@@ -384,7 +398,7 @@ impl Replay {
         let stop = self.stop.clone();
         let (tx, rx) = mpsc::sync_channel(32);
         let source = path.clone();
-        thread::Builder::new()
+        let worker = thread::Builder::new()
             .name("planora-replay".into())
             .spawn(move || {
                 let result = read_recording(&source, &tx, &stop, &ctx);
@@ -394,6 +408,7 @@ impl Replay {
                 }));
                 ctx.request_repaint();
             })?;
+        self.worker = Some(worker);
         self.path = Some(path);
         self.receiver = Some(rx);
         self.message = "Opening recording".into();

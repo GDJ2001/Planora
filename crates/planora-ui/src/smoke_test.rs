@@ -273,6 +273,8 @@ pub fn create_test_app(theme: Theme, page: Page) -> App {
         shared,
         tx,
         poll_ms: Arc::new(AtomicU64::new(100)),
+        client_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        client_worker: None,
         #[cfg(windows)]
         sensor_stop: None,
         #[cfg(windows)]
@@ -313,6 +315,11 @@ pub fn create_test_app(theme: Theme, page: Page) -> App {
         screenshot_pending: false,
         frames_rendered: 0,
         fixture_mode: false,
+        window_placement: crate::window_placement::Placement::default(),
+        window_work_area: crate::window_placement::current_work_area(),
+        normal_window: false,
+        window_recovered: false,
+        startup_connected_logged: false,
     }
 }
 

@@ -25,6 +25,7 @@ enum LocalDataResult {
 
 #[derive(Default)]
 pub struct SettingsViewState {
+    pub reset_window_requested: bool,
     pub show_confirm_modal: bool,
     preview_files: Vec<(PathBuf, u64)>,
     pub status_message: Option<(bool, String)>,
@@ -308,6 +309,11 @@ pub fn render_settings_view(
                         persist(settings, settings_error);
                     }
                 });
+                ui.add_space(10.0);
+                if ui.button("Reset window placement").clicked() {
+                    state.reset_window_requested = true;
+                    state.status_message = Some((false, "Window placement reset to the current display.".into()));
+                }
             });
 
         ui.add_space(14.0);

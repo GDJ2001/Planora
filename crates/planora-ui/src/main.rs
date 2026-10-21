@@ -1,15 +1,19 @@
 #![allow(clippy::too_many_arguments)]
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 pub mod components;
 pub mod export;
 pub mod formatting;
 pub mod history;
 pub mod history_worker;
+pub mod instance;
 pub mod recording;
 pub mod smoke_test;
+pub mod startup;
 pub mod state;
 pub mod theme;
 pub mod views;
+pub mod window_placement;
 
 use components::{badge::render_compact_sidebar_status, icons, logo::LogoCache};
 use eframe::egui::{self, Color32, CornerRadius, Pos2, Rect, Stroke, Vec2};
@@ -22,7 +26,7 @@ use state::{AppState, DisplayPause, Page, Shared, UserSettings, background_worke
 use std::{
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, SyncSender},
     },
     thread,
@@ -39,6 +43,7 @@ use views::{
     resources::{ResourcesViewState, render_resources_view},
     settings::{SettingsViewState, render_settings_view},
 };
+use window_placement::{Placement, WorkArea};
 
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
@@ -50,6 +55,8 @@ pub struct App {
     shared: Arc<Mutex<Shared>>,
     tx: SyncSender<Command>,
     poll_ms: Arc<AtomicU64>,
+    client_stop: Arc<AtomicBool>,
+    client_worker: Option<std::thread::JoinHandle<()>>,
     #[cfg(windows)]
     sensor_stop: Option<Arc<std::sync::atomic::AtomicBool>>,
     #[cfg(windows)]
@@ -95,6 +102,11 @@ pub struct App {
     screenshot_pending: bool,
     frames_rendered: usize,
     fixture_mode: bool,
+    window_placement: Placement,
+    window_work_area: WorkArea,
+    normal_window: bool,
+    window_recovered: bool,
+    startup_connected_logged: bool,
 }
 
 impl App {
@@ -118,11 +130,21 @@ impl App {
             ));
             return;
         };
-        match std::process::Command::new("powershell.exe")
-            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+        let mut command = std::process::Command::new("powershell.exe");
+        command
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+            ])
             .arg(script)
-            .spawn()
-        {
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW; UAC remains an OS dialog.
+        match command.spawn() {
             Ok(child) => {
                 self.authorization_child = Some(child);
                 self.authorization_error = None;
@@ -153,10 +175,12 @@ impl App {
         let worker_poll = poll_ms.clone();
         let context = cc.egui_ctx.clone();
 
-        thread::Builder::new()
+        let client_stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = client_stop.clone();
+        let client_worker = thread::Builder::new()
             .name("planora-client".into())
             .spawn(move || {
-                background_worker(worker_shared, rx, worker_poll, context);
+                background_worker(worker_shared, rx, worker_poll, context, worker_stop);
             })
             .expect("failed to spawn client worker thread");
 
@@ -204,6 +228,8 @@ impl App {
             shared,
             tx,
             poll_ms,
+            client_stop,
+            client_worker: Some(client_worker),
             #[cfg(windows)]
             sensor_stop: Some(sensor_stop),
             #[cfg(windows)]
@@ -244,6 +270,11 @@ impl App {
             screenshot_pending: false,
             frames_rendered: 0,
             fixture_mode: false,
+            window_placement: window_placement::load(window_placement::current_work_area()),
+            window_work_area: window_placement::current_work_area(),
+            normal_window: true,
+            window_recovered: false,
+            startup_connected_logged: false,
         }
     }
 
@@ -389,6 +420,41 @@ impl App {
     }
 
     pub fn render_ui(&mut self, root: &mut egui::Ui) {
+        if self.normal_window && self.frames_rendered == 0 {
+            let viewport = root.ctx().input(|input| input.viewport().clone());
+            startup::record(&format!(
+                "first-ui-frame inner={:?} outer={:?} scale={:?} maximized={:?}",
+                viewport.inner_rect.map(|r| r.size()),
+                viewport.outer_rect.map(|r| r.size()),
+                viewport.native_pixels_per_point,
+                viewport.maximized,
+            ));
+        }
+        if self.normal_window {
+            let viewport = root.ctx().input(|input| input.viewport().clone());
+            if self.frames_rendered >= 2
+                && !self.window_recovered
+                && viewport.minimized != Some(true)
+                && let Some(rect) = viewport.inner_rect
+                && (rect.width() < self.window_placement.normal_size[0] * 0.70
+                    || rect.height() < self.window_placement.normal_size[1] * 0.70)
+            {
+                startup::record(&format!(
+                    "window-recovery inner={:?} expected={:?}",
+                    rect.size(),
+                    self.window_placement.normal_size,
+                ));
+                root.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::InnerSize(
+                        self.window_placement.expected_size(),
+                    ));
+                self.window_recovered = true;
+            }
+            if self.frames_rendered >= 3 {
+                self.window_placement
+                    .observe(&viewport, self.window_work_area);
+            }
+        }
         #[cfg(windows)]
         if let Some(child) = self.authorization_child.as_mut() {
             match child.try_wait() {
@@ -514,6 +580,10 @@ impl App {
             let recording_sensors = &frame.sensors;
             self.recorder
                 .record(frame, self.selected.as_ref(), recording_sensors);
+        }
+        if self.normal_window && !self.startup_connected_logged && app_state == AppState::Live {
+            startup::record("helper-connected");
+            self.startup_connected_logged = true;
         }
 
         // Evaluate staleness if in Live state
@@ -1083,6 +1153,25 @@ impl App {
                 Page::Recordings => unreachable!("recordings page rendered before frame selection"),
             }
         });
+        if self.normal_window && self.settings_state.reset_window_requested {
+            self.settings_state.reset_window_requested = false;
+            self.window_placement = Placement::default().validate(self.window_work_area);
+            if let Some(path) = window_placement::path() {
+                let _ = std::fs::remove_file(path);
+            }
+            let size = self.window_placement.expected_size();
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(Pos2::new(
+                self.window_work_area.min[0]
+                    + ((self.window_work_area.max[0] - self.window_work_area.min[0] - size.x)
+                        / 2.0)
+                        .max(0.0),
+                self.window_work_area.min[1]
+                    + ((self.window_work_area.max[1] - self.window_work_area.min[1] - size.y)
+                        / 2.0)
+                        .max(0.0),
+            )));
+        }
     }
 }
 
@@ -1090,10 +1179,34 @@ impl eframe::App for App {
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.render_ui(root);
     }
+
+    fn on_exit(&mut self) {
+        if self.normal_window {
+            if let Err(error) = window_placement::save(&self.window_placement) {
+                startup::record(&format!("placement-save-error {error}"));
+            }
+            self.settings_error = self
+                .settings
+                .save()
+                .err()
+                .map(|e| format!("Could not save preferences: {e}"));
+            if let Some(error) = &self.settings_error {
+                startup::record(&format!("settings-save-error {error}"));
+            }
+        }
+    }
 }
 
 impl Drop for App {
     fn drop(&mut self) {
+        self.client_stop.store(true, Ordering::Release);
+        self.recorder.stop();
+        self.replay.stop();
+        self.exporter.cancel();
+        if let Some(worker) = self.client_worker.take() {
+            worker.thread().unpark();
+            let _ = worker.join();
+        }
         #[cfg(windows)]
         {
             if let Some(stop) = &self.sensor_stop {
@@ -1142,10 +1255,21 @@ fn main() -> eframe::Result<()> {
         return Ok(());
     }
 
+    #[cfg(windows)]
+    {
+        let main_thread = std::thread::current().id();
+        std::panic::set_hook(Box::new(move |info| {
+            startup::record(&format!("panic {info}"));
+            if std::thread::current().id() == main_thread {
+                startup::show_fatal("An unexpected error occurred while opening Planora.");
+            }
+        }));
+    }
+
     let mut initial_page = Page::Performance;
     let mut initial_theme = None;
     let mut width = 1180.0;
-    let mut height = 760.0;
+    let mut height = 790.0;
     let mut auto_close_ms = None;
     let mut screenshot_out = None;
     let args: Vec<String> = std::env::args().collect();
@@ -1212,22 +1336,74 @@ fn main() -> eframe::Result<()> {
     }
 
     let capture_mode = screenshot_out.is_some();
+    #[cfg(windows)]
+    let _instance_guard = if capture_mode || native_fixture {
+        None
+    } else {
+        match instance::InstanceGuard::acquire() {
+            Ok(Some(guard)) => Some(guard),
+            Ok(None) => return Ok(()),
+            Err(error) => {
+                startup::record(&format!("instance-lock-error {error}"));
+                startup::show_fatal(&format!("Could not open the application window: {error}"));
+                return Ok(());
+            }
+        }
+    };
     // Native capture must honor the requested size, independent of the user's
     // saved window geometry. Give every image an isolated, empty state file.
     let capture_state_path = screenshot_out
         .as_ref()
         .map(|path| path.with_extension("capture.ron"));
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
+    let work_area = window_placement::current_work_area();
+    let placement = window_placement::load(work_area);
+    let mut viewport = if capture_mode || !cfg!(windows) {
+        egui::ViewportBuilder::default()
             .with_inner_size([width, height])
             .with_min_inner_size([1024.0, 640.0])
-            .with_clamp_size_to_monitor_size(!capture_mode)
-            .with_title("Planora"),
-        persist_window: !capture_mode,
-        persistence_path: capture_state_path,
+            .with_title("Planora")
+    } else {
+        placement.viewport(work_area)
+    };
+    if let Ok(icon) = image::load_from_memory(include_bytes!(
+        "../../../assets/brand/platforms/windows/planora-64.png"
+    )) {
+        let rgba = icon.to_rgba8();
+        viewport = viewport.with_icon(egui::IconData {
+            width: rgba.width(),
+            height: rgba.height(),
+            rgba: rgba.into_raw(),
+        });
+    }
+    // Eframe reads its old geometry even with persist_window=false. Isolate its
+    // other UI state from the legacy app.ron that caused miniature launches.
+    let persistence_path = if cfg!(windows) {
+        capture_state_path.or_else(|| {
+            state::UserSettings::file_path().map(|p| p.with_file_name("egui-state-v2.ron"))
+        })
+    } else {
+        capture_state_path
+    };
+    if !capture_mode && !native_fixture {
+        startup::record(&format!(
+            "launch version={} commit={} protocol={} requested={}x{} maximized={} work={}x{} renderer=wgpu",
+            state::BUILD_INFO.version,
+            state::BUILD_INFO.git_commit,
+            PROTOCOL_VERSION,
+            placement.normal_size[0],
+            placement.normal_size[1],
+            placement.maximized,
+            work_area.max[0] - work_area.min[0],
+            work_area.max[1] - work_area.min[1],
+        ));
+    }
+    let options = eframe::NativeOptions {
+        viewport,
+        persist_window: !cfg!(windows) && !capture_mode,
+        persistence_path,
         ..Default::default()
     };
-    eframe::run_native(
+    let result = eframe::run_native(
         "Planora",
         options,
         Box::new(move |cc| {
@@ -1239,6 +1415,7 @@ fn main() -> eframe::Result<()> {
             } else {
                 App::new(cc)
             };
+            app.normal_window = cfg!(windows) && !capture_mode && !native_fixture;
             app.page = initial_page;
             if let Some(resource) = fixture_resource.as_ref() {
                 app.resources_state.selected_resource = Some(resource.clone());
@@ -1255,7 +1432,13 @@ fn main() -> eframe::Result<()> {
             app.screenshot_out = screenshot_out;
             Ok(Box::new(app))
         }),
-    )
+    );
+    if let Err(error) = &result {
+        startup::record(&format!("native-startup-error {error}"));
+        #[cfg(windows)]
+        startup::show_fatal(&error.to_string());
+    }
+    result
 }
 
 #[cfg(test)]

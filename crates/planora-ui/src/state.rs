@@ -12,7 +12,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::Receiver,
     },
     thread,
@@ -173,12 +173,18 @@ impl UserSettings {
 }
 
 #[cfg(not(windows))]
-fn replace_settings_file(temp: &std::path::Path, target: &std::path::Path) -> io::Result<()> {
+pub(crate) fn replace_settings_file(
+    temp: &std::path::Path,
+    target: &std::path::Path,
+) -> io::Result<()> {
     std::fs::rename(temp, target)
 }
 
 #[cfg(windows)]
-fn replace_settings_file(temp: &std::path::Path, target: &std::path::Path) -> io::Result<()> {
+pub(crate) fn replace_settings_file(
+    temp: &std::path::Path,
+    target: &std::path::Path,
+) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{
         MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
@@ -372,11 +378,24 @@ fn connection_failure_state(
     }
 }
 
+fn wait_or_stop(stop: &AtomicBool, duration: Duration) -> bool {
+    let deadline = Instant::now() + duration;
+    while !stop.load(Ordering::Acquire) {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        thread::park_timeout(remaining.min(Duration::from_millis(100)));
+    }
+    true
+}
+
 pub fn background_worker(
     state: Arc<Mutex<Shared>>,
     rx: Receiver<Command>,
     poll_ms: Arc<AtomicU64>,
     context: eframe::egui::Context,
+    stop: Arc<AtomicBool>,
 ) {
     let mut next_request_id = 1u64;
     let mut _current_session_id: Option<u64> = None;
@@ -384,6 +403,9 @@ pub fn background_worker(
     let mut first_connection_failure: Option<Instant> = None;
 
     loop {
+        if stop.load(Ordering::Acquire) {
+            return;
+        }
         let mut stream = match planora_helper::connect() {
             Ok(s) => s,
             Err(error) => {
@@ -397,7 +419,9 @@ pub fn background_worker(
                     ));
                 }
                 context.request_repaint();
-                thread::sleep(reconnect_backoff);
+                if wait_or_stop(&stop, reconnect_backoff) {
+                    return;
+                }
                 reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_millis(2000));
                 continue;
             }
@@ -433,14 +457,18 @@ pub fn background_worker(
                         helper_version: version,
                     });
                     context.request_repaint();
-                    thread::sleep(Duration::from_secs(2));
+                    if wait_or_stop(&stop, Duration::from_secs(2)) {
+                        return;
+                    }
                     continue;
                 }
                 if !helper_authorized {
                     let mut shared = state.lock().unwrap();
                     shared.state = Some(AppState::AwaitingAuthorization);
                     context.request_repaint();
-                    thread::sleep(Duration::from_secs(1));
+                    if wait_or_stop(&stop, Duration::from_secs(1)) {
+                        return;
+                    }
                     continue;
                 }
                 _current_session_id = Some(session_id);
@@ -463,7 +491,9 @@ pub fn background_worker(
                     }),
                 );
                 context.request_repaint();
-                thread::sleep(Duration::from_secs(1));
+                if wait_or_stop(&stop, Duration::from_secs(1)) {
+                    return;
+                }
                 continue;
             }
             _ => {
@@ -473,7 +503,9 @@ pub fn background_worker(
                     shared.state = Some(AppState::Reconnecting);
                 }
                 context.request_repaint();
-                thread::sleep(reconnect_backoff);
+                if wait_or_stop(&stop, reconnect_backoff) {
+                    return;
+                }
                 reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_millis(2000));
                 continue;
             }
@@ -530,7 +562,9 @@ pub fn background_worker(
             _ => {
                 state.lock().unwrap().state = Some(AppState::Reconnecting);
                 context.request_repaint();
-                thread::sleep(reconnect_backoff);
+                if wait_or_stop(&stop, reconnect_backoff) {
+                    return;
+                }
                 reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_millis(2000));
                 continue;
             }
@@ -555,7 +589,9 @@ pub fn background_worker(
             _ => {
                 state.lock().unwrap().state = Some(AppState::Reconnecting);
                 context.request_repaint();
-                thread::sleep(reconnect_backoff);
+                if wait_or_stop(&stop, reconnect_backoff) {
+                    return;
+                }
                 reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_millis(2000));
                 continue;
             }
@@ -587,7 +623,9 @@ pub fn background_worker(
             _ => {
                 state.lock().unwrap().state = Some(AppState::Reconnecting);
                 context.request_repaint();
-                thread::sleep(reconnect_backoff);
+                if wait_or_stop(&stop, reconnect_backoff) {
+                    return;
+                }
                 reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_millis(2000));
                 continue;
             }
@@ -597,6 +635,9 @@ pub fn background_worker(
 
         // Main command/sample loop with strict request-response pairing and deadlines
         loop {
+            if stop.load(Ordering::Acquire) {
+                return;
+            }
             let desired_poll_ms = poll_ms.load(Ordering::Relaxed);
             if desired_poll_ms != configured_poll_ms {
                 next_request_id = next_request_id.wrapping_add(1);
@@ -679,7 +720,7 @@ pub fn background_worker(
 
             // 3. Wait on rx for user commands until next sample is due
             if time_until_sample > Duration::from_millis(5) {
-                match rx.recv_timeout(time_until_sample) {
+                match rx.recv_timeout(time_until_sample.min(Duration::from_millis(100))) {
                     Ok(cmd) => {
                         next_request_id = next_request_id.wrapping_add(1);
                         let cur_req_id = next_request_id;
@@ -705,7 +746,12 @@ pub fn background_worker(
                         continue;
                     }
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                        // Timeout reached, proceed to sample snapshot
+                        if stop.load(Ordering::Acquire) {
+                            return;
+                        }
+                        if last_sample_request.elapsed() < interval {
+                            continue;
+                        }
                     }
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                         return; // UI shutdown
@@ -755,7 +801,9 @@ pub fn background_worker(
             context.request_repaint();
         }
 
-        thread::sleep(reconnect_backoff);
+        if wait_or_stop(&stop, reconnect_backoff) {
+            return;
+        }
         reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_millis(2000));
     }
 }

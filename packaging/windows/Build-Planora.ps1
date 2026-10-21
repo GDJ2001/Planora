@@ -35,6 +35,12 @@ try {
             throw "Release binary missing: $binary"
         }
     }
+    $uiBytes = [IO.File]::ReadAllBytes($ui)
+    $peOffset = [BitConverter]::ToInt32($uiBytes, 0x3c)
+    if ($peOffset -lt 0 -or $peOffset + 94 -ge $uiBytes.Length -or
+        [BitConverter]::ToUInt16($uiBytes, $peOffset + 24 + 68) -ne 2) {
+        throw 'Planora UI must be a Windows GUI executable (PE subsystem 2).'
+    }
 
     $identity = (& $ui --build-info | ConvertFrom-Json)
     if ($LASTEXITCODE -ne 0 -or $identity.version -ne $version -or $identity.gitCommit -ne $commit) {
@@ -81,6 +87,7 @@ try {
         profile = $identity.profile
         productVersion = $productVersion
         protocolVersion = $identity.protocolVersion
+        uiSubsystem = 'Windows GUI'
         binaries = @(
             [pscustomobject]@{ file = 'planora.exe'; sha256 = (Get-FileHash -LiteralPath $ui -Algorithm SHA256).Hash },
             [pscustomobject]@{ file = 'planora-helper.exe'; sha256 = (Get-FileHash -LiteralPath $helper -Algorithm SHA256).Hash }

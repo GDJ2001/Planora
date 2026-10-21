@@ -5,7 +5,10 @@ use std::{
     fs::{self, OpenOptions},
     io::{self, BufWriter, Write},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
     time::Instant,
 };
@@ -20,6 +23,8 @@ pub struct ExportStatus {
 #[derive(Default)]
 pub struct ExportManager {
     status: Arc<Mutex<ExportStatus>>,
+    worker: Option<thread::JoinHandle<()>>,
+    cancel: Arc<AtomicBool>,
 }
 
 fn export_dir() -> io::Result<PathBuf> {
@@ -73,7 +78,7 @@ impl ExportManager {
         &mut self,
         label: &str,
         extension: &str,
-        task: impl FnOnce(PathBuf) -> io::Result<()> + Send + 'static,
+        task: impl FnOnce(PathBuf, &AtomicBool) -> io::Result<()> + Send + 'static,
     ) -> io::Result<()> {
         if self.status.lock().unwrap().active {
             return Err(io::Error::new(
@@ -81,6 +86,10 @@ impl ExportManager {
                 "another export is running",
             ));
         }
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+        self.cancel.store(false, Ordering::Release);
         let path = export_dir()?.join(format!(
             "planora-{label}-{}.{}",
             planora_telemetry::unix_ms(),
@@ -92,22 +101,36 @@ impl ExportManager {
             path: Some(path.clone()),
         };
         let status = self.status.clone();
-        if let Err(error) = thread::Builder::new()
+        let cancel = self.cancel.clone();
+        let worker = thread::Builder::new()
             .name("planora-export".into())
             .spawn(move || {
-                let result = task(path);
+                let result = task(path.clone(), &cancel);
+                if result.is_err() {
+                    let _ = fs::remove_file(path);
+                }
                 let mut status = status.lock().unwrap();
                 status.active = false;
                 status.message = match result {
                     Ok(()) => "Export complete".into(),
                     Err(e) => format!("Export failed: {e}"),
                 };
-            })
-        {
-            self.status.lock().unwrap().active = false;
-            return Err(error);
-        }
+            });
+        self.worker = Some(match worker {
+            Ok(worker) => worker,
+            Err(error) => {
+                self.status.lock().unwrap().active = false;
+                return Err(error);
+            }
+        });
         Ok(())
+    }
+
+    pub fn cancel(&mut self) {
+        self.cancel.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
     }
 
     pub fn processes(
@@ -117,7 +140,7 @@ impl ExportManager {
         sort: SortColumn,
         descending: bool,
     ) -> io::Result<()> {
-        self.start("processes", "csv", move |path| {
+        self.start("processes", "csv", move |path, cancel| {
             fs::create_dir_all(path.parent().unwrap())?;
             let mut writer =
                 BufWriter::new(OpenOptions::new().create_new(true).write(true).open(path)?);
@@ -148,6 +171,12 @@ impl ExportManager {
             }
             csv_line(&mut writer, &header)?;
             for p in sort_processes(&frame.processes, &query, sort, descending) {
+                if cancel.load(Ordering::Acquire) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "export cancelled",
+                    ));
+                }
                 let mut row = vec![
                     p.name.clone(),
                     p.identity.pid.to_string(),
@@ -173,7 +202,7 @@ impl ExportManager {
         ranges: [HistoryRange; 4],
         now: Instant,
     ) -> io::Result<()> {
-        self.start("charts", "csv", move |path| {
+        self.start("charts", "csv", move |path, cancel| {
             fs::create_dir_all(path.parent().unwrap())?;
             let mut writer =
                 BufWriter::new(OpenOptions::new().create_new(true).write(true).open(path)?);
@@ -198,6 +227,12 @@ impl ExportManager {
                 ("Network transmit", &histories.net_tx, "bytes/s", ranges[3]),
             ];
             for (name, series, unit, range) in all {
+                if cancel.load(Ordering::Acquire) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "export cancelled",
+                    ));
+                }
                 let cutoff = now.checked_sub(range.duration()).unwrap_or(now);
                 for sample in &series.samples {
                     if sample.time < cutoff || sample.time > now {
@@ -232,7 +267,7 @@ impl ExportManager {
         now: Instant,
     ) -> io::Result<()> {
         let label = resource_label.to_lowercase().replace([' ', ':', '/'], "-");
-        self.start(&label, "csv", move |path| {
+        self.start(&label, "csv", move |path, cancel| {
             fs::create_dir_all(path.parent().unwrap())?;
             let mut writer =
                 BufWriter::new(OpenOptions::new().create_new(true).write(true).open(path)?);
@@ -254,6 +289,12 @@ impl ExportManager {
             )?;
             let cutoff = now.checked_sub(range.duration()).unwrap_or(now);
             for (name, series, unit) in &series_list {
+                if cancel.load(Ordering::Acquire) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "export cancelled",
+                    ));
+                }
                 for sample in &series.samples {
                     if sample.time < cutoff || sample.time > now {
                         continue;
@@ -288,7 +329,13 @@ impl ExportManager {
         state: BenchmarkState,
         topology: Option<Topology>,
     ) -> io::Result<()> {
-        self.start("benchmark", "json", move |path| {
+        self.start("benchmark", "json", move |path, cancel| {
+            if cancel.load(Ordering::Acquire) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "export cancelled",
+                ));
+            }
             fs::create_dir_all(path.parent().unwrap())?;
             let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
             let document = serde_json::json!({
@@ -306,7 +353,13 @@ impl ExportManager {
     }
 
     pub fn diagnostics(&mut self, entries: Vec<DiagnosticEntry>) -> io::Result<()> {
-        self.start("diagnostics", "json", move |path| {
+        self.start("diagnostics", "json", move |path, cancel| {
+            if cancel.load(Ordering::Acquire) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "export cancelled",
+                ));
+            }
             fs::create_dir_all(path.parent().unwrap())?;
             let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
             let redacted: Vec<_> = entries
