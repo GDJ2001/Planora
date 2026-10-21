@@ -1,6 +1,6 @@
 # Planora 0.3.0-beta.4 capability and verification matrix
 
-**Status: beta.4 corrects a fresh-install failure found during [beta.3 native testing](release-evidence-0.3.0-beta.3.md); its own installation and acceptance remain to be verified.** Beta.3 was installed successfully over beta.2, then removed in maintenance testing; its fresh reinstall rolled back. The [beta.2 evidence](release-evidence-0.3.0-beta.2.md), [beta.1 record](release-evidence-0.3.0-beta.1.md), [0.2.0-beta.1 record](release-evidence-0.2.0-beta.1.md), [0.1.5 record](release-evidence-0.1.5.md), and [implementation audit](implementation-status.md) are historical.
+**Status: [beta.4](release-evidence-0.3.0-beta.4.md) corrects a fresh-install failure found during [beta.3 native testing](release-evidence-0.3.0-beta.3.md); its own installation and acceptance remain to be verified.** Beta.3 was installed successfully over beta.2, then removed in maintenance testing; its fresh reinstall rolled back. The [beta.2 evidence](release-evidence-0.3.0-beta.2.md), [beta.1 record](release-evidence-0.3.0-beta.1.md), [0.2.0-beta.1 record](release-evidence-0.2.0-beta.1.md), [0.1.5 record](release-evidence-0.1.5.md), and [implementation audit](implementation-status.md) are historical.
 
 | Area | Current 0.3 source | Evidence on this revision | Remaining acceptance |
 | --- | --- | --- | --- |
