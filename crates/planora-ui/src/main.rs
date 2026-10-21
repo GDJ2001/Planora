@@ -4,6 +4,7 @@ pub mod components;
 pub mod export;
 pub mod formatting;
 pub mod history;
+pub mod history_worker;
 pub mod recording;
 pub mod smoke_test;
 pub mod state;
@@ -13,7 +14,8 @@ pub mod views;
 use components::{badge::render_compact_sidebar_status, icons, logo::LogoCache};
 use eframe::egui::{self, Color32, CornerRadius, Pos2, Rect, Stroke, Vec2};
 use export::ExportManager;
-use history::{ResourceHistories, measurement_instant};
+use history::ResourceHistories;
+use history_worker::{HistoryInput, HistoryWorker};
 use planora_core::{Command, PROTOCOL_VERSION, ProcessIdentity};
 use recording::{Recorder, Replay};
 use state::{AppState, DisplayPause, Page, Shared, UserSettings, background_worker, is_data_stale};
@@ -59,6 +61,7 @@ pub struct App {
     recorder: Recorder,
     exporter: ExportManager,
     replay: Replay,
+    replay_anchor: Option<(u64, Instant)>,
     replay_input: String,
     record_selected_process: bool,
     recording_error: Option<String>,
@@ -73,7 +76,10 @@ pub struct App {
     display_pause: DisplayPause,
 
     logo_cache: LogoCache,
-    histories: ResourceHistories,
+    histories: Arc<ResourceHistories>,
+    history_worker: HistoryWorker,
+    history_epoch: u64,
+    history_last_enqueued: Option<(u64, u64, Option<ProcessIdentity>)>,
 
     // View specific state
     overview_state: OverviewViewState,
@@ -91,6 +97,12 @@ pub struct App {
 }
 
 impl App {
+    fn reset_history(&mut self) {
+        self.history_epoch = self.history_epoch.wrapping_add(1);
+        self.history_last_enqueued = None;
+        self.histories = Arc::new(ResourceHistories::default());
+    }
+
     #[cfg(windows)]
     fn launch_helper_script(&mut self, script_name: &str) {
         if self.authorization_child.is_some() {
@@ -129,6 +141,10 @@ impl App {
         processes_state.table_state.columns = settings.process_columns;
         processes_state.table_state.sort_column = settings.process_sort_column;
         processes_state.table_state.sort_descending = settings.process_sort_descending;
+        let mut resources_state = ResourcesViewState::default();
+        resources_state.selected_resource = settings.performance_resource.clone();
+        resources_state.range = settings.performance_range;
+        resources_state.selected_engines = settings.performance_engines.iter().cloned().collect();
         let poll_ms = Arc::new(AtomicU64::new(settings.poll_interval_ms));
         let shared = Arc::new(Mutex::new(Shared::default()));
 
@@ -198,6 +214,7 @@ impl App {
             recorder: Recorder::default(),
             exporter: ExportManager::default(),
             replay: Replay::default(),
+            replay_anchor: None,
             replay_input: String::new(),
             record_selected_process: false,
             recording_error: None,
@@ -205,13 +222,16 @@ impl App {
             authorization_child: None,
             #[cfg(windows)]
             authorization_error: None,
-            page: Page::Overview,
+            page: Page::Performance,
             selected: None,
             display_pause: DisplayPause::default(),
             logo_cache: LogoCache::new(),
-            histories: ResourceHistories::default(),
+            histories: Arc::new(ResourceHistories::default()),
+            history_worker: HistoryWorker::start(),
+            history_epoch: 0,
+            history_last_enqueued: None,
             overview_state: OverviewViewState::default(),
-            resources_state: ResourcesViewState::default(),
+            resources_state,
             processes_state,
             history_state: HistoryViewState::default(),
             hardware_state: HardwareViewState::default(),
@@ -288,10 +308,11 @@ impl App {
                             ui.ctx().clone(),
                         ) {
                             Ok(()) => {
-                                self.histories = ResourceHistories::default();
+                                self.reset_history();
+                                self.replay_anchor = None;
                                 self.display_pause = DisplayPause::default();
                                 self.recording_error = None;
-                                self.page = Page::Overview;
+                                self.page = Page::Performance;
                             }
                             Err(e) => {
                                 self.recording_error =
@@ -301,7 +322,8 @@ impl App {
                     }
                     if self.replay.is_active() && ui.button("Return to Live").clicked() {
                         self.replay.stop();
-                        self.histories = ResourceHistories::default();
+                        self.reset_history();
+                        self.replay_anchor = None;
                     }
                 });
                 ui.label(&self.replay.message);
@@ -342,7 +364,7 @@ impl App {
                 }
                 if ui.button("Export Visible History CSV").clicked() {
                     let ranges = [self.overview_state.range; 4];
-                    if let Err(error) = self.exporter.charts(self.histories.clone(), ranges, Instant::now()) {
+                    if let Err(error) = self.exporter.charts(self.histories.as_ref().clone(), ranges, Instant::now()) {
                         self.recording_error = Some(format!("History export failed: {error}"));
                     }
                 }
@@ -500,144 +522,51 @@ impl App {
             app_state = AppState::Stale(elapsed);
         }
 
-        // Ingest new frame into histories
+        // The history worker owns aggregation and publishes a bounded immutable snapshot.
         let now = Instant::now();
-        let wall_clock_now_ms = if app_state == AppState::Replay {
-            frame_opt
-                .as_ref()
-                .map_or_else(planora_telemetry::unix_ms, |f| f.sampled_at_ms)
-        } else {
-            planora_telemetry::unix_ms()
-        };
+        let visual_now = if app_state == AppState::Replay {
+            frame_opt.as_ref().map_or(now, |frame| {
+                let anchor = self.replay_anchor.get_or_insert((frame.sampled_at_ms, now));
+                if frame.sampled_at_ms < anchor.0 { *anchor = (frame.sampled_at_ms, now); }
+                anchor.1.checked_add(std::time::Duration::from_millis(frame.sampled_at_ms.saturating_sub(anchor.0))).unwrap_or(now)
+            })
+        } else { now };
         if let Some(frame) = &frame_opt {
-            self.histories.reset_if_new_session(frame.session_id);
-
-            if frame.sequence != self.histories.last_sequence {
-                self.histories.last_sequence = frame.sequence;
-
-                // CPU (sample time preserved)
-                if frame.cpu_percent.sampled_at_ms != self.histories.last_cpu_sampled_at_ms {
-                    self.histories.last_cpu_sampled_at_ms = frame.cpu_percent.sampled_at_ms;
-                    let measured_at = measurement_instant(
-                        now,
-                        wall_clock_now_ms,
-                        frame.cpu_percent.sampled_at_ms,
-                    );
-                    self.histories.cpu.push_with_metadata(
-                        measured_at,
-                        frame.cpu_percent.sampled_at_ms,
-                        frame.cpu_percent.value,
-                        &frame.cpu_percent.source,
-                        frame.cpu_percent.unavailable_reason.as_ref(),
-                    );
-                }
-
-                // Memory %
-                let mem_pct = match (
-                    frame.memory_used_bytes.value,
-                    frame.memory_total_bytes.value,
-                ) {
-                    (Some(u), Some(t)) if t > 0 => Some(((u as f64 / t as f64) * 100.0) as f32),
-                    _ => None,
+            let key = (frame.session_id, frame.sequence, self.selected.clone());
+            if self.history_last_enqueued.as_ref() != Some(&key) {
+                #[cfg(windows)]
+                let sensors = if app_state == AppState::Replay {
+                    Arc::new(frame.sensors.clone())
+                } else {
+                    shared_copy.sensor_readings.clone()
                 };
-                let measured_at = measurement_instant(
-                    now,
-                    wall_clock_now_ms,
-                    frame.memory_used_bytes.sampled_at_ms,
-                );
-                self.histories.memory_pct.push_with_metadata(
-                    measured_at,
-                    frame.memory_used_bytes.sampled_at_ms,
-                    mem_pct,
-                    &frame.memory_used_bytes.source,
-                    frame
-                        .memory_used_bytes
-                        .unavailable_reason
-                        .as_ref()
-                        .or(frame.memory_total_bytes.unavailable_reason.as_ref()),
-                );
-
-                // Disk
-                let disk_r = frame.disk_read_bytes_per_sec.value.map(|v| v as f32);
-                let disk_w = frame.disk_write_bytes_per_sec.value.map(|v| v as f32);
-                self.histories.disk_read.push_with_metadata(
-                    measurement_instant(
-                        now,
-                        wall_clock_now_ms,
-                        frame.disk_read_bytes_per_sec.sampled_at_ms,
-                    ),
-                    frame.disk_read_bytes_per_sec.sampled_at_ms,
-                    disk_r,
-                    &frame.disk_read_bytes_per_sec.source,
-                    frame.disk_read_bytes_per_sec.unavailable_reason.as_ref(),
-                );
-                self.histories.disk_write.push_with_metadata(
-                    measurement_instant(
-                        now,
-                        wall_clock_now_ms,
-                        frame.disk_write_bytes_per_sec.sampled_at_ms,
-                    ),
-                    frame.disk_write_bytes_per_sec.sampled_at_ms,
-                    disk_w,
-                    &frame.disk_write_bytes_per_sec.source,
-                    frame.disk_write_bytes_per_sec.unavailable_reason.as_ref(),
-                );
-
-                // Network
-                let net_rx = frame.network_rx_bytes_per_sec.value.map(|v| v as f32);
-                let net_tx = frame.network_tx_bytes_per_sec.value.map(|v| v as f32);
-                self.histories.net_rx.push_with_metadata(
-                    measurement_instant(
-                        now,
-                        wall_clock_now_ms,
-                        frame.network_rx_bytes_per_sec.sampled_at_ms,
-                    ),
-                    frame.network_rx_bytes_per_sec.sampled_at_ms,
-                    net_rx,
-                    &frame.network_rx_bytes_per_sec.source,
-                    frame.network_rx_bytes_per_sec.unavailable_reason.as_ref(),
-                );
-                self.histories.net_tx.push_with_metadata(
-                    measurement_instant(
-                        now,
-                        wall_clock_now_ms,
-                        frame.network_tx_bytes_per_sec.sampled_at_ms,
-                    ),
-                    frame.network_tx_bytes_per_sec.sampled_at_ms,
-                    net_tx,
-                    &frame.network_tx_bytes_per_sec.source,
-                    frame.network_tx_bytes_per_sec.unavailable_reason.as_ref(),
-                );
-
-                // Selected Process trends (only recorded while observed!)
-                self.histories.set_selected_process(self.selected.as_ref());
-                if let Some(identity) = self.selected.as_ref()
-                    && let Some(proc) = frame.processes.iter().find(|pr| &pr.identity == identity)
-                {
-                    self.histories.selected_cpu.push(
-                        measurement_instant(now, wall_clock_now_ms, proc.cpu_percent.sampled_at_ms),
-                        proc.cpu_percent.sampled_at_ms,
-                        proc.cpu_percent.value,
-                    );
-                    self.histories.selected_memory.push(
-                        measurement_instant(
-                            now,
-                            wall_clock_now_ms,
-                            proc.memory_bytes.sampled_at_ms,
-                        ),
-                        proc.memory_bytes.sampled_at_ms,
-                        proc.memory_bytes.value.map(|b| b as f32),
-                    );
-                }
+                #[cfg(not(windows))]
+                let sensors = Arc::new(frame.sensors.clone());
+                self.history_worker.submit(HistoryInput {
+                    frame: frame.clone(),
+                    sensors,
+                    selected: self.selected.clone(),
+                    received_at: visual_now,
+                    wall_clock_at_receipt_ms: if app_state == AppState::Replay {
+                        frame.sampled_at_ms
+                    } else {
+                        planora_telemetry::unix_ms()
+                    },
+                    epoch: self.history_epoch,
+                });
+                self.history_last_enqueued = Some(key);
             }
+        }
+        if let Some(snapshot) = self.history_worker.latest(self.history_epoch) {
+            self.histories = snapshot;
         }
 
         // Display Pause handling
         if self.display_pause.is_paused {
             if self.display_pause.frozen_frame.is_none() {
                 self.display_pause.frozen_frame = frame_opt.clone();
-                self.display_pause.frozen_instant = Some(now);
-                self.display_pause.frozen_histories = Some(Arc::new(self.histories.clone()));
+                self.display_pause.frozen_instant = Some(visual_now);
+                self.display_pause.frozen_histories = Some(self.histories.clone());
             }
         } else {
             self.display_pause.frozen_frame = None;
@@ -656,25 +585,31 @@ impl App {
             };
 
         let render_now = if self.display_pause.is_paused {
-            self.display_pause.frozen_instant.unwrap_or(now)
+            self.display_pause.frozen_instant.unwrap_or(visual_now)
         } else {
-            now
+            visual_now
         };
         // Snapshot the chart buffers as well as the table frame when paused.
         // Live collection continues in self.histories without mutating the display.
         // Clone only the Arc handle so page controls can mutably borrow pause state.
         let frozen_histories = self.display_pause.frozen_histories.clone();
 
-        // 1. Sidebar (208 px)
+        // At compact widths, preserve the full content area with an icon rail.
+        let compact_nav = root.available_width() < 1180.0;
         egui::Panel::left("nav_sidebar")
-            .exact_size(SIDEBAR_WIDTH)
+            .exact_size(if compact_nav { 64.0 } else { SIDEBAR_WIDTH })
             .show(root, |ui| {
                 ui.add_space(14.0);
 
                 // Official Planora Logo
                 ui.horizontal(|ui| {
-                    ui.add_space(12.0);
-                    self.logo_cache.render(ui, p.is_dark, 168.0);
+                    if compact_nav {
+                        ui.add_space(8.0);
+                        self.logo_cache.render_mark(ui, 36.0);
+                    } else {
+                        ui.add_space(12.0);
+                        self.logo_cache.render(ui, p.is_dark, 168.0);
+                    }
                 });
 
                 ui.add_space(16.0);
@@ -684,11 +619,15 @@ impl App {
                 // Navigation items with clean icons
                 let nav_items = [
                     (
+                        Page::Performance,
+                        "Performance",
+                        icons::draw_resources as fn(&egui::Painter, Rect, Color32),
+                    ),
+                    (
                         Page::Overview,
                         "Overview",
                         icons::draw_overview as fn(&egui::Painter, Rect, Color32),
                     ),
-                    (Page::Resources, "Resources", icons::draw_resources),
                     (Page::Processes, "Processes", icons::draw_processes),
                     (Page::History, "History", icons::draw_history),
                     (Page::Hardware, "Hardware", icons::draw_hardware),
@@ -718,21 +657,27 @@ impl App {
                         painter.rect_filled(rect, CornerRadius::same(6), p.hover);
                     }
 
-                    let icon_rect =
-                        Rect::from_min_size(rect.min + Vec2::new(12.0, 9.0), Vec2::new(18.0, 18.0));
+                    let icon_rect = Rect::from_min_size(
+                        rect.min + Vec2::new(if compact_nav { (rect.width() - 18.0) / 2.0 } else { 12.0 }, 9.0),
+                        Vec2::new(18.0, 18.0),
+                    );
                     draw_icon(
                         painter,
                         icon_rect,
                         if is_active { p.primary } else { p.secondary },
                     );
 
-                    painter.text(
-                        Pos2::new(rect.min.x + 38.0, rect.center().y),
-                        egui::Align2::LEFT_CENTER,
-                        label,
-                        egui::FontId::proportional(13.5),
-                        if is_active { p.text } else { p.secondary },
-                    );
+                    if compact_nav {
+                        resp.clone().on_hover_text(label);
+                    } else {
+                        painter.text(
+                            Pos2::new(rect.min.x + 38.0, rect.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            label,
+                            egui::FontId::proportional(13.5),
+                            if is_active { p.text } else { p.secondary },
+                        );
+                    }
 
                     if resp.clicked() {
                         self.page = page;
@@ -741,7 +686,13 @@ impl App {
 
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                     ui.add_space(12.0);
-                    render_compact_sidebar_status(ui, &app_state, self.display_pause.is_paused, p);
+                    if compact_nav {
+                        let (rect, response) = ui.allocate_exact_size(Vec2::new(36.0, 30.0), egui::Sense::hover());
+                        ui.painter().circle_filled(rect.center(), 5.0, if app_state == AppState::Live { p.success } else { p.warning });
+                        response.on_hover_text(format!("{}{:?}", if self.display_pause.is_paused { "Display paused · " } else { "" }, app_state));
+                    } else {
+                        render_compact_sidebar_status(ui, &app_state, self.display_pause.is_paused, p);
+                    }
                     ui.separator();
                 });
             });
@@ -754,7 +705,7 @@ impl App {
                 });
                 return;
             }
-            let render_histories = frozen_histories.as_deref().unwrap_or(&self.histories);
+            let render_histories = frozen_histories.as_deref().unwrap_or(self.histories.as_ref());
             // Action error banner
             if let Some(err_msg) = &shared_copy.action_error {
                 egui::Frame::group(ui.style())
@@ -930,26 +881,43 @@ impl App {
                             );
                         });
                 },
-                Page::Resources => {
+                Page::Performance => {
+                    let previous_graph_modes = self.settings.resource_graphs;
+                    let previous_legends = self.settings.resource_legends;
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             render_resources_view(
                                 ui,
                                 frame,
+                                render_histories,
                                 {
                                     #[cfg(windows)]
                                     { if app_state == AppState::Replay { &frame.sensors } else { shared_copy.sensor_readings.as_ref() } }
                                     #[cfg(not(windows))]
                                     { &frame.sensors }
                                 },
+                                topo_opt.as_ref(),
+                                Some(&mut self.exporter),
                                 &mut self.resources_state,
                                 &app_state,
                                 &mut self.display_pause,
                                 current_poll,
+                                &mut self.settings.resource_graphs,
+                                &mut self.settings.resource_legends,
+                                render_now,
                                 p,
                             );
                         });
+                    let selection_changed = self.settings.performance_resource != self.resources_state.selected_resource
+                        || self.settings.performance_range != self.resources_state.range
+                        || self.settings.performance_engines.iter().cloned().collect::<std::collections::BTreeSet<_>>() != self.resources_state.selected_engines;
+                    if self.settings.resource_graphs != previous_graph_modes || self.settings.resource_legends != previous_legends || selection_changed {
+                        self.settings.performance_resource = self.resources_state.selected_resource.clone();
+                        self.settings.performance_range = self.resources_state.range;
+                        self.settings.performance_engines = self.resources_state.selected_engines.iter().take(4).cloned().collect();
+                        self.settings_error = self.settings.save().err().map(|error| format!("Could not save preferences: {error}"));
+                    }
                 },
                 Page::Processes => {
                     render_processes_view(
@@ -1001,6 +969,7 @@ impl App {
                             render_hardware_view(
                                 ui,
                                 topo_opt.as_ref(),
+                                render_frame.as_deref(),
                                 &mut self.hardware_state,
                                 &app_state,
                                 &mut self.display_pause,
@@ -1123,7 +1092,7 @@ fn main() -> eframe::Result<()> {
         return Ok(());
     }
 
-    let mut initial_page = Page::Overview;
+    let mut initial_page = Page::Performance;
     let mut initial_theme = None;
     let mut width = 1180.0;
     let mut height = 760.0;
@@ -1136,8 +1105,8 @@ fn main() -> eframe::Result<()> {
         match args[i].as_str() {
             "--view" if i + 1 < args.len() => {
                 initial_page = match args[i + 1].to_lowercase().as_str() {
+                    "performance" | "resources" => Page::Performance,
                     "overview" => Page::Overview,
-                    "resources" => Page::Resources,
                     "processes" => Page::Processes,
                     "history" => Page::History,
                     "hardware" => Page::Hardware,
@@ -1384,6 +1353,11 @@ mod tests {
             process_columns: components::table::TableColumnsConfig::default(),
             process_sort_column: components::table::SortColumn::Cpu,
             process_sort_descending: true,
+            resource_graphs: [true; 6],
+            resource_legends: [true; 6],
+            performance_resource: None,
+            performance_range: history::HistoryRange::Sec60,
+            performance_engines: Vec::new(),
         };
         let serialized = serde_json::to_string(&s).unwrap();
         let deserialized: UserSettings = serde_json::from_str(&serialized).unwrap();

@@ -4,7 +4,7 @@ use crate::{
     state::{AppState, DisplayPause},
     theme::{CORNER_RADIUS, Palette},
 };
-use eframe::egui::{self, CornerRadius, Pos2, Rect, Stroke, Vec2};
+use eframe::egui::{self, CornerRadius, Pos2, Rect, Shape, Stroke, Vec2};
 use planora_core::{BenchmarkPoint, BenchmarkResult, BenchmarkState, Command, ProfileState};
 use std::sync::mpsc::SyncSender;
 
@@ -299,6 +299,7 @@ fn render_benchmark_result(
 
     match state.active_tab {
         0 if !result.points.is_empty() => {
+            render_latency_plot(ui, &result.points, p);
             render_points_table(ui, &result.points, p);
         }
         1 if !result.core_pairs.is_empty() => {
@@ -308,6 +309,50 @@ fn render_benchmark_result(
             render_points_table(ui, &result.points, p);
         }
     }
+}
+
+fn render_latency_plot(ui: &mut egui::Ui, points: &[BenchmarkPoint], p: Palette) {
+    let mut data: Vec<_> = points.iter().filter(|point| point.working_set_bytes > 0 && point.min_ns.is_finite() && point.median_ns.is_finite() && point.p95_ns.is_finite() && point.p99_ns.is_finite()).collect();
+    data.sort_by_key(|point| point.working_set_bytes);
+    if data.is_empty() { return; }
+    ui.heading("Working set versus latency");
+    ui.label(egui::RichText::new("Median line; vertical marks span reported minimum to p99. The p95 tick is a reported percentile, not a reconstructed distribution.").color(p.secondary));
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width().max(300.0), 270.0), egui::Sense::hover());
+    let chart = Rect::from_min_max(rect.min + Vec2::new(56.0, 18.0), rect.max - Vec2::new(14.0, 36.0));
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, CornerRadius::same(8), p.surface);
+    painter.rect_stroke(rect, CornerRadius::same(8), Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+    let ymin = 0.0f32;
+    let ymax = data.iter().fold(1.0f32, |max, point| max.max(point.p99_ns as f32)) * 1.08;
+    for row in 0..=4 {
+        let y = chart.top() + chart.height() * row as f32 / 4.0;
+        painter.line_segment([Pos2::new(chart.left(), y), Pos2::new(chart.right(), y)], Stroke::new(1.0, p.border));
+        painter.text(Pos2::new(chart.left() - 6.0, y), egui::Align2::RIGHT_CENTER, format!("{:.0}", ymin + (ymax - ymin) * (4 - row) as f32 / 4.0), egui::FontId::proportional(11.0), p.secondary);
+    }
+    painter.text(rect.left_top() + Vec2::new(8.0, 6.0), egui::Align2::LEFT_TOP, "ns", egui::FontId::proportional(11.0), p.secondary);
+    let log_min = (data[0].working_set_bytes as f64).log2();
+    let log_max = (data[data.len() - 1].working_set_bytes as f64).log2();
+    let x_for = |bytes: u64| chart.left() + (((bytes as f64).log2() - log_min) / (log_max - log_min).max(1.0)) as f32 * chart.width();
+    let y_for = |ns: f64| chart.bottom() - ((ns as f32 / ymax).clamp(0.0, 1.0) * chart.height());
+    let mut median_points = Vec::with_capacity(data.len());
+    for point in &data {
+        let x = x_for(point.working_set_bytes);
+        let median = Pos2::new(x, y_for(point.median_ns));
+        median_points.push(median);
+        painter.line_segment([Pos2::new(x, y_for(point.min_ns)), Pos2::new(x, y_for(point.p99_ns))], Stroke::new(3.0, p.cpu.gamma_multiply(0.5)));
+        painter.line_segment([Pos2::new(x - 4.0, y_for(point.p95_ns)), Pos2::new(x + 4.0, y_for(point.p95_ns))], Stroke::new(1.5, p.focus));
+        painter.circle_filled(median, 3.0, p.cpu);
+    }
+    if median_points.len() >= 2 { painter.add(Shape::line(median_points, Stroke::new(2.0, p.cpu))); }
+    painter.text(chart.left_bottom() + Vec2::new(0.0, 20.0), egui::Align2::LEFT_CENTER, format_bytes(data[0].working_set_bytes), egui::FontId::proportional(11.0), p.secondary);
+    painter.text(chart.right_bottom() + Vec2::new(0.0, 20.0), egui::Align2::RIGHT_CENTER, format_bytes(data[data.len() - 1].working_set_bytes), egui::FontId::proportional(11.0), p.secondary);
+    if let Some(pointer) = response.hover_pos()
+        && chart.contains(pointer)
+        && let Some(point) = data.iter().min_by(|a, b| (x_for(a.working_set_bytes) - pointer.x).abs().total_cmp(&(x_for(b.working_set_bytes) - pointer.x).abs()))
+    {
+        response.on_hover_text(format!("{} working set\nMinimum {} · Median {}\nP95 {} · P99 {}", format_bytes(point.working_set_bytes), format_latency_ns(point.min_ns), format_latency_ns(point.median_ns), format_latency_ns(point.p95_ns), format_latency_ns(point.p99_ns)));
+    }
+    ui.add_space(10.0);
 }
 
 fn render_core_heatmap(ui: &mut egui::Ui, result: &BenchmarkResult, p: Palette) {

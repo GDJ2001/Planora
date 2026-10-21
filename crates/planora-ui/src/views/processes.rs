@@ -1,6 +1,7 @@
 use crate::{
     components::{
         header::render_page_header,
+        plot::{PlotSeries, PlotState, time_plot},
         table::{ProcessTableState, render_process_table, sort_processes},
     },
     formatting::{format_bytes, format_percent, format_rate},
@@ -37,6 +38,8 @@ pub struct ProcessesViewState {
     last_selected_identity: Option<ProcessIdentity>,
     pub quick_filter: QuickFilter,
     pub pinned: HashSet<ProcessIdentity>,
+    pub inspector_trend: usize,
+    inspector_plot: PlotState,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -437,11 +440,31 @@ fn render_inspector_pane(
             ui.add_space(8.0);
 
             ui.strong("Observed history (last 60 seconds)");
+            if histories.selected_identity.as_ref() == Some(&record.identity) {
+                ui.horizontal(|ui| {
+                    for (index, label) in ["CPU", "Memory", "Process I/O"].iter().enumerate() {
+                        ui.selectable_value(&mut state.inspector_trend, index, *label);
+                    }
+                });
+                let (series, unit, fixed_max): (Vec<PlotSeries<'_>>, &str, Option<f32>) = match state.inspector_trend {
+                    1 => (vec![PlotSeries { name: "Resident memory", samples: &histories.selected_memory, color: p.memory, dashed: false }], "bytes", None),
+                    2 => (vec![
+                        PlotSeries { name: "I/O read", samples: &histories.selected_io_read, color: p.disk, dashed: false },
+                        PlotSeries { name: "I/O write", samples: &histories.selected_io_write, color: p.accent, dashed: true },
+                    ], "B/s", None),
+                    _ => (vec![PlotSeries { name: "CPU utilization", samples: &histories.selected_cpu, color: p.cpu, dashed: false }], "%", Some(100.0)),
+                };
+                time_plot(ui, ("process_inspector", record.identity.pid, record.identity.started), &series, HistoryRange::Sec60, now, unit, fixed_max, 178.0, &mut state.inspector_plot, p);
+            } else {
+                ui.label("Collecting history for this process identity.");
+            }
             egui::Grid::new("selected_process_history").striped(true).num_columns(4).show(ui, |ui| {
                 ui.strong("Metric"); ui.strong("Average"); ui.strong("Range"); ui.strong("Coverage"); ui.end_row();
                 for (label, series, unit, color) in [
                     ("CPU", &histories.selected_cpu, "%", p.cpu),
                     ("Memory", &histories.selected_memory, "bytes", p.memory),
+                    ("I/O read", &histories.selected_io_read, "B/s", p.disk),
+                    ("I/O write", &histories.selected_io_write, "B/s", p.disk),
                 ] {
                     ui.colored_label(color, label);
                     if let Some(summary) = series.observed_summary(now, HistoryRange::Sec60) {
@@ -556,7 +579,7 @@ fn render_inspector_pane(
                 if is_paused {
                     ui.colored_label(
                         p.warning,
-                        "Affinity changes require live, unpaused telemetry.",
+                        "Affinity changes require live, unpaused telemetry (disabled during replay or pause).",
                     );
                     return;
                 }

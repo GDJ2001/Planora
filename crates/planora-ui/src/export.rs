@@ -224,6 +224,65 @@ impl ExportManager {
         })
     }
 
+    pub fn resource_series(
+        &mut self,
+        resource_label: String,
+        series_list: Vec<(String, TimeSeries, String)>,
+        range: HistoryRange,
+        now: Instant,
+    ) -> io::Result<()> {
+        let label = resource_label.to_lowercase().replace([' ', ':', '/'], "-");
+        self.start(&label, "csv", move |path| {
+            fs::create_dir_all(path.parent().unwrap())?;
+            let mut writer =
+                BufWriter::new(OpenOptions::new().create_new(true).write(true).open(path)?);
+            csv_line(
+                &mut writer,
+                &[
+                    "resource".into(),
+                    "series_name".into(),
+                    "aggregation_interval".into(),
+                    "timestamp_ms".into(),
+                    "value".into(),
+                    "minimum".into(),
+                    "maximum".into(),
+                    "unit".into(),
+                    "source".into(),
+                    "observation_count".into(),
+                    "unavailable_reason".into(),
+                ],
+            )?;
+            let cutoff = now.checked_sub(range.duration()).unwrap_or(now);
+            for (name, series, unit) in &series_list {
+                for sample in &series.samples {
+                    if sample.time < cutoff || sample.time > now {
+                        continue;
+                    }
+                    csv_line(
+                        &mut writer,
+                        &[
+                            resource_label.clone(),
+                            name.clone(),
+                            "1s".into(),
+                            sample.timestamp_ms.to_string(),
+                            sample.value.map_or_else(String::new, |v| v.to_string()),
+                            sample.minimum.map_or_else(String::new, |v| v.to_string()),
+                            sample.maximum.map_or_else(String::new, |v| v.to_string()),
+                            unit.clone(),
+                            sample.source.clone(),
+                            sample.count.to_string(),
+                            sample
+                                .unavailable_reason
+                                .as_ref()
+                                .map_or_else(String::new, ToString::to_string),
+                        ],
+                    )?;
+                }
+            }
+            writer.flush()
+        })
+    }
+
     pub fn benchmark(
         &mut self,
         state: BenchmarkState,

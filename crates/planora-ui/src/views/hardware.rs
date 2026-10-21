@@ -118,9 +118,32 @@ fn sync_topology_state(state: &mut HardwareViewState, topology: &Topology) {
     }
 }
 
+fn core_utilization(
+    core: &planora_core::CoreDescriptor,
+    frame: Option<&planora_core::TelemetryFrame>,
+) -> Option<f32> {
+    let f = frame?;
+    let mut sum = 0.0f32;
+    let mut count = 0;
+    for &cpu_idx in &core.logical_cpus {
+        if let Some(cpu) = f.logical_cpus.iter().find(|c| c.cpu_index == cpu_idx)
+            && let Some(val) = cpu.utilization_percent.value
+        {
+            sum += val;
+            count += 1;
+        }
+    }
+    if count > 0 {
+        Some(sum / count as f32)
+    } else {
+        None
+    }
+}
+
 pub fn render_hardware_view(
     ui: &mut egui::Ui,
     topology: Option<&Topology>,
+    frame: Option<&planora_core::TelemetryFrame>,
     state: &mut HardwareViewState,
     app_state: &AppState,
     pause_state: &mut DisplayPause,
@@ -176,15 +199,21 @@ pub fn render_hardware_view(
 
     match state.view_mode {
         HardwareViewMode::Tree => {
-            render_tree_view(ui, t, p);
+            render_tree_view(ui, t, frame, state, p);
         }
         HardwareViewMode::Canvas => {
-            render_canvas_view(ui, t, state, p);
+            render_canvas_view(ui, t, frame, state, p);
         }
     }
 }
 
-fn render_tree_view(ui: &mut egui::Ui, t: &Topology, p: Palette) {
+fn render_tree_view(
+    ui: &mut egui::Ui,
+    t: &Topology,
+    frame: Option<&planora_core::TelemetryFrame>,
+    state: &mut HardwareViewState,
+    p: Palette,
+) {
     egui::Frame::group(ui.style())
         .fill(p.surface)
         .stroke(Stroke::new(1.0, p.border))
@@ -205,10 +234,16 @@ fn render_tree_view(ui: &mut egui::Ui, t: &Topology, p: Palette) {
                 }
                 for index in group.core_indices {
                     let core = &t.cores[index];
-                    ui.label(format!(
-                        "  └── Core #{}: Logical CPUs {:?}",
-                        core.id, core.logical_cpus
-                    ));
+                    let util_opt = core_utilization(core, frame);
+                    let util_str = util_opt.map_or_else(String::new, |u| format!(" · Utilization: {u:.1}%"));
+                    let is_selected = state.selected_core_id == Some(core.id);
+                    let text = format!(
+                        "  └── Core #{}: Logical CPUs {:?}{}",
+                        core.id, core.logical_cpus, util_str
+                    );
+                    if ui.selectable_label(is_selected, text).clicked() {
+                        state.selected_core_id = Some(core.id);
+                    }
                 }
             }
 
@@ -236,9 +271,17 @@ fn render_tree_view(ui: &mut egui::Ui, t: &Topology, p: Palette) {
                 }
             }
         });
+
+    render_detail_inspector(ui, t, frame, state, p);
 }
 
-fn render_canvas_view(ui: &mut egui::Ui, t: &Topology, state: &mut HardwareViewState, p: Palette) {
+fn render_canvas_view(
+    ui: &mut egui::Ui,
+    t: &Topology,
+    frame: Option<&planora_core::TelemetryFrame>,
+    state: &mut HardwareViewState,
+    p: Palette,
+) {
     let groups = package_groups(t);
     let unscaled_w = groups.iter().map(|group| group.width).fold(0.0, f32::max);
     let unscaled_h = groups.iter().map(|group| group.height).sum::<f32>()
@@ -366,8 +409,15 @@ fn render_canvas_view(ui: &mut egui::Ui, t: &Topology, state: &mut HardwareViewS
                 state.selected_core_id = Some(core.id);
             }
 
+            let core_util = core_utilization(core, frame);
             let is_selected = state.selected_core_id == Some(core.id);
-            let fill = if is_selected { p.selected } else { p.surface };
+            let fill = if is_selected {
+                p.selected
+            } else if let Some(util) = core_util {
+                p.cpu.gamma_multiply(0.18 + 0.65 * (util.clamp(0.0, 100.0) / 100.0))
+            } else {
+                p.surface
+            };
             let stroke = if is_selected {
                 Stroke::new(2.0, p.focus)
             } else {
@@ -389,6 +439,15 @@ fn render_canvas_view(ui: &mut egui::Ui, t: &Topology, state: &mut HardwareViewS
                 egui::FontId::proportional(13.0 * zoom),
                 p.text,
             );
+            if let Some(util) = core_util {
+                core_painter.text(
+                    core_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    format!("{util:.0}%"),
+                    egui::FontId::monospace(13.0 * zoom),
+                    p.text,
+                );
+            }
             let cpu_str = if core.logical_cpus.len() == 1 {
                 format!("CPU {}", core.logical_cpus[0])
             } else {
@@ -405,7 +464,16 @@ fn render_canvas_view(ui: &mut egui::Ui, t: &Topology, state: &mut HardwareViewS
         group_y += (group.height + PACKAGE_GAP) * zoom;
     }
 
-    // Detail Inspector below canvas
+    render_detail_inspector(ui, t, frame, state, p);
+}
+
+fn render_detail_inspector(
+    ui: &mut egui::Ui,
+    t: &Topology,
+    frame: Option<&planora_core::TelemetryFrame>,
+    state: &HardwareViewState,
+    p: Palette,
+) {
     ui.add_space(14.0);
     if let Some(core_id) = state.selected_core_id
         && let Some(core) = t.cores.iter().find(|c| c.id == core_id)
@@ -417,6 +485,12 @@ fn render_canvas_view(ui: &mut egui::Ui, t: &Topology, state: &mut HardwareViewS
             .inner_margin(egui::Margin::same(12))
             .show(ui, |ui| {
                 ui.strong(format!("Selected Core #{}", core.id));
+                if let Some(util) = core_utilization(core, frame) {
+                    ui.label(format!("Current Utilization: {util:.1}%"));
+                }
+                if let Some(cls) = &core.class {
+                    ui.label(format!("Architecture Class: {cls}"));
+                }
                 ui.label(format!("Logical Processors: {:?}", core.logical_cpus));
                 let sharing_caches: Vec<_> = t
                     .caches

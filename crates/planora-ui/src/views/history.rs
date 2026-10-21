@@ -1,5 +1,5 @@
 use crate::{
-    components::header::render_page_header,
+    components::{header::render_page_header, plot::{PlotSeries, PlotState, time_plot}},
     formatting::{format_percent, format_rate},
     history::{HistoryRange, ResourceHistories, TimeSeries},
     state::{AppState, DisplayPause},
@@ -10,12 +10,16 @@ use std::time::Instant;
 
 pub struct HistoryViewState {
     pub range: HistoryRange,
+    pub show_graphs: bool,
+    plot: PlotState,
 }
 
 impl Default for HistoryViewState {
     fn default() -> Self {
         Self {
             range: HistoryRange::Sec60,
+            show_graphs: true,
+            plot: PlotState::default(),
         }
     }
 }
@@ -93,9 +97,36 @@ pub fn render_history_view(
         ] {
             ui.selectable_value(&mut state.range, range, range.label());
         }
+        ui.separator();
+        ui.checkbox(&mut state.show_graphs, "Show graphs");
     });
 
     ui.add_space(10.0);
+
+    if state.show_graphs {
+        let lanes: [(&str, Vec<PlotSeries<'_>>, &str, Option<f32>); 4] = [
+            ("CPU", vec![PlotSeries { name: "CPU utilization", samples: &histories.cpu, color: p.cpu, dashed: false }], "%", Some(100.0)),
+            ("Memory", vec![PlotSeries { name: "Physical memory used", samples: &histories.memory_pct, color: p.memory, dashed: false }], "%", Some(100.0)),
+            ("Storage", vec![
+                PlotSeries { name: "Read", samples: &histories.disk_read, color: p.disk, dashed: false },
+                PlotSeries { name: "Write", samples: &histories.disk_write, color: p.accent, dashed: true },
+            ], "B/s", None),
+            ("Network", vec![
+                PlotSeries { name: "Receive", samples: &histories.net_rx, color: p.network, dashed: false },
+                PlotSeries { name: "Transmit", samples: &histories.net_tx, color: p.accent, dashed: true },
+            ], "B/s", None),
+        ];
+        for (title, series, unit, fixed_max) in lanes {
+            ui.heading(title);
+            ui.horizontal(|ui| {
+                for plotted in &series {
+                    ui.colored_label(plotted.color, if plotted.dashed { format!("┄ {}", plotted.name) } else { format!("━ {}", plotted.name) });
+                }
+            });
+            time_plot(ui, title, &series, state.range, now, unit, fixed_max, 220.0, &mut state.plot, p);
+            ui.add_space(14.0);
+        }
+    }
 
     // 1. Summary Statistics Table
     egui::Frame::group(ui.style())

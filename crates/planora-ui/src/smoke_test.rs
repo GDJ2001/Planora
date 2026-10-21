@@ -283,6 +283,7 @@ pub fn create_test_app(theme: Theme, page: Page) -> App {
         recorder: crate::recording::Recorder::default(),
         exporter: crate::export::ExportManager::default(),
         replay: crate::recording::Replay::default(),
+        replay_anchor: None,
         replay_input: String::new(),
         record_selected_process: false,
         recording_error: None,
@@ -294,7 +295,10 @@ pub fn create_test_app(theme: Theme, page: Page) -> App {
         selected: None,
         display_pause: DisplayPause::default(),
         logo_cache: crate::components::logo::LogoCache::new(),
-        histories: crate::history::ResourceHistories::default(),
+        histories: Arc::new(crate::history::ResourceHistories::default()),
+        history_worker: crate::history_worker::HistoryWorker::start(),
+        history_epoch: 0,
+        history_last_enqueued: None,
         overview_state: crate::views::overview::OverviewViewState::default(),
         resources_state: crate::views::resources::ResourcesViewState::default(),
         processes_state: crate::views::processes::ProcessesViewState::default(),
@@ -522,6 +526,7 @@ pub fn run_smoke_fast_check() -> Result<(), String> {
         (1920, 1080),
     ];
     let views = [
+        (Page::Performance, "performance"),
         (Page::Overview, "overview"),
         (Page::Processes, "processes"),
         (Page::Hardware, "hardware"),
@@ -704,6 +709,7 @@ pub fn run_smoke_suite(out_dir: &Path, capture_png: bool) -> Result<(), String> 
 
     // View-specific screenshots at 1180x790 (Processes, Hardware, Benchmarks, Capabilities, Settings)
     let views = [
+        (Page::Performance, "performance"),
         (Page::Processes, "processes"),
         (Page::Hardware, "hardware"),
         (Page::Benchmarks, "benchmarks"),

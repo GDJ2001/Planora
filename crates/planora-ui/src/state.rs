@@ -22,8 +22,9 @@ use std::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Page {
     #[default]
+    #[serde(alias = "Resources")]
+    Performance,
     Overview,
-    Resources,
     Processes,
     History,
     Hardware,
@@ -50,6 +51,11 @@ pub struct UserSettings {
     pub hardware_view_mode: HardwareViewMode,
     pub reduced_motion: bool,
     pub default_history_range: HistoryRange,
+    pub resource_graphs: [bool; 6],
+    pub resource_legends: [bool; 6],
+    pub performance_resource: Option<String>,
+    pub performance_range: HistoryRange,
+    pub performance_engines: Vec<String>,
     pub process_columns: crate::components::table::TableColumnsConfig,
     pub process_sort_column: crate::components::table::SortColumn,
     pub process_sort_descending: bool,
@@ -58,13 +64,18 @@ pub struct UserSettings {
 impl Default for UserSettings {
     fn default() -> Self {
         Self {
-            schema_version: 3,
+            schema_version: 4,
             theme: Theme::System,
             density: Density::Normal,
             poll_interval_ms: 100,
             hardware_view_mode: HardwareViewMode::Canvas,
             reduced_motion: false,
             default_history_range: HistoryRange::Sec60,
+            resource_graphs: [true; 6],
+            resource_legends: [true; 6],
+            performance_resource: None,
+            performance_range: HistoryRange::Sec60,
+            performance_engines: Vec::new(),
             process_columns: crate::components::table::TableColumnsConfig::default(),
             process_sort_column: crate::components::table::SortColumn::Cpu,
             process_sort_descending: true,
@@ -104,7 +115,9 @@ impl UserSettings {
                 if let Ok(data) = std::fs::read_to_string(path)
                     && let Ok(mut settings) = serde_json::from_str::<Self>(&data)
                 {
-                    settings.schema_version = 3;
+                    settings.schema_version = 4;
+                    settings.performance_engines.truncate(4);
+                    settings.performance_resource = settings.performance_resource.filter(|id| id.len() <= 256);
                     settings.poll_interval_ms = match settings.poll_interval_ms {
                         50 => 100,
                         200 => 250,
@@ -986,5 +999,46 @@ mod tests {
         assert_eq!(state.lock().unwrap().state, Some(AppState::Reconnecting));
 
         server.join().unwrap();
+    }
+
+    #[test]
+    fn settings_migration_v3_to_v4_preserves_preferences() {
+        let v3_json = r#"{
+            "schema_version": 3,
+            "theme": "Dark",
+            "density": "Compact",
+            "poll_interval_ms": 250,
+            "hardware_view_mode": "Tree",
+            "reduced_motion": true,
+            "default_history_range": "Min5",
+            "process_columns": {
+                "show_pid": true,
+                "show_cpu": true,
+                "show_memory": true,
+                "show_io_read": true,
+                "show_io_write": false,
+                "show_disk_read": false,
+                "show_disk_write": false,
+                "show_gpu": true
+            },
+            "process_sort_column": "Memory",
+            "process_sort_descending": false
+        }"#;
+
+        let mut settings: UserSettings = serde_json::from_str(v3_json).expect("v3 json parse");
+        settings.schema_version = 4;
+        assert_eq!(settings.schema_version, 4);
+        assert_eq!(settings.theme, Theme::Dark);
+        assert_eq!(settings.density, Density::Compact);
+        assert_eq!(settings.poll_interval_ms, 250);
+        assert_eq!(settings.hardware_view_mode, HardwareViewMode::Tree);
+        assert!(settings.reduced_motion);
+        assert_eq!(settings.default_history_range, HistoryRange::Min5);
+        assert_eq!(settings.process_sort_column, crate::components::table::SortColumn::Memory);
+        assert!(!settings.process_sort_descending);
+        assert!(settings.process_columns.show_io_read);
+        assert!(settings.process_columns.show_gpu);
+        assert_eq!(settings.resource_graphs, [true; 6]);
+        assert_eq!(settings.performance_range, HistoryRange::Sec60);
     }
 }
