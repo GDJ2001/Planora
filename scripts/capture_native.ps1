@@ -109,7 +109,7 @@ $resolutions = @(
     @{ W = 1920; H = 1080 }
 )
 foreach ($res in $resolutions) {
-    foreach ($view in @('overview', 'processes', 'hardware', 'benchmarks', 'capabilities', 'recordings', 'settings')) {
+    foreach ($view in @('overview', 'resources', 'processes', 'history', 'hardware', 'benchmarks', 'capabilities', 'recordings', 'settings')) {
         Capture-NativeWindow -View $view -Theme 'dark' -Width $res.W -Height $res.H
         Capture-NativeWindow -View $view -Theme 'light' -Width $res.W -Height $res.H
     }

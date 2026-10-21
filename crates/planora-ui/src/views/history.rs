@@ -30,6 +30,18 @@ struct HistoryBucketRow {
     net_tx: Option<f32>,
 }
 
+fn interval_label(newer_seconds_ago: usize, older_seconds_ago: usize) -> String {
+    format!("{newer_seconds_ago}–{older_seconds_ago} s ago")
+}
+
+fn bucket_percent(value: Option<f32>) -> String {
+    value.map_or_else(|| "—".into(), |value| format_percent(Some(value)))
+}
+
+fn bucket_rate(value: Option<f32>) -> String {
+    value.map_or_else(|| "—".into(), |value| format_rate(Some(value)))
+}
+
 fn bucket_average(series: &TimeSeries, bucket_start: Instant, bucket_end: Instant) -> Option<f32> {
     let mut sum = 0.0f64;
     let mut count = 0usize;
@@ -162,7 +174,7 @@ pub fn render_history_view(
             ui.strong("Timestamped Interval Buckets");
             ui.label(
                 egui::RichText::new(
-                    "Chronological interval samples. Most recent intervals appear first.",
+                    "Most recent intervals first. A dash means no observation, never zero activity.",
                 )
                 .size(11.5)
                 .color(p.secondary),
@@ -188,11 +200,7 @@ pub fn render_history_view(
                     .checked_sub(std::time::Duration::from_secs(start_offset as u64))
                     .unwrap_or(now);
 
-                let label = if end_offset == 0 {
-                    format!("0s - -{}s", step_secs)
-                } else {
-                    format!("-{}s - -{}s", end_offset, start_offset)
-                };
+                let label = interval_label(end_offset, start_offset);
 
                 bucket_rows.push(HistoryBucketRow {
                     label,
@@ -222,15 +230,29 @@ pub fn render_history_view(
 
                         for row in bucket_rows {
                             ui.monospace(&row.label);
-                            ui.monospace(format_percent(row.cpu));
-                            ui.monospace(format_percent(row.mem));
-                            ui.monospace(format_rate(row.disk_r));
-                            ui.monospace(format_rate(row.disk_w));
-                            ui.monospace(format_rate(row.net_rx));
-                            ui.monospace(format_rate(row.net_tx));
+                            ui.monospace(bucket_percent(row.cpu));
+                            ui.monospace(bucket_percent(row.mem));
+                            ui.monospace(bucket_rate(row.disk_r));
+                            ui.monospace(bucket_rate(row.disk_w));
+                            ui.monospace(bucket_rate(row.net_rx));
+                            ui.monospace(bucket_rate(row.net_tx));
                             ui.end_row();
                         }
                     });
             });
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_history_is_not_a_zero_measurement() {
+        assert_eq!(interval_label(0, 1), "0–1 s ago");
+        assert_eq!(interval_label(15, 30), "15–30 s ago");
+        assert_eq!(bucket_percent(None), "—");
+        assert_eq!(bucket_rate(None), "—");
+        assert_eq!(bucket_rate(Some(0.0)), "0 B/s");
+    }
 }

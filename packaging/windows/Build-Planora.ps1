@@ -12,8 +12,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'cargo metadata failed' }
     $version = ($metadata.packages | Where-Object { $_.name -eq 'planora-ui' } | Select-Object -First 1).version
     if (-not $version) { throw 'Could not determine Planora version' }
-    # Windows Installer ignores prerelease text. 0.3.0-beta.1 intentionally
-    # upgrades 0.2.0 while leaving room for later betas and 0.3.0 stable.
+    # Windows Installer ignores prerelease text. Beta builds use an ordered
+    # numeric version below 0.3.0 while leaving room for later betas.
     $productVersionExpected = if ($version -match '^0\.3\.0-beta\.(\d+)$') {
         "0.2.$(1000 + [int]$Matches[1])"
     } else {

@@ -26,7 +26,7 @@
         <Component Id="PlanoraHelper" Guid="*" Bitness="always64">
           <File Id="PlanoraHelperExe" Source="$(var.SourceDir)\planora-helper.exe" KeyPath="yes" />
           <ServiceInstall Id="InstallHelper" Name="PlanoraHelper" DisplayName="Planora Helper" Description="Local hardware telemetry for Planora" Type="ownProcess" Start="demand" ErrorControl="normal" Account="LocalSystem" Arguments="--service" />
-          <ServiceControl Id="ControlHelper" Name="PlanoraHelper" Stop="both" Remove="uninstall" Wait="yes" />
+          <ServiceControl Id="ControlHelper" Name="PlanoraHelper" Start="install" Stop="both" Remove="uninstall" Wait="yes" />
         </Component>
         <Component Id="AuthorizationScript" Guid="*" Bitness="always64">
           <File Id="AuthorizationFile" Source="$(var.ProjectDir)\packaging\windows\Authorize-Planora.ps1" KeyPath="yes" />
