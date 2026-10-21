@@ -71,8 +71,14 @@ impl LogoCache {
     }
 
     pub fn render_mark(&mut self, ui: &mut egui::Ui, size: f32) {
-        if self.mark_texture.is_none() && let Some(image) = Self::load_image(MARK_BYTES) {
-            self.mark_texture = Some(ui.ctx().load_texture("planora_mark", image, TextureOptions::LINEAR));
+        if self.mark_texture.is_none()
+            && let Some(image) = Self::load_image(MARK_BYTES)
+        {
+            self.mark_texture = Some(ui.ctx().load_texture(
+                "planora_mark",
+                image,
+                TextureOptions::LINEAR,
+            ));
         }
         if let Some(texture) = &self.mark_texture {
             ui.add(egui::Image::new(texture).fit_to_exact_size(Vec2::splat(size)));

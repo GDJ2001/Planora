@@ -94,6 +94,7 @@ pub struct App {
     screenshot_out: Option<std::path::PathBuf>,
     screenshot_pending: bool,
     frames_rendered: usize,
+    fixture_mode: bool,
 }
 
 impl App {
@@ -242,6 +243,7 @@ impl App {
             screenshot_out: None,
             screenshot_pending: false,
             frames_rendered: 0,
+            fixture_mode: false,
         }
     }
 
@@ -516,7 +518,8 @@ impl App {
 
         // Evaluate staleness if in Live state
         let current_poll = self.poll_ms.load(Ordering::Relaxed);
-        if app_state == AppState::Live
+        if !self.fixture_mode
+            && app_state == AppState::Live
             && let Some(elapsed) = is_data_stale(shared_copy.last_frame_received, current_poll)
         {
             app_state = AppState::Stale(elapsed);
@@ -527,10 +530,19 @@ impl App {
         let visual_now = if app_state == AppState::Replay {
             frame_opt.as_ref().map_or(now, |frame| {
                 let anchor = self.replay_anchor.get_or_insert((frame.sampled_at_ms, now));
-                if frame.sampled_at_ms < anchor.0 { *anchor = (frame.sampled_at_ms, now); }
-                anchor.1.checked_add(std::time::Duration::from_millis(frame.sampled_at_ms.saturating_sub(anchor.0))).unwrap_or(now)
+                if frame.sampled_at_ms < anchor.0 {
+                    *anchor = (frame.sampled_at_ms, now);
+                }
+                anchor
+                    .1
+                    .checked_add(std::time::Duration::from_millis(
+                        frame.sampled_at_ms.saturating_sub(anchor.0),
+                    ))
+                    .unwrap_or(now)
             })
-        } else { now };
+        } else {
+            now
+        };
         if let Some(frame) = &frame_opt {
             let key = (frame.session_id, frame.sequence, self.selected.clone());
             if self.history_last_enqueued.as_ref() != Some(&key) {
@@ -658,7 +670,15 @@ impl App {
                     }
 
                     let icon_rect = Rect::from_min_size(
-                        rect.min + Vec2::new(if compact_nav { (rect.width() - 18.0) / 2.0 } else { 12.0 }, 9.0),
+                        rect.min
+                            + Vec2::new(
+                                if compact_nav {
+                                    (rect.width() - 18.0) / 2.0
+                                } else {
+                                    12.0
+                                },
+                                9.0,
+                            ),
                         Vec2::new(18.0, 18.0),
                     );
                     draw_icon(
@@ -687,11 +707,33 @@ impl App {
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                     ui.add_space(12.0);
                     if compact_nav {
-                        let (rect, response) = ui.allocate_exact_size(Vec2::new(36.0, 30.0), egui::Sense::hover());
-                        ui.painter().circle_filled(rect.center(), 5.0, if app_state == AppState::Live { p.success } else { p.warning });
-                        response.on_hover_text(format!("{}{:?}", if self.display_pause.is_paused { "Display paused · " } else { "" }, app_state));
+                        let (rect, response) =
+                            ui.allocate_exact_size(Vec2::new(36.0, 30.0), egui::Sense::hover());
+                        ui.painter().circle_filled(
+                            rect.center(),
+                            5.0,
+                            if app_state == AppState::Live {
+                                p.success
+                            } else {
+                                p.warning
+                            },
+                        );
+                        response.on_hover_text(format!(
+                            "{}{:?}",
+                            if self.display_pause.is_paused {
+                                "Display paused · "
+                            } else {
+                                ""
+                            },
+                            app_state
+                        ));
                     } else {
-                        render_compact_sidebar_status(ui, &app_state, self.display_pause.is_paused, p);
+                        render_compact_sidebar_status(
+                            ui,
+                            &app_state,
+                            self.display_pause.is_paused,
+                            p,
+                        );
                     }
                     ui.separator();
                 });
@@ -699,6 +741,9 @@ impl App {
 
         // 2. Central Panel
         egui::CentralPanel::default().show(root, |ui| {
+            if self.fixture_mode {
+                ui.colored_label(p.warning, "Fixture preview · simulated sample data");
+            }
             if self.page == Page::Recordings {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     self.render_recordings_page(ui, frame_opt.clone(), topo_opt.as_ref(), shared_copy.benchmark_state.as_ref(), &shared_copy.diagnostic_logs, &app_state, p);
@@ -706,6 +751,11 @@ impl App {
                 return;
             }
             let render_histories = frozen_histories.as_deref().unwrap_or(self.histories.as_ref());
+            if matches!(self.page, Page::Performance | Page::History)
+                && self.history_worker.dropped() > 0
+            {
+                ui.colored_label(p.warning, format!("History worker skipped {} delivery frames; coverage uses only observed samples.", self.history_worker.dropped()));
+            }
             // Action error banner
             if let Some(err_msg) = &shared_copy.action_error {
                 egui::Frame::group(ui.style())
@@ -893,7 +943,7 @@ impl App {
                                 render_histories,
                                 {
                                     #[cfg(windows)]
-                                    { if app_state == AppState::Replay { &frame.sensors } else { shared_copy.sensor_readings.as_ref() } }
+                                    { if self.fixture_mode || app_state == AppState::Replay { &frame.sensors } else { shared_copy.sensor_readings.as_ref() } }
                                     #[cfg(not(windows))]
                                     { &frame.sensors }
                                 },
@@ -1098,8 +1148,11 @@ fn main() -> eframe::Result<()> {
     let mut height = 760.0;
     let mut auto_close_ms = None;
     let mut screenshot_out = None;
-
     let args: Vec<String> = std::env::args().collect();
+    let native_fixture = args.iter().any(|arg| arg == "--native-fixture");
+    let fixture_tables_only = args.iter().any(|arg| arg == "--tables-only");
+    let mut fixture_resource = None;
+
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -1148,6 +1201,10 @@ fn main() -> eframe::Result<()> {
                 screenshot_out = Some(std::path::PathBuf::from(&args[i + 1]));
                 i += 2;
             }
+            "--resource" if i + 1 < args.len() => {
+                fixture_resource = Some(args[i + 1].clone());
+                i += 2;
+            }
             _ => {
                 i += 1;
             }
@@ -1174,8 +1231,21 @@ fn main() -> eframe::Result<()> {
         "Planora",
         options,
         Box::new(move |cc| {
-            let mut app = App::new(cc);
+            let mut app = if native_fixture {
+                smoke_test::create_native_fixture_app(
+                    initial_theme.unwrap_or(theme::Theme::Dark),
+                    initial_page,
+                )
+            } else {
+                App::new(cc)
+            };
             app.page = initial_page;
+            if let Some(resource) = fixture_resource.as_ref() {
+                app.resources_state.selected_resource = Some(resource.clone());
+            }
+            if native_fixture && fixture_tables_only {
+                app.settings.resource_graphs = [false; 6];
+            }
             if let Some(th) = initial_theme {
                 app.settings.theme = th;
             }

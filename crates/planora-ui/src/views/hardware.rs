@@ -124,20 +124,20 @@ fn core_utilization(
 ) -> Option<f32> {
     let f = frame?;
     let mut sum = 0.0f32;
-    let mut count = 0;
+    if core.logical_cpus.is_empty() {
+        return None;
+    }
     for &cpu_idx in &core.logical_cpus {
-        if let Some(cpu) = f.logical_cpus.iter().find(|c| c.cpu_index == cpu_idx)
-            && let Some(val) = cpu.utilization_percent.value
-        {
-            sum += val;
-            count += 1;
+        let mut matches = f.logical_cpus.iter().filter(|cpu| cpu.cpu_index == cpu_idx);
+        let cpu = matches.next()?;
+        // CoreDescriptor does not carry a Windows processor-group number.
+        // Duplicate local indices across groups cannot be mapped safely.
+        if matches.next().is_some() {
+            return None;
         }
+        sum += cpu.utilization_percent.value?;
     }
-    if count > 0 {
-        Some(sum / count as f32)
-    } else {
-        None
-    }
+    Some(sum / core.logical_cpus.len() as f32)
 }
 
 pub fn render_hardware_view(
@@ -235,7 +235,8 @@ fn render_tree_view(
                 for index in group.core_indices {
                     let core = &t.cores[index];
                     let util_opt = core_utilization(core, frame);
-                    let util_str = util_opt.map_or_else(String::new, |u| format!(" · Utilization: {u:.1}%"));
+                    let util_str =
+                        util_opt.map_or_else(String::new, |u| format!(" · Utilization: {u:.1}%"));
                     let is_selected = state.selected_core_id == Some(core.id);
                     let text = format!(
                         "  └── Core #{}: Logical CPUs {:?}{}",
@@ -414,7 +415,8 @@ fn render_canvas_view(
             let fill = if is_selected {
                 p.selected
             } else if let Some(util) = core_util {
-                p.cpu.gamma_multiply(0.18 + 0.65 * (util.clamp(0.0, 100.0) / 100.0))
+                p.cpu
+                    .gamma_multiply(0.18 + 0.65 * (util.clamp(0.0, 100.0) / 100.0))
             } else {
                 p.surface
             };
@@ -523,7 +525,7 @@ fn render_detail_inspector(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use planora_core::CoreDescriptor;
+    use planora_core::{CoreDescriptor, LogicalCpuSample, Metric};
 
     fn topology(package_ids: &[Option<u16>]) -> Topology {
         Topology {
@@ -600,5 +602,25 @@ mod tests {
         assert!(!state.initial_fit_done);
         assert!(state.fitted_layout_signature.is_some());
         assert_eq!(state.selected_core_id, None);
+    }
+
+    #[test]
+    fn ambiguous_processor_group_addressing_has_no_utilization_tint() {
+        let mut frame = crate::smoke_test::test_frame();
+        frame.logical_cpus = [0, 1]
+            .map(|group| LogicalCpuSample {
+                cpu_index: 0,
+                group,
+                utilization_percent: Metric::available(40.0, "%", "fixture", 1000),
+            })
+            .to_vec();
+        let core = CoreDescriptor {
+            id: 0,
+            package_id: Some(0),
+            numa_node: None,
+            logical_cpus: vec![0],
+            class: None,
+        };
+        assert_eq!(core_utilization(&core, Some(&frame)), None);
     }
 }

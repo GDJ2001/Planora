@@ -82,39 +82,107 @@ fn summary_table(ui: &mut egui::Ui, rows: &[SummaryRow<'_>], range: HistoryRange
     });
 }
 
-type CardItem<'a> = (&'a str, String, &'a TimeSeries, egui::Color32, Option<(Option<u64>, Option<u64>)>);
+type CardItem<'a> = (
+    &'a str,
+    String,
+    &'a TimeSeries,
+    egui::Color32,
+    Option<(Option<u64>, Option<u64>)>,
+);
 
-fn resource_cards(ui: &mut egui::Ui, frame: &TelemetryFrame, histories: &ResourceHistories, now: Instant, p: Palette) {
-    let memory_pct = frame.memory_used_bytes.value.zip(frame.memory_total_bytes.value)
+fn resource_cards(
+    ui: &mut egui::Ui,
+    frame: &TelemetryFrame,
+    histories: &ResourceHistories,
+    now: Instant,
+    p: Palette,
+) {
+    let memory_pct = frame
+        .memory_used_bytes
+        .value
+        .zip(frame.memory_total_bytes.value)
         .filter(|(_, total)| *total > 0)
         .map(|(used, total)| used as f64 * 100.0 / total as f64);
     let empty_series = TimeSeries::default();
     let mut cards: Vec<CardItem> = vec![
-        ("CPU", frame.cpu_percent.value.map(|v| format!("{v:.1}%")).unwrap_or_else(|| "Unavailable".into()), &histories.cpu, p.cpu, None),
-        ("Memory", memory_pct.map(|v| format!("{v:.1}%")).unwrap_or_else(|| "Unavailable".into()), &histories.memory_pct, p.memory, Some((frame.memory_used_bytes.value, frame.memory_total_bytes.value))),
+        (
+            "CPU",
+            frame
+                .cpu_percent
+                .value
+                .map(|v| format!("{v:.1}%"))
+                .unwrap_or_else(|| "Unavailable".into()),
+            &histories.cpu,
+            p.cpu,
+            None,
+        ),
+        (
+            "Memory",
+            memory_pct
+                .map(|v| format!("{v:.1}%"))
+                .unwrap_or_else(|| "Unavailable".into()),
+            &histories.memory_pct,
+            p.memory,
+            Some((
+                frame.memory_used_bytes.value,
+                frame.memory_total_bytes.value,
+            )),
+        ),
     ];
     if let Some(adapter) = frame.gpu_adapters.first() {
-        let gpu_series_key = format!("gpu:{}:{:?}:busiest", adapter.adapter_luid, adapter.physical_adapter);
+        let gpu_series_key = format!(
+            "gpu:{}:{:?}:busiest",
+            adapter.adapter_luid, adapter.physical_adapter
+        );
         let series = histories.detail(&gpu_series_key).unwrap_or(&empty_series);
         cards.push((
             "GPU · busiest",
-            adapter.busiest_engine_percent.value.map(|v| format!("{v:.1}%")).unwrap_or_else(|| "Unavailable".into()),
+            adapter
+                .busiest_engine_percent
+                .value
+                .map(|v| format!("{v:.1}%"))
+                .unwrap_or_else(|| "Unavailable".into()),
             series,
             p.gpu,
-            Some((adapter.dedicated_used_bytes.value, adapter.dedicated_total_bytes.value)),
+            Some((
+                adapter.dedicated_used_bytes.value,
+                adapter.dedicated_total_bytes.value,
+            )),
         ));
     }
-    cards.push(("Storage · read", format_rate(frame.disk_read_bytes_per_sec.value.map(|v| v as f32)), &histories.disk_read, p.disk, None));
-    cards.push(("Network · rx", format_rate(frame.network_rx_bytes_per_sec.value.map(|v| v as f32)), &histories.net_rx, p.network, None));
+    cards.push((
+        "Storage · read",
+        format_rate(frame.disk_read_bytes_per_sec.value.map(|v| v as f32)),
+        &histories.disk_read,
+        p.disk,
+        None,
+    ));
+    cards.push((
+        "Network · rx",
+        format_rate(frame.network_rx_bytes_per_sec.value.map(|v| v as f32)),
+        &histories.net_rx,
+        p.network,
+        None,
+    ));
 
-    let columns = if ui.available_width() >= 960.0 { cards.len().min(5) } else if ui.available_width() >= 480.0 { 2 } else { 1 };
+    let columns = if ui.available_width() >= 960.0 {
+        cards.len().min(5)
+    } else if ui.available_width() >= 480.0 {
+        2
+    } else {
+        1
+    };
     let width = ((ui.available_width() - 12.0 * (columns - 1) as f32) / columns as f32).max(160.0);
     for row in cards.chunks(columns) {
         ui.horizontal(|ui| {
             for (title, value, series, color, cap) in row {
                 ui.allocate_ui(Vec2::new(width, 118.0), |ui| {
-                    egui::Frame::group(ui.style()).fill(p.surface).stroke(Stroke::new(1.0, p.border))
-                        .corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::same(12)).show(ui, |ui| {
+                    egui::Frame::group(ui.style())
+                        .fill(p.surface)
+                        .stroke(Stroke::new(1.0, p.border))
+                        .corner_radius(CornerRadius::same(8))
+                        .inner_margin(egui::Margin::same(12))
+                        .show(ui, |ui| {
                             ui.set_width(width - 24.0);
                             ui.colored_label(*color, *title);
                             ui.label(egui::RichText::new(value).size(22.0).strong().color(p.text));

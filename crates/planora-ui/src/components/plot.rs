@@ -17,6 +17,17 @@ pub struct PlotState {
     pub pinned: bool,
     axis_max: f32,
     below_half_since: Option<Instant>,
+    cache_key: Option<PlotCacheKey>,
+    cache_now: Option<Instant>,
+    cached_segments: Vec<Vec<Vec<(f32, f32)>>>,
+}
+
+#[derive(PartialEq)]
+struct PlotCacheKey {
+    range: HistoryRange,
+    width: u32,
+    scale_bits: u32,
+    series: Vec<(usize, u64)>,
 }
 
 /// Paint a bounded, gap-aware plot. The source series owns the truth; this
@@ -44,19 +55,54 @@ pub fn time_plot(
     );
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 8.0, p.surface);
-    painter.rect_stroke(rect, 8.0, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+    painter.rect_stroke(
+        rect,
+        8.0,
+        Stroke::new(1.0, p.border),
+        egui::StrokeKind::Inside,
+    );
 
-    let gap = Duration::from_secs(3);
-    let segments: Vec<_> = series
-        .iter()
-        .map(|item| item.samples.downsampled_segments(now, range, gap, canvas.width() as usize))
-        .collect();
+    let key = PlotCacheKey {
+        range,
+        width: canvas.width().round() as u32,
+        scale_bits: ui.ctx().pixels_per_point().to_bits(),
+        series: series
+            .iter()
+            .map(|item| {
+                (
+                    item.samples.samples.len(),
+                    item.samples
+                        .samples
+                        .back()
+                        .map_or(0, |sample| sample.timestamp_ms),
+                )
+            })
+            .collect(),
+    };
+    let expired = state.cache_now.is_none_or(|cached_at| {
+        now < cached_at || now.saturating_duration_since(cached_at) >= Duration::from_secs(1)
+    });
+    if state.cache_key.as_ref() != Some(&key) || expired {
+        let gap = Duration::from_secs(3);
+        state.cached_segments = series
+            .iter()
+            .map(|item| {
+                item.samples
+                    .downsampled_segments(now, range, gap, canvas.width() as usize)
+            })
+            .collect();
+        state.cache_key = Some(key);
+        state.cache_now = Some(now);
+    }
+    let segments = &state.cached_segments;
     let observed_max = segments
         .iter()
         .flatten()
         .flatten()
         .fold(0.0f32, |max, (_, value)| max.max(*value));
-    let ymax = if let Some(max) = fixed_max { max.max(1.0) } else {
+    let ymax = if let Some(max) = fixed_max {
+        max.max(1.0)
+    } else {
         let target = nice_ceiling(observed_max).max(1.0);
         if target > state.axis_max {
             state.axis_max = target;
@@ -122,13 +168,18 @@ pub fn time_plot(
             canvas.bottom() - (y / ymax).clamp(0.0, 1.0) * canvas.height(),
         )
     };
-    for (item, item_segments) in series.iter().zip(&segments) {
+    for (item, item_segments) in series.iter().zip(segments) {
         for segment in item_segments {
             let points: Vec<Pos2> = segment.iter().map(|(x, y)| to_point(*x, *y)).collect();
             if points.len() >= 2 && !item.dashed {
                 for pair in points.windows(2) {
                     painter.add(Shape::convex_polygon(
-                        vec![pair[0], pair[1], Pos2::new(pair[1].x, canvas.bottom()), Pos2::new(pair[0].x, canvas.bottom())],
+                        vec![
+                            pair[0],
+                            pair[1],
+                            Pos2::new(pair[1].x, canvas.bottom()),
+                            Pos2::new(pair[0].x, canvas.bottom()),
+                        ],
                         item.color.gamma_multiply(0.12),
                         Stroke::NONE,
                     ));
@@ -164,14 +215,20 @@ pub fn time_plot(
             .hover_pos()
             .map(|pos| ((pos.x - canvas.left()) / canvas.width()).clamp(0.0, 1.0));
     }
-    let cutoff = now.checked_sub(range.duration()).unwrap_or(now);
-    let mut observed: Vec<f32> = series.iter().flat_map(|item| item.samples.samples.iter())
-        .filter(|sample| sample.value.is_some() && sample.time >= cutoff && sample.time <= now)
-        .map(|sample| (sample.time.saturating_duration_since(cutoff).as_secs_f32() / range.duration().as_secs_f32()).clamp(0.0, 1.0))
-        .collect();
-    observed.sort_by(f32::total_cmp);
-    observed.dedup_by(|a, b| (*a - *b).abs() < f32::EPSILON);
     if response.has_focus() {
+        let cutoff = now.checked_sub(range.duration()).unwrap_or(now);
+        let mut observed: Vec<f32> = series
+            .iter()
+            .flat_map(|item| item.samples.samples.iter())
+            .filter(|sample| sample.value.is_some() && sample.time >= cutoff && sample.time <= now)
+            .map(|sample| {
+                (sample.time.saturating_duration_since(cutoff).as_secs_f32()
+                    / range.duration().as_secs_f32())
+                .clamp(0.0, 1.0)
+            })
+            .collect();
+        observed.sort_by(f32::total_cmp);
+        observed.dedup_by(|a, b| (*a - *b).abs() < f32::EPSILON);
         ui.input(|input| {
             if input.key_pressed(egui::Key::Escape) {
                 state.pinned = false;
@@ -183,14 +240,23 @@ pub fn time_plot(
                 state.cursor = observed.last().copied();
                 state.pinned = true;
             } else if input.key_pressed(egui::Key::ArrowLeft) {
-                if let Some(target) = observed.iter().rev().find(|&&x| x < state.cursor.unwrap_or(1.01) - f32::EPSILON).copied() {
+                if let Some(target) = observed
+                    .iter()
+                    .rev()
+                    .find(|&&x| x < state.cursor.unwrap_or(1.01) - f32::EPSILON)
+                    .copied()
+                {
                     state.cursor = Some(target);
                 } else if state.cursor.is_none() {
                     state.cursor = observed.last().copied();
                 }
                 state.pinned = true;
             } else if input.key_pressed(egui::Key::ArrowRight) {
-                if let Some(target) = observed.iter().find(|&&x| x > state.cursor.unwrap_or(-0.01) + f32::EPSILON).copied() {
+                if let Some(target) = observed
+                    .iter()
+                    .find(|&&x| x > state.cursor.unwrap_or(-0.01) + f32::EPSILON)
+                    .copied()
+                {
                     state.cursor = Some(target);
                 } else if state.cursor.is_none() {
                     state.cursor = observed.first().copied();
@@ -206,21 +272,38 @@ pub fn time_plot(
             Stroke::new(1.0, p.focus),
         );
         let mut details = Vec::new();
+        let mut concise = Vec::new();
         for item in series {
             if let Some((sample, age)) = item.samples.query_sample(now, range, cursor) {
                 let reading = sample.value.map_or_else(
-                    || sample.unavailable_reason.as_ref().map_or_else(|| "Unavailable".to_owned(), ToString::to_string),
+                    || {
+                        sample
+                            .unavailable_reason
+                            .as_ref()
+                            .map_or_else(|| "Unavailable".to_owned(), ToString::to_string)
+                    },
                     |v| format!("{} {unit}", format_axis(v)),
                 );
-                details.push(format!("{}: {} (sample {} ms, {} s ago, {}; {} observations, min {:?}, max {:?})", item.name, reading, sample.timestamp_ms, age.as_secs(), sample.source, sample.count, sample.minimum, sample.maximum));
+                details.push(format!(
+                    "{}: {} (sample {} ms, {} s ago, {}; {} observations, min {:?}, max {:?})",
+                    item.name,
+                    reading,
+                    sample.timestamp_ms,
+                    age.as_secs(),
+                    sample.source,
+                    sample.count,
+                    sample.minimum,
+                    sample.maximum
+                ));
+                concise.push(format!("{}: {}", item.name, reading));
             }
         }
         if !details.is_empty() {
             response.on_hover_text_at_pointer(details.join("\n"));
             let readout_summary = if state.pinned {
-                format!("📌 Pinned: {}", details[0])
+                format!("Pinned · {}", concise.join(" · "))
             } else {
-                details[0].clone()
+                concise.join(" · ")
             };
             painter.text(
                 Pos2::new(canvas.left() + 8.0, canvas.top() + 6.0),
@@ -236,25 +319,57 @@ pub fn time_plot(
 pub fn sparkline(ui: &mut egui::Ui, series: &TimeSeries, now: Instant, color: Color32, p: Palette) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(68.0, 28.0), Sense::hover());
     ui.painter().rect_filled(rect, 3.0, p.surface_raised);
-    let segments = series.downsampled_segments(now, HistoryRange::Sec60, Duration::from_secs(3), 68);
-    let max = segments.iter().flatten().fold(1.0f32, |acc, (_, y)| acc.max(*y));
+    let segments =
+        series.downsampled_segments(now, HistoryRange::Sec60, Duration::from_secs(3), 68);
+    let max = segments
+        .iter()
+        .flatten()
+        .fold(1.0f32, |acc, (_, y)| acc.max(*y));
     for segment in segments {
-        let points: Vec<_> = segment.into_iter().map(|(x, y)| Pos2::new(rect.left() + x * rect.width(), rect.bottom() - (y / max).clamp(0.0, 1.0) * rect.height())).collect();
+        let points: Vec<_> = segment
+            .into_iter()
+            .map(|(x, y)| {
+                Pos2::new(
+                    rect.left() + x * rect.width(),
+                    rect.bottom() - (y / max).clamp(0.0, 1.0) * rect.height(),
+                )
+            })
+            .collect();
         if points.len() >= 2 {
-            ui.painter().add(Shape::line(points, Stroke::new(1.4, color)));
+            ui.painter()
+                .add(Shape::line(points, Stroke::new(1.4, color)));
         } else if let Some(point) = points.first() {
             ui.painter().circle_filled(*point, 2.0, color);
         }
     }
 }
 
-pub fn capacity_bar(ui: &mut egui::Ui, used: Option<u64>, total: Option<u64>, color: Color32, p: Palette) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width().max(100.0), 14.0), Sense::hover());
+pub fn capacity_bar(
+    ui: &mut egui::Ui,
+    used: Option<u64>,
+    total: Option<u64>,
+    color: Color32,
+    p: Palette,
+) {
+    let (rect, _) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width().max(100.0), 14.0),
+        Sense::hover(),
+    );
     ui.painter().rect_filled(rect, 4.0, p.surface_raised);
-    if let (Some(used), Some(total)) = (used, total) && total > 0 {
+    if let (Some(used), Some(total)) = (used, total)
+        && total > 0
+    {
         let fraction = (used as f64 / total as f64).clamp(0.0, 1.0) as f32;
         let fill = Rect::from_min_size(rect.min, Vec2::new(rect.width() * fraction, rect.height()));
         ui.painter().rect_filled(fill, 4.0, color);
+    } else {
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "Unavailable",
+            egui::FontId::proportional(10.0),
+            p.secondary,
+        );
     }
 }
 

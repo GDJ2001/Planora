@@ -117,7 +117,8 @@ impl UserSettings {
                 {
                     settings.schema_version = 4;
                     settings.performance_engines.truncate(4);
-                    settings.performance_resource = settings.performance_resource.filter(|id| id.len() <= 256);
+                    settings.performance_resource =
+                        settings.performance_resource.filter(|id| id.len() <= 256);
                     settings.poll_interval_ms = match settings.poll_interval_ms {
                         50 => 100,
                         200 => 250,
@@ -1034,7 +1035,10 @@ mod tests {
         assert_eq!(settings.hardware_view_mode, HardwareViewMode::Tree);
         assert!(settings.reduced_motion);
         assert_eq!(settings.default_history_range, HistoryRange::Min5);
-        assert_eq!(settings.process_sort_column, crate::components::table::SortColumn::Memory);
+        assert_eq!(
+            settings.process_sort_column,
+            crate::components::table::SortColumn::Memory
+        );
         assert!(!settings.process_sort_descending);
         assert!(settings.process_columns.show_io_read);
         assert!(settings.process_columns.show_gpu);

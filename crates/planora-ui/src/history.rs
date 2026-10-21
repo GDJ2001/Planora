@@ -1,7 +1,7 @@
 use planora_core::{AvailabilityReason, ProcessIdentity, SensorReading, TelemetryFrame};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     time::{Duration, Instant},
 };
 
@@ -101,7 +101,10 @@ impl TimeSeries {
             }
             if let Some(value) = sample.value.filter(|v| v.is_finite()) {
                 let second = sample.time.duration_since(cutoff).as_secs();
-                let bucket = buckets.entry(second).or_insert((0.0, 0, f32::INFINITY, f32::NEG_INFINITY));
+                let bucket =
+                    buckets
+                        .entry(second)
+                        .or_insert((0.0, 0, f32::INFINITY, f32::NEG_INFINITY));
                 bucket.0 += sample.sum;
                 bucket.1 += sample.count;
                 bucket.2 = bucket.2.min(sample.minimum.unwrap_or(value));
@@ -117,8 +120,12 @@ impl TimeSeries {
             .collect();
         let total: f64 = values.iter().map(|v| *v as f64).sum();
         Some(ObservedSummary {
-            minimum: buckets.values().fold(f32::INFINITY, |current, bucket| current.min(bucket.2)),
-            maximum: buckets.values().fold(f32::NEG_INFINITY, |current, bucket| current.max(bucket.3)),
+            minimum: buckets
+                .values()
+                .fold(f32::INFINITY, |current, bucket| current.min(bucket.2)),
+            maximum: buckets
+                .values()
+                .fold(f32::NEG_INFINITY, |current, bucket| current.max(bucket.3)),
             average: (total / values.len() as f64) as f32,
             observed_seconds: values.len(),
             expected_seconds: duration.as_secs() as usize,
@@ -366,6 +373,7 @@ pub struct ResourceHistories {
     pub net_tx: TimeSeries,
     /// Scoped histories use stable hardware IDs rather than display labels.
     pub details: BTreeMap<String, TimeSeries>,
+    pub not_retained: BTreeSet<String>,
 
     // Selected process history (only recorded while observed)
     pub selected_identity: Option<ProcessIdentity>,
@@ -395,7 +403,10 @@ impl ResourceHistories {
             let metric = &frame.cpu_percent;
             self.cpu.push_with_metadata(
                 measurement_instant(now, wall_clock_now_ms, metric.sampled_at_ms),
-                metric.sampled_at_ms, metric.value, &metric.source, metric.unavailable_reason.as_ref(),
+                metric.sampled_at_ms,
+                metric.value,
+                &metric.source,
+                metric.unavailable_reason.as_ref(),
             );
         }
         let used = &frame.memory_used_bytes;
@@ -406,8 +417,12 @@ impl ResourceHistories {
         };
         self.memory_pct.push_with_metadata(
             measurement_instant(now, wall_clock_now_ms, used.sampled_at_ms),
-            used.sampled_at_ms, memory_pct, &used.source,
-            used.unavailable_reason.as_ref().or(total.unavailable_reason.as_ref()),
+            used.sampled_at_ms,
+            memory_pct,
+            &used.source,
+            used.unavailable_reason
+                .as_ref()
+                .or(total.unavailable_reason.as_ref()),
         );
         for (series, metric) in [
             (&mut self.disk_read, &frame.disk_read_bytes_per_sec),
@@ -417,23 +432,33 @@ impl ResourceHistories {
         ] {
             series.push_with_metadata(
                 measurement_instant(now, wall_clock_now_ms, metric.sampled_at_ms),
-                metric.sampled_at_ms, metric.value.map(|value| value as f32),
-                &metric.source, metric.unavailable_reason.as_ref(),
+                metric.sampled_at_ms,
+                metric.value.map(|value| value as f32),
+                &metric.source,
+                metric.unavailable_reason.as_ref(),
             );
         }
         if let Some(identity) = selected
-            && let Some(process) = frame.processes.iter().find(|process| &process.identity == identity)
+            && let Some(process) = frame
+                .processes
+                .iter()
+                .find(|process| &process.identity == identity)
         {
             let cpu = &process.cpu_percent;
             self.selected_cpu.push_with_metadata(
                 measurement_instant(now, wall_clock_now_ms, cpu.sampled_at_ms),
-                cpu.sampled_at_ms, cpu.value, &cpu.source, cpu.unavailable_reason.as_ref(),
+                cpu.sampled_at_ms,
+                cpu.value,
+                &cpu.source,
+                cpu.unavailable_reason.as_ref(),
             );
             let memory = &process.memory_bytes;
             self.selected_memory.push_with_metadata(
                 measurement_instant(now, wall_clock_now_ms, memory.sampled_at_ms),
-                memory.sampled_at_ms, memory.value.map(|value| value as f32),
-                &memory.source, memory.unavailable_reason.as_ref(),
+                memory.sampled_at_ms,
+                memory.value.map(|value| value as f32),
+                &memory.source,
+                memory.unavailable_reason.as_ref(),
             );
             for (series, metric) in [
                 (&mut self.selected_io_read, &process.io_read_bytes_per_sec),
@@ -472,7 +497,10 @@ impl ResourceHistories {
         for adapter in &frame.gpu_adapters {
             let metric = &adapter.busiest_engine_percent;
             self.push_detail(
-                format!("gpu:{}:{:?}:busiest", adapter.adapter_luid, adapter.physical_adapter),
+                format!(
+                    "gpu:{}:{:?}:busiest",
+                    adapter.adapter_luid, adapter.physical_adapter
+                ),
                 measurement_instant(now, wall_clock_now_ms, metric.sampled_at_ms),
                 metric.sampled_at_ms,
                 metric.value,
@@ -482,10 +510,22 @@ impl ResourceHistories {
         }
         for engine in &frame.gpu_engines {
             let metric = &engine.utilization_percent;
-            let key = format!("gpu-engine:{}:{:?}:{:?}:{}:{}", engine.adapter_luid.unwrap_or(0), engine.physical_adapter, engine.engine_id, engine.engine_type, engine.instance);
-            self.push_detail(key,
+            let key = format!(
+                "gpu-engine:{}:{:?}:{:?}:{}:{}",
+                engine.adapter_luid.unwrap_or(0),
+                engine.physical_adapter,
+                engine.engine_id,
+                engine.engine_type,
+                engine.instance
+            );
+            self.push_detail(
+                key,
                 measurement_instant(now, wall_clock_now_ms, metric.sampled_at_ms),
-                metric.sampled_at_ms, metric.value, &metric.source, metric.unavailable_reason.as_ref());
+                metric.sampled_at_ms,
+                metric.value,
+                &metric.source,
+                metric.unavailable_reason.as_ref(),
+            );
         }
         for device in &frame.disks {
             for (direction, metric) in [
@@ -501,11 +541,19 @@ impl ResourceHistories {
                     metric.unavailable_reason.as_ref(),
                 );
             }
-            for (name, metric) in [("latency", &device.latency_ms), ("queue", &device.queue_depth)] {
+            for (name, metric) in [
+                ("latency", &device.latency_ms),
+                ("queue", &device.queue_depth),
+            ] {
                 if let Some(metric) = metric {
-                    self.push_detail(format!("disk:{}:{name}", device.id),
+                    self.push_detail(
+                        format!("disk:{}:{name}", device.id),
                         measurement_instant(now, wall_clock_now_ms, metric.sampled_at_ms),
-                        metric.sampled_at_ms, metric.value, &metric.source, metric.unavailable_reason.as_ref());
+                        metric.sampled_at_ms,
+                        metric.value,
+                        &metric.source,
+                        metric.unavailable_reason.as_ref(),
+                    );
                 }
             }
         }
@@ -527,7 +575,10 @@ impl ResourceHistories {
         for sensor in sensors {
             let metric = &sensor.value;
             self.push_detail(
-                format!("sensor:{}:{}:{}:{:?}", sensor.scope, sensor.provider, sensor.name, sensor.sensor_type),
+                format!(
+                    "sensor:{}:{}:{}:{:?}",
+                    sensor.scope, sensor.provider, sensor.name, sensor.sensor_type
+                ),
                 measurement_instant(now, wall_clock_now_ms, metric.sampled_at_ms),
                 metric.sampled_at_ms,
                 metric.value,
@@ -548,6 +599,7 @@ impl ResourceHistories {
             self.net_rx.clear();
             self.net_tx.clear();
             self.details.clear();
+            self.not_retained.clear();
             self.selected_identity = None;
             self.selected_cpu.clear();
             self.selected_memory.clear();
@@ -571,22 +623,44 @@ impl ResourceHistories {
     }
 
     pub fn enforce_budget(&mut self) -> usize {
-        // 200,000 bucket records leave room for strings, maps, snapshots, and
-        // the fixed system/selected-process histories below 64 MiB.
-        const MAX_DETAIL_POINTS: usize = 200_000;
-        let mut points: usize = self.details.values().map(|series| series.samples.len()).sum();
-        if points <= MAX_DETAIL_POINTS {
+        // Conservative cap leaves room for two immutable snapshots plus the
+        // mutable worker copy under the 64 MiB history budget.
+        self.enforce_budget_with_limit(100_000)
+    }
+
+    fn enforce_budget_with_limit(&mut self, max_detail_points: usize) -> usize {
+        let mut points: usize = self
+            .details
+            .values()
+            .map(|series| series.samples.len())
+            .sum();
+        if points <= max_detail_points {
             return 0;
         }
-        let mut oldest: Vec<_> = self.details.iter().map(|(key, series)| {
-            (key.clone(), series.samples.back().map_or(0, |sample| sample.timestamp_ms))
-        }).collect();
+        let mut oldest: Vec<_> = self
+            .details
+            .iter()
+            .map(|(key, series)| {
+                (
+                    key.clone(),
+                    series
+                        .samples
+                        .back()
+                        .map_or(0, |sample| sample.timestamp_ms),
+                )
+            })
+            .collect();
         oldest.sort_by_key(|(_, timestamp)| *timestamp);
         let mut removed = 0;
         for (key, _) in oldest {
-            if points <= MAX_DETAIL_POINTS { break; }
+            if points <= max_detail_points {
+                break;
+            }
             if let Some(series) = self.details.remove(&key) {
                 points = points.saturating_sub(series.samples.len());
+                if self.not_retained.len() < 1024 {
+                    self.not_retained.insert(key);
+                }
                 removed += 1;
             }
         }
@@ -603,8 +677,12 @@ impl ResourceHistories {
         unavailable_reason: Option<&AvailabilityReason>,
     ) {
         if self.details.len() >= 1024 && !self.details.contains_key(&key) {
+            if self.not_retained.len() < 1024 {
+                self.not_retained.insert(key);
+            }
             return;
         }
+        self.not_retained.remove(&key);
         self.details.entry(key).or_default().push_with_metadata(
             time,
             timestamp_ms,
@@ -806,11 +884,36 @@ mod tests {
     fn source_change_breaks_segments() {
         let now = Instant::now();
         let mut series = TimeSeries::new();
-        series.push_with_metadata(now - Duration::from_secs(4), 1000, Some(10.0), "provider_a", None);
-        series.push_with_metadata(now - Duration::from_secs(3), 2000, Some(12.0), "provider_a", None);
-        series.push_with_metadata(now - Duration::from_secs(2), 3000, Some(14.0), "provider_b", None);
-        series.push_with_metadata(now - Duration::from_secs(1), 4000, Some(16.0), "provider_b", None);
-        let segs = series.downsampled_segments(now, HistoryRange::Sec30, Duration::from_secs(3), 100);
+        series.push_with_metadata(
+            now - Duration::from_secs(4),
+            1000,
+            Some(10.0),
+            "provider_a",
+            None,
+        );
+        series.push_with_metadata(
+            now - Duration::from_secs(3),
+            2000,
+            Some(12.0),
+            "provider_a",
+            None,
+        );
+        series.push_with_metadata(
+            now - Duration::from_secs(2),
+            3000,
+            Some(14.0),
+            "provider_b",
+            None,
+        );
+        series.push_with_metadata(
+            now - Duration::from_secs(1),
+            4000,
+            Some(16.0),
+            "provider_b",
+            None,
+        );
+        let segs =
+            series.downsampled_segments(now, HistoryRange::Sec30, Duration::from_secs(3), 100);
         assert_eq!(segs.len(), 2, "Source change must break continuous segment");
     }
 
@@ -823,8 +926,9 @@ mod tests {
             histories.push_detail(key, now, (i + 1) * 1000, Some(i as f32), "test", None);
         }
         assert_eq!(histories.details.len(), 10);
-        histories.enforce_budget();
-        assert!(histories.details.len() <= 1024);
+        assert_eq!(histories.enforce_budget_with_limit(5), 5);
+        assert_eq!(histories.details.len(), 5);
+        assert_eq!(histories.not_retained.len(), 5);
     }
 
     #[test]
