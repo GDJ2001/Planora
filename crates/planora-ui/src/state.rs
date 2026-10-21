@@ -340,6 +340,24 @@ fn probe_legacy_v3() -> Option<u32> {
     }
 }
 
+fn connection_failure_state(
+    had_frame: bool,
+    error_kind: io::ErrorKind,
+    failure_elapsed: Duration,
+) -> AppState {
+    if had_frame {
+        AppState::Reconnecting
+    } else if error_kind == io::ErrorKind::PermissionDenied
+        || failure_elapsed >= Duration::from_secs(2)
+    {
+        // A fresh install deliberately leaves the demand-start service stopped
+        // until the user authorizes it. Avoid an endless first-launch spinner.
+        AppState::AwaitingAuthorization
+    } else {
+        AppState::Connecting
+    }
+}
+
 pub fn background_worker(
     state: Arc<Mutex<Shared>>,
     rx: Receiver<Command>,
@@ -349,21 +367,20 @@ pub fn background_worker(
     let mut next_request_id = 1u64;
     let mut _current_session_id: Option<u64> = None;
     let mut reconnect_backoff = Duration::from_millis(200);
+    let mut first_connection_failure: Option<Instant> = None;
 
     loop {
         let mut stream = match planora_helper::connect() {
             Ok(s) => s,
             Err(error) => {
+                let failure_since = *first_connection_failure.get_or_insert_with(Instant::now);
                 {
                     let mut shared = state.lock().unwrap();
-                    let had_frame = shared.frame.is_some();
-                    if had_frame {
-                        shared.state = Some(AppState::Reconnecting);
-                    } else if error.kind() == io::ErrorKind::PermissionDenied {
-                        shared.state = Some(AppState::AwaitingAuthorization);
-                    } else {
-                        shared.state = Some(AppState::Connecting);
-                    }
+                    shared.state = Some(connection_failure_state(
+                        shared.frame.is_some(),
+                        error.kind(),
+                        failure_since.elapsed(),
+                    ));
                 }
                 context.request_repaint();
                 thread::sleep(reconnect_backoff);
@@ -371,6 +388,7 @@ pub fn background_worker(
                 continue;
             }
         };
+        first_connection_failure = None;
 
         // Handshake with HANDSHAKE_TIMEOUT
         next_request_id = next_request_id.wrapping_add(1);
@@ -730,6 +748,28 @@ pub fn background_worker(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fresh_install_without_running_helper_prompts_for_authorization() {
+        use super::{AppState, connection_failure_state};
+        use std::{io, time::Duration};
+
+        assert_eq!(
+            connection_failure_state(false, io::ErrorKind::NotFound, Duration::from_millis(200)),
+            AppState::Connecting
+        );
+        assert_eq!(
+            connection_failure_state(false, io::ErrorKind::NotFound, Duration::from_secs(2)),
+            AppState::AwaitingAuthorization
+        );
+        assert_eq!(
+            connection_failure_state(false, io::ErrorKind::PermissionDenied, Duration::ZERO),
+            AppState::AwaitingAuthorization
+        );
+        assert_eq!(
+            connection_failure_state(true, io::ErrorKind::NotFound, Duration::from_secs(2)),
+            AppState::Reconnecting
+        );
+    }
     use super::*;
     use planora_core::{AvailabilityReason, Metric, PROTOCOL_VERSION, TelemetryFrame};
 

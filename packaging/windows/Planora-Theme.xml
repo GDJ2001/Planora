@@ -58,8 +58,23 @@
       <Label X="22" Y="236" Width="525" Height="25" FontId="0" DisablePrefix="yes">[PlanoraInstallLocation]</Label>
       <Button Name="ModifyUpdateButton" X="22" Y="-18" Width="215" Height="30" TabStop="yes" FontId="0" EnableCondition="WixStdBAUpdateAvailable" HideWhenDisabled="yes">#(loc.UpdateButton)</Button>
       <Button Name="RepairButton" X="-222" Y="-18" Width="96" Height="30" TabStop="yes" FontId="0" HideWhenDisabled="yes">Repair</Button>
-      <Button Name="UninstallButton" X="-121" Y="-18" Width="96" Height="30" TabStop="yes" FontId="0">Uninstall</Button>
+      <Button Name="ReviewUninstallButton" X="-121" Y="-18" Width="96" Height="30" TabStop="yes" FontId="0">
+        <Text>Uninstall…</Text><ChangePageAction Page="ConfirmUninstall" />
+      </Button>
       <Button Name="ModifyCancelButton" X="-20" Y="-18" Width="96" Height="30" TabStop="yes" FontId="0">
+        <Text>Close</Text><CloseWindowAction />
+      </Button>
+    </Page>
+
+    <Page Name="ConfirmUninstall">
+      <Label X="22" Y="112" Width="525" Height="30" FontId="2" DisablePrefix="yes">Uninstall Planora?</Label>
+      <Label X="22" Y="153" Width="525" Height="72" FontId="0" DisablePrefix="yes">This removes the desktop app, local helper service, shortcuts, and system authorization. Your personal settings and recordings remain on this PC.</Label>
+      <Label X="22" Y="253" Width="525" Height="45" FontId="4" DisablePrefix="yes">You can install Planora again later. Monitoring will require new authorization.</Label>
+      <Button Name="BackFromUninstallButton" X="-222" Y="-18" Width="96" Height="30" TabStop="yes" FontId="0">
+        <Text>Back</Text><ChangePageAction Page="Modify" Cancel="yes" />
+      </Button>
+      <Button Name="UninstallButton" X="-121" Y="-18" Width="96" Height="30" TabStop="yes" FontId="0">Uninstall</Button>
+      <Button Name="CancelUninstallButton" X="-20" Y="-18" Width="96" Height="30" TabStop="yes" FontId="0">
         <Text>Close</Text><CloseWindowAction />
       </Button>
     </Page>
@@ -67,16 +82,16 @@
     <Page Name="Success">
       <Label X="22" Y="112" Width="525" Height="30" FontId="2" DisablePrefix="yes">
         <Text>Setup complete</Text>
-        <Text Condition="WixBundleAction = 3">Planora uninstalled</Text>
-        <Text Condition="WixBundleAction = 5">Planora is installed</Text>
-        <Text Condition="WixBundleAction = 7">Planora repaired</Text>
+        <Text Condition="WixBundleAction = 4">Planora uninstalled</Text>
+        <Text Condition="WixBundleAction = 6">Planora is installed</Text>
+        <Text Condition="WixBundleAction = 8">Planora repaired</Text>
       </Label>
       <Label X="22" Y="158" Width="525" Height="65" FontId="0" DisablePrefix="yes">
         <Text>Open Planora from the Start menu. The first launch guides you through authorization for live monitoring.</Text>
-        <Text Condition="WixBundleAction = 3">The application and helper were removed. Personal settings and recordings remain available for a future install.</Text>
+        <Text Condition="WixBundleAction = 4">The application and helper were removed. Personal settings and recordings remain available for a future install.</Text>
       </Label>
       <Label X="22" Y="253" Width="525" Height="45" FontId="4" DisablePrefix="yes" VisibleCondition="WixStdBARestartRequired">Windows requires a restart to finish this change.</Label>
-      <Button Name="LaunchButton" X="-121" Y="-18" Width="96" Height="30" TabStop="yes" FontId="0" VisibleCondition="WixBundleAction = 5 AND NOT WixBundleElevated AND NOT WixStdBARestartRequired" HideWhenDisabled="yes">Launch</Button>
+      <Button Name="LaunchButton" X="-121" Y="-18" Width="96" Height="30" TabStop="yes" FontId="0" VisibleCondition="WixBundleAction = 6 AND NOT WixBundleElevated AND NOT WixStdBARestartRequired" HideWhenDisabled="yes">Launch</Button>
       <Button Name="SuccessRestartButton" X="-121" Y="-18" Width="96" Height="30" TabStop="yes" FontId="0" HideWhenDisabled="yes">Restart</Button>
       <Button Name="SuccessCloseButton" X="-20" Y="-18" Width="96" Height="30" TabStop="yes" FontId="0">
         <Text>Close</Text><CloseWindowAction />
@@ -86,8 +101,8 @@
     <Page Name="Failure">
       <Label X="22" Y="112" Width="525" Height="30" FontId="2" DisablePrefix="yes">
         <Text>Setup could not finish</Text>
-        <Text Condition="WixBundleAction = 3">Uninstall could not finish</Text>
-        <Text Condition="WixBundleAction = 7">Repair could not finish</Text>
+        <Text Condition="WixBundleAction = 4">Uninstall could not finish</Text>
+        <Text Condition="WixBundleAction = 8">Repair could not finish</Text>
       </Label>
       <Label X="22" Y="151" Width="525" Height="38" FontId="0" DisablePrefix="yes">Review the error below. The setup log can help identify the failed step.</Label>
       <Hypertext Name="FailureLogFileLink" X="22" Y="201" Width="525" Height="40" FontId="0" TabStop="yes" HideWhenDisabled="yes">#(loc.FailureHyperlinkLogText)</Hypertext>

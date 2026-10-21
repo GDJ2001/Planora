@@ -26,7 +26,15 @@
         <Component Id="PlanoraHelper" Guid="*" Bitness="always64">
           <File Id="PlanoraHelperExe" Source="$(var.SourceDir)\planora-helper.exe" KeyPath="yes" />
           <ServiceInstall Id="InstallHelper" Name="PlanoraHelper" DisplayName="Planora Helper" Description="Local hardware telemetry for Planora" Type="ownProcess" Start="demand" ErrorControl="normal" Account="LocalSystem" Arguments="--service" />
-          <ServiceControl Id="ControlHelper" Name="PlanoraHelper" Start="install" Stop="both" Remove="uninstall" Wait="yes" />
+          <!-- An unapproved fresh install must not try to start the helper: it
+               refuses to run until an administrator authorizes a local SID. -->
+          <ServiceControl Id="ControlHelper" Name="PlanoraHelper" Stop="both" Remove="uninstall" Wait="yes" />
+        </Component>
+        <Component Id="StartAuthorizedHelper" Guid="*" Bitness="always64" Condition="PLANORA_PREVIOUS_SID" Transitive="yes">
+          <!-- Start only on upgrades/repairs that found existing authorization.
+               A first launch can authorize and start the demand-start service. -->
+          <RegistryValue Root="HKLM" Key="SOFTWARE\Planora" Name="StartAuthorizedHelper" Type="integer" Value="1" KeyPath="yes" />
+          <ServiceControl Id="StartHelperWhenAuthorized" Name="PlanoraHelper" Start="install" Wait="yes" />
         </Component>
         <Component Id="AuthorizationScript" Guid="*" Bitness="always64">
           <File Id="AuthorizationFile" Source="$(var.ProjectDir)\packaging\windows\Authorize-Planora.ps1" KeyPath="yes" />
@@ -58,6 +66,7 @@
       <ComponentRef Id="PlanoraApp" />
       <ComponentRef Id="PlanoraShortcut" />
       <ComponentRef Id="PlanoraHelper" />
+      <ComponentRef Id="StartAuthorizedHelper" />
       <ComponentRef Id="AuthorizationScript" />
       <ComponentRef Id="RevocationScript" />
       <ComponentRef Id="UninstallScript" />

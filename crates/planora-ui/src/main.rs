@@ -791,8 +791,8 @@ impl App {
                             .show(ui, |ui| {
                                 ui.colored_label(p.warning, egui::RichText::new("SETUP REQUIRED").strong().size(11.0));
                                 ui.add_space(6.0);
-                                ui.heading("Authorize the local helper");
-                                ui.label("Planora needs the installed helper to read system and process measurements. The main window stays at normal user privileges.");
+                                ui.heading("Connect the local helper");
+                                ui.label("Planora cannot reach its installed helper. Authorize or restart it for this Windows account to read system and process measurements. The main window stays at normal user privileges.");
                                 ui.add_space(18.0);
                                 egui::Grid::new("authorization_steps")
                                     .num_columns(2)
