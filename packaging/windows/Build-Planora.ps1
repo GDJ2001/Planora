@@ -71,7 +71,7 @@ try {
     $setup = Join-Path $root "dist\Planora-$version-x64-Setup.exe"
     wix build 'packaging/windows/Planora-Bundle.wxs' -arch x64 `
         -ext WixToolset.BootstrapperApplications.wixext `
-        -d "BundleVersion=$productVersion" -d "ProjectDir=$root" -d "MsiPath=$msi" -o $setup
+        -d "BundleVersion=$productVersion" -d "AppVersion=$version" -d "ProjectDir=$root" -d "MsiPath=$msi" -o $setup
     if ($LASTEXITCODE -ne 0) { throw 'WiX Burn setup build failed' }
 
     $manifest = [pscustomobject]@{

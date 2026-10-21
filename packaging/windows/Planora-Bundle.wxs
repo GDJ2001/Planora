@@ -7,12 +7,22 @@
           IconSourceFile="$(var.ProjectDir)\assets\brand\platforms\windows\planora.ico">
     <BootstrapperApplication>
       <bal:WixStandardBootstrapperApplication
-          Theme="hyperlinkLicense"
-          LicenseUrl="https://github.com/GDJ2001/Planora/blob/main/LICENSE-MIT"
+          Theme="hyperlinkLargeLicense"
+          ThemeFile="$(var.ProjectDir)\packaging\windows\Planora-Theme.xml"
+          SuppressOptionsUI="yes"
+          LicenseUrl="https://github.com/GDJ2001/Planora#license"
+          LaunchTarget="[ProgramFiles64Folder]Planora\planora.exe"
+          LaunchWorkingFolder="[ProgramFiles64Folder]Planora"
           LogoFile="$(var.ProjectDir)\assets\brand\platforms\windows\planora-64.png" />
+      <Payload Name="planora.ico" SourceFile="$(var.ProjectDir)\assets\brand\platforms\windows\planora.ico" />
     </BootstrapperApplication>
+    <Variable Name="PlanoraInstallLocation" Type="formatted" Value="[ProgramFiles64Folder]Planora" />
+    <Variable Name="PlanoraDisplayVersion" Type="string" Value="$(var.AppVersion)" />
     <Chain>
-      <MsiPackage SourceFile="$(var.MsiPath)" Visible="no" Vital="yes" />
+      <MsiPackage SourceFile="$(var.MsiPath)" Visible="no" Vital="yes">
+        <!-- The bundle is the sole Installed Apps entry; direct MSI deployments remain manageable. -->
+        <MsiProperty Name="ARPSYSTEMCOMPONENT" Value="1" />
+      </MsiPackage>
     </Chain>
   </Bundle>
 </Wix>
