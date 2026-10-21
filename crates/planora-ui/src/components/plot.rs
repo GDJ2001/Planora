@@ -153,6 +153,10 @@ pub fn time_plot(
         state.pinned = !state.pinned;
         if !state.pinned {
             state.cursor = None;
+        } else if state.cursor.is_none() {
+            state.cursor = response
+                .interact_pointer_pos()
+                .map(|pos| ((pos.x - canvas.left()) / canvas.width()).clamp(0.0, 1.0));
         }
     }
     if response.hovered() && !state.pinned {
@@ -179,10 +183,18 @@ pub fn time_plot(
                 state.cursor = observed.last().copied();
                 state.pinned = true;
             } else if input.key_pressed(egui::Key::ArrowLeft) {
-                state.cursor = observed.iter().rev().find(|&&x| x < state.cursor.unwrap_or(1.01) - f32::EPSILON).copied();
+                if let Some(target) = observed.iter().rev().find(|&&x| x < state.cursor.unwrap_or(1.01) - f32::EPSILON).copied() {
+                    state.cursor = Some(target);
+                } else if state.cursor.is_none() {
+                    state.cursor = observed.last().copied();
+                }
                 state.pinned = true;
             } else if input.key_pressed(egui::Key::ArrowRight) {
-                state.cursor = observed.iter().find(|&&x| x > state.cursor.unwrap_or(-0.01) + f32::EPSILON).copied();
+                if let Some(target) = observed.iter().find(|&&x| x > state.cursor.unwrap_or(-0.01) + f32::EPSILON).copied() {
+                    state.cursor = Some(target);
+                } else if state.cursor.is_none() {
+                    state.cursor = observed.first().copied();
+                }
                 state.pinned = true;
             }
         });

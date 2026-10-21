@@ -88,17 +88,18 @@ fn resource_cards(ui: &mut egui::Ui, frame: &TelemetryFrame, histories: &Resourc
     let memory_pct = frame.memory_used_bytes.value.zip(frame.memory_total_bytes.value)
         .filter(|(_, total)| *total > 0)
         .map(|(used, total)| used as f64 * 100.0 / total as f64);
+    let empty_series = TimeSeries::default();
     let mut cards: Vec<CardItem> = vec![
         ("CPU", frame.cpu_percent.value.map(|v| format!("{v:.1}%")).unwrap_or_else(|| "Unavailable".into()), &histories.cpu, p.cpu, None),
         ("Memory", memory_pct.map(|v| format!("{v:.1}%")).unwrap_or_else(|| "Unavailable".into()), &histories.memory_pct, p.memory, Some((frame.memory_used_bytes.value, frame.memory_total_bytes.value))),
     ];
     if let Some(adapter) = frame.gpu_adapters.first() {
         let gpu_series_key = format!("gpu:{}:{:?}:busiest", adapter.adapter_luid, adapter.physical_adapter);
-        let empty = histories.detail(&gpu_series_key).unwrap_or(&histories.cpu);
+        let series = histories.detail(&gpu_series_key).unwrap_or(&empty_series);
         cards.push((
             "GPU · busiest",
             adapter.busiest_engine_percent.value.map(|v| format!("{v:.1}%")).unwrap_or_else(|| "Unavailable".into()),
-            empty,
+            series,
             p.gpu,
             Some((adapter.dedicated_used_bytes.value, adapter.dedicated_total_bytes.value)),
         ));
