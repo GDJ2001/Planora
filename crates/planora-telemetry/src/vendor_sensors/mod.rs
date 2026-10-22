@@ -130,7 +130,9 @@ impl VendorSensorSupervisor {
             consecutive_failures: 0,
             next_restart_at: None,
             build_id: build_id.into(),
-            broker: Some(broker::SensorBrokerSupervisor::new()),
+            // The advanced broker is owned by the authorized helper. This
+            // unelevated worker only loads vendor user-mode sensor libraries.
+            broker: None,
         };
         sup.ensure_worker_started();
         sup

@@ -4,18 +4,58 @@ use planora_core::{
 };
 use serde::Deserialize;
 use std::{
-    io::{BufRead, BufReader, Write},
+    io::{self, BufRead, BufReader, Write},
     path::PathBuf,
     process::{Child, ChildStdin, Command, Stdio},
     sync::mpsc,
     time::{Duration, Instant},
 };
 
+const MAX_BROKER_LINE: usize = 1024 * 1024;
+const MAX_BROKER_SENSORS: usize = 4096;
+
+fn matches_build(version: &str, commit: &str, expected_commit: Option<&str>) -> bool {
+    version == env!("CARGO_PKG_VERSION")
+        && expected_commit.is_none_or(|expected| commit == expected)
+}
+
+fn read_bounded_line(reader: &mut impl BufRead) -> io::Result<Option<String>> {
+    let mut bytes = Vec::new();
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            if bytes.is_empty() {
+                return Ok(None);
+            }
+            break;
+        }
+        let length = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(available.len(), |index| index + 1);
+        if bytes.len().saturating_add(length) > MAX_BROKER_LINE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "sensor broker response exceeds 1 MiB",
+            ));
+        }
+        bytes.extend_from_slice(&available[..length]);
+        reader.consume(length);
+        if bytes.last() == Some(&b'\n') {
+            break;
+        }
+    }
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
 #[derive(Deserialize)]
 struct BrokerReadingRaw {
     id: String,
     device_id: String,
     device_name: String,
+    hardware_type: String,
     name: String,
     #[serde(rename = "type")]
     sensor_type: String,
@@ -29,6 +69,8 @@ struct BrokerReadingRaw {
 #[derive(Deserialize)]
 struct BrokerSampleResponse {
     status: String,
+    version: String,
+    build_commit: String,
     #[serde(default)]
     sensors: Vec<BrokerReadingRaw>,
 }
@@ -36,8 +78,8 @@ struct BrokerSampleResponse {
 #[derive(Deserialize)]
 struct BrokerPingResponse {
     status: String,
-    #[allow(dead_code)]
     version: Option<String>,
+    build_commit: Option<String>,
     #[allow(dead_code)]
     lhm_version: Option<String>,
 }
@@ -53,6 +95,7 @@ pub struct SensorBrokerSupervisor {
     consecutive_failures: u32,
     next_restart_at: Option<Instant>,
     broker_exe: Option<PathBuf>,
+    expected_commit: Option<String>,
 }
 
 impl Default for SensorBrokerSupervisor {
@@ -63,6 +106,10 @@ impl Default for SensorBrokerSupervisor {
 
 impl SensorBrokerSupervisor {
     pub fn new() -> Self {
+        Self::new_with_expected_commit(None)
+    }
+
+    pub fn new_with_expected_commit(expected_commit: Option<&str>) -> Self {
         let broker_exe = Self::locate_broker_binary();
         let mut supervisor = Self {
             child: None,
@@ -75,32 +122,18 @@ impl SensorBrokerSupervisor {
             consecutive_failures: 0,
             next_restart_at: None,
             broker_exe,
+            expected_commit: expected_commit.map(str::to_owned),
         };
         supervisor.ensure_started();
         supervisor
     }
 
     pub fn locate_broker_binary() -> Option<PathBuf> {
-        if let Ok(current_exe) = std::env::current_exe()
-            && let Some(parent) = current_exe.parent()
-        {
-            let candidate = parent.join("planora-sensor-broker.exe");
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
+        // The helper may run as LocalSystem. Never execute a broker next to a
+        // development binary or from a caller-controlled working directory.
         let installed = PathBuf::from(r"C:\Program Files\Planora\planora-sensor-broker.exe");
         if installed.is_file() {
             return Some(installed);
-        }
-        if let Ok(cwd) = std::env::current_dir() {
-            let release_target = cwd
-                .join("target")
-                .join("release")
-                .join("planora-sensor-broker.exe");
-            if release_target.is_file() {
-                return Some(release_target);
-            }
         }
         None
     }
@@ -199,11 +232,9 @@ impl SensorBrokerSupervisor {
                 .name("sensor-broker-reader".into())
                 .spawn(move || {
                     let mut reader = BufReader::new(stdout);
-                    let mut line = String::new();
-                    while reader.read_line(&mut line).is_ok() && !line.is_empty() {
-                        let trimmed = line.trim().to_string();
-                        line.clear();
-                        if !trimmed.is_empty() && tx.try_send(trimmed).is_err() {
+                    while let Ok(Some(line)) = read_bounded_line(&mut reader) {
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty() && tx.try_send(trimmed.to_owned()).is_err() {
                             break;
                         }
                     }
@@ -245,36 +276,52 @@ impl SensorBrokerSupervisor {
             Ok(line) => {
                 if let Ok(resp) = serde_json::from_str::<BrokerSampleResponse>(&line)
                     && resp.status == "ok"
+                    && matches_build(
+                        &resp.version,
+                        &resp.build_commit,
+                        self.expected_commit.as_deref(),
+                    )
                 {
                     let mut converted = Vec::with_capacity(resp.sensors.len());
+                    if resp.sensors.len() > MAX_BROKER_SENSORS {
+                        self.handle_failure();
+                        return self.last_readings.clone();
+                    }
                     for r in resp.sensors {
+                        if r.id.len() > 256
+                            || r.device_id.len() > 256
+                            || r.device_name.len() > 256
+                            || r.name.len() > 256
+                            || r.hardware_type.len() > 32
+                            || r.scope.len() > 64
+                            || r.provider.len() > 64
+                            || r.unit.len() > 32
+                            || r.sampled_at_ms == 0
+                            || r.value.is_some_and(|value| !value.is_finite())
+                        {
+                            continue;
+                        }
+                        let is_cpu = r.hardware_type == "Cpu";
+                        let is_gpu = r.hardware_type.starts_with("Gpu");
+                        let is_storage = r.hardware_type == "Storage";
                         let st = match r.sensor_type.as_str() {
-                            "Power" => {
-                                if r.scope.eq_ignore_ascii_case("Package")
-                                    || r.name.to_lowercase().contains("package")
-                                {
-                                    SensorType::CpuPackagePowerWatts
-                                } else if r.scope.eq_ignore_ascii_case("Board") {
-                                    SensorType::GpuBoardPowerWatts
-                                } else {
-                                    SensorType::GpuChipPowerWatts
-                                }
+                            "Power" if is_cpu && r.scope == "Package" => {
+                                SensorType::CpuPackagePowerWatts
                             }
+                            "Power" if is_gpu && r.scope == "Board" => {
+                                SensorType::GpuBoardPowerWatts
+                            }
+                            "Power" if is_gpu => SensorType::GpuChipPowerWatts,
+                            "Power" => continue,
                             "Temperature" => {
-                                let dev_lower = r.device_id.to_lowercase();
-                                if r.scope.eq_ignore_ascii_case("Drive")
-                                    || dev_lower.contains("nvme")
-                                    || dev_lower.contains("storage")
-                                    || dev_lower.contains("hdd")
-                                    || dev_lower.contains("ssd")
-                                {
+                                if is_storage {
                                     SensorType::StorageTemperatureCelsius
-                                } else if r.scope.eq_ignore_ascii_case("GPU")
-                                    || dev_lower.contains("gpu")
-                                {
+                                } else if is_gpu {
                                     SensorType::GpuTemperatureCelsius
-                                } else {
+                                } else if is_cpu {
                                     SensorType::CpuTemperatureCelsius
+                                } else {
+                                    SensorType::ThermalZoneCelsius
                                 }
                             }
                             "Fan" => SensorType::FanRpm,
@@ -362,14 +409,35 @@ impl SensorBrokerSupervisor {
             && let Ok(line) = rx.recv_timeout(Duration::from_millis(2000))
             && let Ok(resp) = serde_json::from_str::<BrokerPingResponse>(&line)
             && resp.status == "ok"
+            && resp
+                .version
+                .as_deref()
+                .zip(resp.build_commit.as_deref())
+                .is_some_and(|(version, commit)| {
+                    matches_build(version, commit, self.expected_commit.as_deref())
+                })
         {
+            let has_reading = self
+                .last_readings
+                .iter()
+                .any(|reading| reading.value.value.is_some());
             Capability {
                 name: "Advanced sensors (LibreHardwareMonitor & PawnIO)".into(),
                 scope: "Platform and storage sensors".into(),
                 provider: "LibreHardwareMonitor".into(),
-                state: CapabilityState::Available,
+                state: if has_reading {
+                    CapabilityState::Available
+                } else if self.last_poll.is_some() {
+                    CapabilityState::Unsupported
+                } else {
+                    CapabilityState::WarmingUp
+                },
                 last_probed_at_ms: now,
-                reason: None,
+                reason: (!has_reading).then_some(if self.last_poll.is_some() {
+                    "Broker responded, but supplied no available sensor readings".into()
+                } else {
+                    "Waiting for the first sensor sample".into()
+                }),
                 recovery_action: None,
             }
         } else {
@@ -436,5 +504,43 @@ impl Drop for SensorBrokerSupervisor {
             }
             self.job_handle = 0;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn broker_frames_are_bounded_and_preserve_lines() {
+        let mut reader = BufReader::new(b"{\"status\":\"ok\"}\nsecond\n".as_slice());
+        assert_eq!(
+            read_bounded_line(&mut reader).unwrap().unwrap(),
+            "{\"status\":\"ok\"}\n"
+        );
+        assert_eq!(read_bounded_line(&mut reader).unwrap().unwrap(), "second\n");
+        assert!(read_bounded_line(&mut reader).unwrap().is_none());
+
+        let oversized = vec![b'a'; MAX_BROKER_LINE + 1];
+        let mut reader = BufReader::new(oversized.as_slice());
+        assert_eq!(
+            read_bounded_line(&mut reader).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn helper_rejects_stale_or_mismatched_broker_builds() {
+        assert!(matches_build(
+            env!("CARGO_PKG_VERSION"),
+            "abc123",
+            Some("abc123")
+        ));
+        assert!(!matches_build(
+            env!("CARGO_PKG_VERSION"),
+            "old",
+            Some("abc123")
+        ));
+        assert!(!matches_build("0.0.0", "abc123", Some("abc123")));
     }
 }

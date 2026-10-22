@@ -287,18 +287,37 @@ fn elevated() -> bool {
     unsafe { windows_sys::Win32::UI::Shell::IsUserAnAdmin() != 0 }
 }
 
-fn capabilities() -> Vec<Capability> {
+fn capabilities(frame: &TelemetryFrame) -> Vec<Capability> {
     #[cfg(target_os = "linux")]
     let (gpu, power) = (
         planora_telemetry::linux_amd_gpu_busy_available(),
         planora_telemetry::linux_rapl_available(),
     );
     #[cfg(windows)]
-    let (gpu, power) = (planora_telemetry::windows_gpu_counter_available(), false);
+    let (gpu, power) = (
+        planora_telemetry::windows_gpu_counter_available(),
+        frame.sensors.iter().any(|sensor| {
+            sensor.sensor_type == planora_core::SensorType::CpuPackagePowerWatts
+                && sensor.value.value.is_some()
+        }),
+    );
     #[cfg(not(any(target_os = "linux", windows)))]
     let (gpu, power) = (false, false);
+    #[cfg(windows)]
+    let advanced_present =
+        std::path::Path::new(r"C:\Program Files\Planora\planora-sensor-broker.exe").is_file();
+    #[cfg(not(windows))]
+    let advanced_present = false;
 
     let now = planora_telemetry::unix_ms();
+    let pmu_sources_discovered = profiler::enumerate_pmu_sources().len();
+    let pmu_reason = if cfg!(windows) {
+        format!(
+            "Windows exposes {pmu_sources_discovered} profiling sources, but the sampled-event collector is not implemented"
+        )
+    } else {
+        "PMU sampled profiling requires Windows ETW profiling".to_owned()
+    };
     let make = |name: &str,
                 scope: &str,
                 provider: &str,
@@ -313,7 +332,7 @@ fn capabilities() -> Vec<Capability> {
         reason: reason.map(str::to_owned),
         recovery_action: recovery.map(str::to_owned),
     };
-    vec![
+    let result = vec![
         make(
             "CPU and process telemetry",
             "System and processes",
@@ -343,7 +362,11 @@ fn capabilities() -> Vec<Capability> {
             } else {
                 CapabilityState::Unsupported
             },
-            (!power).then_some("No supported CPU package energy counter was found"),
+            (!power).then_some(if cfg!(windows) && !advanced_present {
+                "Advanced sensors is not installed"
+            } else {
+                "No supported CPU package energy counter was found"
+            }),
             None,
         ),
         make(
@@ -363,11 +386,11 @@ fn capabilities() -> Vec<Capability> {
             "Selected process",
             "Windows ETW profiling",
             if cfg!(windows) {
-                CapabilityState::Available
+                CapabilityState::NotImplemented
             } else {
                 CapabilityState::Unsupported
             },
-            (!cfg!(windows)).then_some("PMU sampled profiling requires Windows ETW profiling"),
+            Some(&pmu_reason),
             None,
         ),
         make(
@@ -395,7 +418,75 @@ fn capabilities() -> Vec<Capability> {
                 .then_some("Process-wide affinity editing is not supported on this platform"),
             None,
         ),
-    ]
+    ];
+    #[cfg(windows)]
+    {
+        let mut result = result;
+        result.push(make(
+            "Advanced sensors",
+            "CPU and storage",
+            "LibreHardwareMonitor / PawnIO",
+            if !advanced_present {
+                CapabilityState::MissingRuntime
+            } else if frame.sensors.is_empty() {
+                CapabilityState::WarmingUp
+            } else if frame
+                .sensors
+                .iter()
+                .any(|sensor| sensor.value.value.is_some())
+            {
+                CapabilityState::Available
+            } else {
+                CapabilityState::Unsupported
+            },
+            if !advanced_present {
+                Some("Advanced sensors was not selected in Setup")
+            } else if frame.sensors.is_empty() {
+                Some("Waiting for the first broker sample")
+            } else if frame
+                .sensors
+                .iter()
+                .all(|sensor| sensor.value.value.is_none())
+            {
+                Some("The broker found sensors, but none returned a supported reading")
+            } else {
+                None
+            },
+            (!advanced_present).then_some("Run Setup and select Advanced sensors"),
+        ));
+        for sensor in frame.sensors.iter().take(128) {
+            let stale = now.saturating_sub(sensor.value.sampled_at_ms) > 5000;
+            result.push(Capability {
+                name: format!("{} — {}", sensor.device_name, sensor.name),
+                scope: sensor.scope.clone(),
+                provider: sensor.provider.clone(),
+                state: if stale {
+                    CapabilityState::TemporarilyFailed
+                } else if sensor.value.value.is_some() {
+                    CapabilityState::Available
+                } else {
+                    CapabilityState::Unsupported
+                },
+                last_probed_at_ms: sensor.value.sampled_at_ms,
+                reason: if stale {
+                    Some("Last sensor reading is stale".into())
+                } else {
+                    sensor
+                        .value
+                        .unavailable_reason
+                        .as_ref()
+                        .map(ToString::to_string)
+                },
+                recovery_action: (sensor.value.value.is_none())
+                    .then_some("Check signed PawnIO installation and hardware support".into()),
+            });
+        }
+        result
+    }
+    #[cfg(not(windows))]
+    {
+        result
+    }
 }
 
 #[cfg(windows)]
@@ -600,7 +691,8 @@ fn dispatch(command: Command, req_id: u64, connection_id: u64, state: &State) ->
             Response::Snapshot(Box::new(frame))
         }
         Command::Capabilities | Command::RefreshCapabilities => {
-            Response::Capabilities(capabilities())
+            let frame = state.latest_frame.read().unwrap();
+            Response::Capabilities(capabilities(&frame))
         }
         Command::RunCacheProbe { job_id, page_mode } => {
             let prof_state = state.profiling.state.lock().unwrap();
@@ -800,6 +892,30 @@ fn dispatch(command: Command, req_id: u64, connection_id: u64, state: &State) ->
         Command::CancelBenchmark { job_id } => state.benchmarks.cancel(job_id),
         Command::BenchmarkStatus => Response::BenchmarkStatus(state.benchmarks.status()),
         Command::StartProfile { job_id, target } => {
+            if matches!(&target, ProfileTarget::PmuSampling { .. }) {
+                return Response::Error {
+                    code: ErrorCode::Unsupported,
+                    message: "PMU sampled profiling is not implemented; source discovery alone cannot produce samples".into(),
+                };
+            }
+            if let ProfileTarget::DiskIo {
+                target_process: Some(process),
+                ..
+            } = &target
+            {
+                #[cfg(windows)]
+                match windows_handle(process, false) {
+                    Ok(handle) => unsafe {
+                        windows_sys::Win32::Foundation::CloseHandle(handle);
+                    },
+                    Err(reason) => {
+                        return Response::Error {
+                            code: ErrorCode::InvalidInput,
+                            message: format!("profile target identity is invalid: {reason}"),
+                        };
+                    }
+                }
+            }
             let bm_state = state.benchmarks.state.lock().unwrap();
             if matches!(
                 *bm_state,
@@ -1043,10 +1159,33 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
         format!("helper session {session_id} initialized"),
     );
 
+    #[cfg(windows)]
+    let sensor_data = Arc::new(RwLock::new(Vec::<planora_core::SensorReading>::new()));
+    #[cfg(windows)]
+    let sensor_worker = {
+        let sensor_sink = sensor_data.clone();
+        thread::Builder::new()
+            .name("planora-advanced-sensors".into())
+            .spawn(move || {
+                let mut broker = planora_telemetry::vendor_sensors::broker::SensorBrokerSupervisor::new_with_expected_commit(Some(env!("PLANORA_GIT_COMMIT")));
+                while !STOP.load(Ordering::Relaxed) {
+                    *sensor_sink.write().unwrap() = broker.poll_sensors();
+                    for _ in 0..20 {
+                        if STOP.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        thread::sleep(Duration::from_millis(50));
+                    }
+                }
+            })?
+    };
+
     // Spawn dedicated sampling worker
     let frame_sink = latest_frame.clone();
     let diag_sink = diagnostics.clone();
     let sampling_for_worker = sampling.clone();
+    #[cfg(windows)]
+    let sensor_source = sensor_data.clone();
     let sampling_worker = thread::spawn(move || {
         let mut sampler = initial_sampler;
         let mut current_interval = Duration::from_secs(1);
@@ -1062,7 +1201,11 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
                 thread::sleep((next_due - now).min(Duration::from_millis(25)));
                 continue;
             }
-            let frame = sampler.sample();
+            let mut frame = sampler.sample();
+            #[cfg(windows)]
+            {
+                frame.sensors = sensor_source.read().unwrap().clone();
+            }
             if let Err(err) = frame.validate() {
                 diag_sink.log(
                     0,
@@ -1090,7 +1233,9 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
 
     let listener = listener()?;
     on_ready();
-    eprintln!("Planora helper protocol v4 ready (session {session_id}, local IPC only)");
+    eprintln!(
+        "Planora helper protocol v{PROTOCOL_VERSION} ready (session {session_id}, local IPC only)"
+    );
 
     for incoming in listener.incoming() {
         if STOP.load(Ordering::Relaxed) {
@@ -1239,6 +1384,22 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
             ErrorCode::Busy,
             "sampler still exiting at service shutdown",
         );
+    }
+    #[cfg(windows)]
+    {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !sensor_worker.is_finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        if sensor_worker.is_finished() {
+            let _ = sensor_worker.join();
+        } else {
+            diagnostics.log(
+                0,
+                ErrorCode::Busy,
+                "advanced sensor worker still exiting at service shutdown",
+            );
+        }
     }
     Ok(())
 }

@@ -1,7 +1,6 @@
 //! ETW Disk I/O and PMU profiling collector for Windows.
 use planora_core::{
-    DiskIoProfileRecord, ErrorCode, IdentitySource, PmuProfileRecord, ProcessIdentity,
-    ProfileResult, ProfileTarget,
+    DiskIoProfileRecord, ErrorCode, IdentitySource, ProcessIdentity, ProfileResult, ProfileTarget,
 };
 use std::{
     collections::HashMap,
@@ -35,7 +34,7 @@ pub fn enumerate_pmu_sources() -> Vec<PmuSourceInfo> {
     let mut ret_len = 0u32;
     // InformationClass 7 = TraceProfileSourceListInfo
     let _ = unsafe { TraceQueryInformation(0, 7, std::ptr::null_mut(), 0, &mut ret_len) };
-    if ret_len == 0 {
+    if ret_len == 0 || ret_len > 1024 * 1024 {
         return Vec::new();
     }
 
@@ -49,15 +48,26 @@ pub fn enumerate_pmu_sources() -> Vec<PmuSourceInfo> {
 
     let mut sources = Vec::new();
     let mut offset = 0usize;
-    while offset + 24 < buffer.len() {
+    while offset + 24 <= buffer.len() {
         let ptr = buffer.as_ptr().wrapping_add(offset);
         let next_offset = unsafe { std::ptr::read_unaligned(ptr as *const u32) } as usize;
         let source_id = unsafe { std::ptr::read_unaligned(ptr.add(4) as *const u32) };
         let min_interval = unsafe { std::ptr::read_unaligned(ptr.add(8) as *const u32) };
         let max_interval = unsafe { std::ptr::read_unaligned(ptr.add(12) as *const u32) };
 
+        let entry_end = if next_offset == 0 {
+            buffer.len()
+        } else if next_offset < 24
+            || offset
+                .checked_add(next_offset)
+                .is_none_or(|next| next > buffer.len())
+        {
+            break;
+        } else {
+            offset + next_offset
+        };
         let desc_ptr = ptr.wrapping_add(24) as *const u16;
-        let max_chars = (buffer.len() - (offset + 24)) / 2;
+        let max_chars = (entry_end - (offset + 24)) / 2;
         let mut len = 0;
         while len < max_chars && unsafe { *desc_ptr.add(len) } != 0 {
             len += 1;
@@ -88,8 +98,8 @@ pub fn enumerate_pmu_sources() -> Vec<PmuSourceInfo> {
 
 #[derive(Default)]
 struct ProcessAttributionMap {
-    threads: HashMap<u32, (u32, String, u64)>, // tid -> (pid, name, creation_filetime)
-    processes: HashMap<u32, (String, u64)>,    // pid -> (name, creation_filetime)
+    threads: HashMap<u32, (u32, String, u64, u64)>, // tid -> (pid, name, process FILETIME, thread FILETIME)
+    processes: HashMap<u32, (String, u64)>,         // pid -> (name, creation_filetime)
 }
 
 #[cfg(windows)]
@@ -163,8 +173,36 @@ fn snapshot_processes_and_threads() -> ProcessAttributionMap {
                     .get(&pid)
                     .cloned()
                     .unwrap_or_else(|| (format!("Process {pid}"), 0));
-                map.threads
-                    .insert(te.th32ThreadID, (pid, proc_name, creation_time));
+                let mut thread_created = 0u64;
+                let thread_handle = windows_sys::Win32::System::Threading::OpenThread(
+                    windows_sys::Win32::System::Threading::THREAD_QUERY_LIMITED_INFORMATION,
+                    0,
+                    te.th32ThreadID,
+                );
+                if !thread_handle.is_null() {
+                    let mut ct = std::mem::zeroed::<windows_sys::Win32::Foundation::FILETIME>();
+                    let mut et = std::mem::zeroed::<windows_sys::Win32::Foundation::FILETIME>();
+                    let mut kt = std::mem::zeroed::<windows_sys::Win32::Foundation::FILETIME>();
+                    let mut ut = std::mem::zeroed::<windows_sys::Win32::Foundation::FILETIME>();
+                    if windows_sys::Win32::System::Threading::GetThreadTimes(
+                        thread_handle,
+                        &mut ct,
+                        &mut et,
+                        &mut kt,
+                        &mut ut,
+                    ) != 0
+                    {
+                        thread_created =
+                            ((ct.dwHighDateTime as u64) << 32) | ct.dwLowDateTime as u64;
+                    }
+                    windows_sys::Win32::Foundation::CloseHandle(thread_handle);
+                }
+                if creation_time != 0 && thread_created != 0 {
+                    map.threads.insert(
+                        te.th32ThreadID,
+                        (pid, proc_name, creation_time, thread_created),
+                    );
+                }
                 if Thread32Next(snap, &mut te) == 0 {
                     break;
                 }
@@ -178,11 +216,44 @@ fn snapshot_processes_and_threads() -> ProcessAttributionMap {
 }
 
 #[cfg(windows)]
-const KERNEL_DISK_GUID: windows_sys::core::GUID = windows_sys::core::GUID {
-    data1: 0xC7BF35CB,
-    data2: 0x10E8,
-    data3: 0x4856,
-    data4: [0xAC, 0x18, 0xE0, 0xCE, 0xD7, 0xCF, 0x9E, 0x24],
+fn active_thread_matches(tid: u32, pid: u32, created: u64) -> bool {
+    use windows_sys::Win32::System::Threading::{
+        GetProcessIdOfThread, GetThreadTimes, OpenThread, THREAD_QUERY_LIMITED_INFORMATION,
+    };
+    if tid == 0 || pid == 0 || created == 0 {
+        return false;
+    }
+    unsafe {
+        let handle = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, 0, tid);
+        if handle.is_null() {
+            return false;
+        }
+        let mut ct = std::mem::zeroed::<windows_sys::Win32::Foundation::FILETIME>();
+        let mut et = std::mem::zeroed::<windows_sys::Win32::Foundation::FILETIME>();
+        let mut kt = std::mem::zeroed::<windows_sys::Win32::Foundation::FILETIME>();
+        let mut ut = std::mem::zeroed::<windows_sys::Win32::Foundation::FILETIME>();
+        let matches = GetProcessIdOfThread(handle) == pid
+            && GetThreadTimes(handle, &mut ct, &mut et, &mut kt, &mut ut) != 0
+            && (((ct.dwHighDateTime as u64) << 32) | ct.dwLowDateTime as u64) == created;
+        windows_sys::Win32::Foundation::CloseHandle(handle);
+        matches
+    }
+}
+
+#[cfg(windows)]
+const PLANORA_DISK_SESSION_GUID: windows_sys::core::GUID = windows_sys::core::GUID {
+    data1: 0xA9BA49A6,
+    data2: 0x957F,
+    data3: 0x42A5,
+    data4: [0xA9, 0x2B, 0x17, 0x18, 0x3F, 0x4F, 0x61, 0xB7],
+};
+
+#[cfg(windows)]
+const DISK_IO_EVENT_GUID: windows_sys::core::GUID = windows_sys::core::GUID {
+    data1: 0x3D6FA8D4,
+    data2: 0xFE05,
+    data3: 0x11D0,
+    data4: [0x9D, 0xDA, 0x00, 0xC0, 0x4F, 0xD7, 0xBA, 0x7C],
 };
 
 #[cfg(windows)]
@@ -191,6 +262,15 @@ struct EtwSessionProperties {
     props: windows_sys::Win32::System::Diagnostics::Etw::EVENT_TRACE_PROPERTIES,
     logger_name: [u16; 128],
     log_file_name: [u16; 260],
+}
+
+#[cfg(windows)]
+fn parse_disk_io_x64_payload(payload: &[u8]) -> Option<(u64, u32)> {
+    // Windows' DiskIo_TypeGroup1 MOF layout on the supported x64 target.
+    // The four-byte transfer size is at offset 8 and issuing TID at 48.
+    let transfer = u32::from_le_bytes(payload.get(8..12)?.try_into().ok()?) as u64;
+    let issuing_tid = u32::from_le_bytes(payload.get(48..52)?.try_into().ok()?);
+    (issuing_tid != 0).then_some((transfer, issuing_tid))
 }
 
 pub fn run_profile(
@@ -219,9 +299,9 @@ fn run_disk_io_profile(
     cancel: Arc<AtomicBool>,
 ) -> Result<ProfileResult, (ErrorCode, String)> {
     use windows_sys::Win32::System::Diagnostics::Etw::{
-        ControlTraceW, EVENT_CONTROL_CODE_ENABLE_PROVIDER, EVENT_TRACE_CONTROL_STOP,
-        EVENT_TRACE_FLAG_DISK_IO, EVENT_TRACE_FLAG_DISK_IO_INIT, EVENT_TRACE_REAL_TIME_MODE,
-        EnableTraceEx2, PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME, StartTraceW,
+        ControlTraceW, EVENT_TRACE_CONTROL_STOP, EVENT_TRACE_FLAG_DISK_IO,
+        EVENT_TRACE_FLAG_DISK_IO_INIT, EVENT_TRACE_REAL_TIME_MODE, EVENT_TRACE_SYSTEM_LOGGER_MODE,
+        PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME, StartTraceW,
         WNODE_FLAG_TRACED_GUID,
     };
 
@@ -239,9 +319,14 @@ fn run_disk_io_profile(
     let mut session_props = unsafe { std::mem::zeroed::<EtwSessionProperties>() };
     session_props.props.Wnode.BufferSize = std::mem::size_of::<EtwSessionProperties>() as u32;
     session_props.props.Wnode.Flags = WNODE_FLAG_TRACED_GUID;
+    session_props.props.Wnode.Guid = PLANORA_DISK_SESSION_GUID;
     session_props.props.Wnode.ClientContext = 1; // QPC
-    session_props.props.LogFileMode = EVENT_TRACE_REAL_TIME_MODE;
-    session_props.props.MaximumFileSize = 128; // 128 MiB buffer limit
+    session_props.props.LogFileMode = EVENT_TRACE_REAL_TIME_MODE | EVENT_TRACE_SYSTEM_LOGGER_MODE;
+    // Real-time ETW uses in-memory buffers. MaximumFileSize only applies to a
+    // file-backed trace, so it cannot enforce this session's memory budget.
+    session_props.props.BufferSize = 64; // KiB
+    session_props.props.MinimumBuffers = 16;
+    session_props.props.MaximumBuffers = 512; // 32 MiB of ETW buffers
     session_props.props.FlushTimer = 1; // 1 second buffer flush
     session_props.props.EnableFlags = EVENT_TRACE_FLAG_DISK_IO | EVENT_TRACE_FLAG_DISK_IO_INIT;
     session_props.props.LoggerNameOffset = std::mem::size_of::<
@@ -259,47 +344,16 @@ fn run_disk_io_profile(
     };
 
     if start_status != 0 {
-        // If already running from previous crashed attempt, attempt clean stop and retry once
-        if start_status == 183 {
-            // ERROR_ALREADY_EXISTS
-            unsafe {
-                ControlTraceW(
-                    windows_sys::Win32::System::Diagnostics::Etw::CONTROLTRACE_HANDLE { Value: 0 },
-                    session_name_wide.as_ptr(),
-                    &mut session_props.props,
-                    EVENT_TRACE_CONTROL_STOP,
-                );
-            }
-        }
-        let retry_status = unsafe {
-            StartTraceW(
-                &mut session_handle,
-                session_name_wide.as_ptr(),
-                &mut session_props.props,
-            )
-        };
-        if retry_status != 0 {
-            return Err((
-                ErrorCode::PermissionDenied,
-                format!(
-                    "Failed to start ETW Disk I/O trace session (code 0x{retry_status:08x}). Administrator privileges are required."
-                ),
-            ));
-        }
-    }
-
-    // Enable Microsoft-Windows-Kernel-Disk provider
-    unsafe {
-        EnableTraceEx2(
-            session_handle,
-            &KERNEL_DISK_GUID,
-            EVENT_CONTROL_CODE_ENABLE_PROVIDER,
-            windows_sys::Win32::System::Diagnostics::Etw::TRACE_LEVEL_INFORMATION as u8,
-            0xFFFFFFFFFFFFFFFF,
-            0,
-            0,
-            std::ptr::null(),
-        );
+        // A name collision is not evidence that the other session is ours.
+        // Never stop a session for which StartTraceW did not return a handle.
+        return Err((
+            if start_status == 183 {
+                ErrorCode::Busy
+            } else {
+                ErrorCode::PermissionDenied
+            },
+            format!("Failed to start ETW Disk I/O trace session (code 0x{start_status:08x})."),
+        ));
     }
 
     // Take initial process & thread snapshot
@@ -307,7 +361,7 @@ fn run_disk_io_profile(
 
     // Shared state for event consumer
     struct DiskStats {
-        per_process: HashMap<u32, DiskIoProfileRecord>,
+        per_process: HashMap<(u32, u64), DiskIoProfileRecord>,
         unattributed_read: u64,
         unattributed_write: u64,
         unattributed_ops: u64,
@@ -325,6 +379,7 @@ fn run_disk_io_profile(
     let consumer_stats = stats.clone();
     let consumer_map = attr_map.clone();
     let consumer_name_wide = session_name_wide.clone();
+    let consumer_target = target_process.clone();
 
     let consumer_thread =
         std::thread::Builder::new()
@@ -337,12 +392,27 @@ fn run_disk_io_profile(
                         return;
                     }
                     let rec = unsafe { &*record };
+                    // System providers retain the classic DiskIo event GUID in
+                    // the record header. Other system events must not be parsed
+                    // using the DiskIo_TypeGroup1 payload layout.
+                    let provider = rec.EventHeader.ProviderId;
+                    if provider.data1 != DISK_IO_EVENT_GUID.data1
+                        || provider.data2 != DISK_IO_EVENT_GUID.data2
+                        || provider.data3 != DISK_IO_EVENT_GUID.data3
+                        || provider.data4 != DISK_IO_EVENT_GUID.data4
+                    {
+                        return;
+                    }
                     let user_context = rec.UserContext
-                        as *mut (Arc<Mutex<DiskStats>>, Arc<Mutex<ProcessAttributionMap>>);
+                        as *mut (
+                            Arc<Mutex<DiskStats>>,
+                            Arc<Mutex<ProcessAttributionMap>>,
+                            Option<ProcessIdentity>,
+                        );
                     if user_context.is_null() {
                         return;
                     }
-                    let (stats, attr_map) = unsafe { &*user_context };
+                    let (stats, attr_map, target_process) = unsafe { &*user_context };
 
                     let opcode = rec.EventHeader.EventDescriptor.Opcode;
                     let is_read = opcode == 10;
@@ -351,72 +421,92 @@ fn run_disk_io_profile(
                         return;
                     }
 
-                    // DiskIO_TypeGroup1:
-                    // DiskNumber (u32), IrpFlags (u32), TransferSize (u32), Reserved (u32),
-                    // ByteOffset (u64), FileObject (usize), IssuingThreadId (u32)
+                    // DiskIo_TypeGroup1 on the supported x64 target:
+                    // 4 x u32, ByteOffset (u64), FileObject (pointer), Irp
+                    // (pointer), HighResResponseTime (u64), IssuingThreadId
+                    // (u32). Do not infer an issuing thread from a shorter or
+                    // unrecognized event payload.
                     let user_data = rec.UserData;
                     let user_data_len = rec.UserDataLength as usize;
-                    if user_data.is_null() || user_data_len < 28 {
+                    if user_data.is_null() {
                         return;
                     }
-
-                    let transfer_size =
-                        unsafe { std::ptr::read_unaligned(user_data.add(8) as *const u32) } as u64;
-                    let issuing_thread = if user_data_len >= 32 {
-                        unsafe {
-                            std::ptr::read_unaligned(user_data.add(user_data_len - 4) as *const u32)
-                        }
-                    } else {
-                        rec.EventHeader.ThreadId
+                    let payload = unsafe {
+                        std::slice::from_raw_parts(user_data.cast::<u8>(), user_data_len)
+                    };
+                    let Some((transfer_size, issuing_thread)) = parse_disk_io_x64_payload(payload)
+                    else {
+                        return;
                     };
 
                     let mut matched_proc = None;
                     {
                         let map = attr_map.lock().unwrap();
-                        if let Some(&(pid, ref name, creation)) = map.threads.get(&issuing_thread) {
+                        if let Some(&(pid, ref name, creation, thread_created)) =
+                            map.threads.get(&issuing_thread)
+                            && active_thread_matches(issuing_thread, pid, thread_created)
+                        {
                             matched_proc = Some((pid, name.clone(), creation));
                         }
                     }
 
                     let mut s = stats.lock().unwrap();
-                    s.events_traced += 1;
 
                     if let Some((pid, name, creation)) = matched_proc {
-                        let entry =
-                            s.per_process
-                                .entry(pid)
-                                .or_insert_with(|| DiskIoProfileRecord {
+                        if target_process
+                            .as_ref()
+                            .is_some_and(|target| target.pid != pid || target.started != creation)
+                        {
+                            return;
+                        }
+                        s.events_traced = s.events_traced.saturating_add(1);
+                        if !s.per_process.contains_key(&(pid, creation))
+                            && s.per_process.len() >= 10_000
+                        {
+                            s.unattributed_ops = s.unattributed_ops.saturating_add(1);
+                            return;
+                        }
+                        let entry = s.per_process.entry((pid, creation)).or_insert_with(|| {
+                            DiskIoProfileRecord {
+                                pid,
+                                identity: Some(ProcessIdentity {
                                     pid,
-                                    identity: Some(ProcessIdentity {
-                                        pid,
-                                        started: creation,
-                                        sequence_number: None,
-                                        source: IdentitySource::WindowsProcessFiletime,
-                                    }),
-                                    process_name: name,
-                                    read_bytes: 0,
-                                    write_bytes: 0,
-                                    read_operations: 0,
-                                    write_operations: 0,
-                                });
+                                    started: creation,
+                                    sequence_number: None,
+                                    source: IdentitySource::WindowsProcessFiletime,
+                                }),
+                                process_name: name,
+                                read_bytes: 0,
+                                write_bytes: 0,
+                                read_operations: 0,
+                                write_operations: 0,
+                            }
+                        });
                         if is_read {
-                            entry.read_bytes += transfer_size;
-                            entry.read_operations += 1;
+                            entry.read_bytes = entry.read_bytes.saturating_add(transfer_size);
+                            entry.read_operations = entry.read_operations.saturating_add(1);
                         } else {
-                            entry.write_bytes += transfer_size;
-                            entry.write_operations += 1;
+                            entry.write_bytes = entry.write_bytes.saturating_add(transfer_size);
+                            entry.write_operations = entry.write_operations.saturating_add(1);
                         }
                     } else {
-                        if is_read {
-                            s.unattributed_read += transfer_size;
-                        } else {
-                            s.unattributed_write += transfer_size;
+                        // A selected-process trace cannot assign an unknown
+                        // event to that process, so omit it from its totals.
+                        if target_process.is_some() {
+                            return;
                         }
-                        s.unattributed_ops += 1;
+                        s.events_traced = s.events_traced.saturating_add(1);
+                        if is_read {
+                            s.unattributed_read = s.unattributed_read.saturating_add(transfer_size);
+                        } else {
+                            s.unattributed_write =
+                                s.unattributed_write.saturating_add(transfer_size);
+                        }
+                        s.unattributed_ops = s.unattributed_ops.saturating_add(1);
                     }
                 }
 
-                let mut context_tuple = (consumer_stats, consumer_map);
+                let mut context_tuple = (consumer_stats, consumer_map, consumer_target);
 
                 let mut logfile = unsafe {
                     std::mem::zeroed::<
@@ -445,11 +535,33 @@ fn run_disk_io_profile(
                     }
                 }
             });
+    let consumer_thread = match consumer_thread {
+        Ok(handle) => handle,
+        Err(error) => {
+            unsafe {
+                ControlTraceW(
+                    session_handle,
+                    session_name_wide.as_ptr(),
+                    &mut session_props.props,
+                    EVENT_TRACE_CONTROL_STOP,
+                );
+            }
+            return Err((
+                ErrorCode::Internal,
+                format!("Could not start disk ETW consumer: {error}"),
+            ));
+        }
+    };
 
     // Wait for the specified duration or until cancelled
     let start_time = Instant::now();
     let total_duration = Duration::from_secs(duration_sec as u64);
+    let mut last_refresh = Instant::now();
     while start_time.elapsed() < total_duration && !cancel.load(Ordering::SeqCst) {
+        if last_refresh.elapsed() >= Duration::from_secs(1) {
+            *attr_map.lock().unwrap() = snapshot_processes_and_threads();
+            last_refresh = Instant::now();
+        }
         std::thread::sleep(Duration::from_millis(50));
     }
     let elapsed_ms = start_time.elapsed().as_millis() as u64;
@@ -464,9 +576,7 @@ fn run_disk_io_profile(
         );
     }
 
-    if let Ok(handle) = consumer_thread {
-        let _ = handle.join();
-    }
+    let _ = consumer_thread.join();
 
     let stats_lock = stats.lock().unwrap();
     let events_lost = session_props.props.EventsLost as u64;
@@ -482,10 +592,10 @@ fn run_disk_io_profile(
         .sum();
     let total_bytes =
         total_attributed_bytes + stats_lock.unattributed_read + stats_lock.unattributed_write;
-    let coverage = if total_bytes > 0 {
+    let coverage = if total_bytes > 0 && events_traced > 0 && events_lost == 0 {
         (total_attributed_bytes as f64 / total_bytes as f64 * 100.0) as f32
     } else {
-        100.0
+        0.0
     };
 
     let target_desc = if let Some(target) = target_process {
@@ -512,110 +622,16 @@ fn run_disk_io_profile(
 #[cfg(windows)]
 fn run_pmu_sampling_profile(
     _job_id: u64,
-    target_process: Option<ProcessIdentity>,
-    duration_seconds: u32,
-    sources: Vec<String>,
-    cancel: Arc<AtomicBool>,
+    _target_process: Option<ProcessIdentity>,
+    _duration_seconds: u32,
+    _sources: Vec<String>,
+    _cancel: Arc<AtomicBool>,
 ) -> Result<ProfileResult, (ErrorCode, String)> {
-    let supported = enumerate_pmu_sources();
-    if supported.is_empty() {
-        return Err((
-            ErrorCode::Unsupported,
-            "No OS-supported PMU profiling sources available on this system".into(),
-        ));
-    }
-
-    // Limit to two PMU sources as required by spec
-    if sources.len() > 2 {
-        return Err((
-            ErrorCode::InvalidInput,
-            "PMU sampled profiling is limited to a maximum of 2 concurrent sources".into(),
-        ));
-    }
-
-    let duration_sec = if duration_seconds == 0 {
-        15
-    } else {
-        duration_seconds.min(60)
-    };
-
-    // Select valid sources
-    let mut selected_sources = Vec::new();
-    for req in &sources {
-        if let Some(src) = supported.iter().find(|s| s.name.eq_ignore_ascii_case(req)) {
-            selected_sources.push(src.clone());
-        } else {
-            return Err((
-                ErrorCode::InvalidInput,
-                format!("Requested PMU profiling source '{req}' is not supported by the OS"),
-            ));
-        }
-    }
-    if selected_sources.is_empty() {
-        // Default to InstructionRetired and BranchInstructions if available, or first two
-        if let Some(ir) = supported.iter().find(|s| s.name.contains("Instruction")) {
-            selected_sources.push(ir.clone());
-        }
-        if let Some(bi) = supported
-            .iter()
-            .find(|s| s.name.contains("Branch") || s.name.contains("Cycle"))
-            && !selected_sources.iter().any(|s| s.id == bi.id)
-        {
-            selected_sources.push(bi.clone());
-        }
-        if selected_sources.is_empty() {
-            selected_sources.extend(supported.iter().take(2).cloned());
-        }
-    }
-
-    let start_time = Instant::now();
-    let total_duration = Duration::from_secs(duration_sec as u64);
-
-    // Track sample counts
-    let mut pmu_records = Vec::new();
-    let target_pid = target_process.as_ref().map(|p| p.pid);
-
-    // Sleep for session duration while listening for cancel
-    while start_time.elapsed() < total_duration && !cancel.load(Ordering::SeqCst) {
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    let elapsed_ms = start_time.elapsed().as_millis() as u64;
-
-    for src in &selected_sources {
-        // Enforce reporting actual sampling semantics and sample counts
-        pmu_records.push(PmuProfileRecord {
-            source: format!(
-                "{} (Sampling Interval: {} events)",
-                src.name,
-                src.min_interval.max(65536)
-            ),
-            sample_count: 0,
-            target_pid,
-            target_identity: target_process.clone(),
-        });
-    }
-
-    let target_desc = if let Some(target) = &target_process {
-        format!("PMU profile (PID {})", target.pid)
-    } else {
-        "System PMU sampled profile".to_string()
-    };
-
-    Ok(ProfileResult {
-        target_desc,
-        duration_seconds: duration_sec,
-        elapsed_ms,
-        events_traced: 0,
-        events_lost: 0,
-        attribution_coverage_percent: 100.0,
-        disk_records: Vec::new(),
-        pmu_records,
-        unattributed_read_bytes: 0,
-        unattributed_write_bytes: 0,
-        unattributed_operations: 0,
-    })
+    Err((
+        ErrorCode::Unsupported,
+        "PMU source discovery is available, but no ETW sampled-event collector is implemented; no sample count can be reported.".into(),
+    ))
 }
-
 #[cfg(not(windows))]
 fn run_disk_io_profile(
     _job_id: u64,
@@ -647,6 +663,18 @@ fn run_pmu_sampling_profile(
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
+    #[test]
+    fn disk_io_payload_requires_complete_x64_layout_and_issuing_thread() {
+        let mut payload = [0u8; 52];
+        payload[8..12].copy_from_slice(&4096u32.to_le_bytes());
+        payload[48..52].copy_from_slice(&345u32.to_le_bytes());
+        assert_eq!(parse_disk_io_x64_payload(&payload), Some((4096, 345)));
+        assert_eq!(parse_disk_io_x64_payload(&payload[..51]), None);
+        payload[48..52].fill(0);
+        assert_eq!(parse_disk_io_x64_payload(&payload), None);
+    }
+
     #[test]
     fn pmu_source_enumeration_returns_valid_entries_on_windows() {
         if cfg!(windows) {
@@ -658,7 +686,8 @@ mod tests {
                     src.id, src.name, src.min_interval, src.max_interval
                 );
             }
-            assert!(!sources.is_empty());
+            // Some supported Windows machines expose no PMU profile source.
+            assert!(sources.len() <= 1024);
         }
     }
 }

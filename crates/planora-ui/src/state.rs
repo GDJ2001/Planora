@@ -231,6 +231,7 @@ pub struct DisplayPause {
     pub frozen_frame: Option<Arc<TelemetryFrame>>,
     pub frozen_instant: Option<Instant>,
     pub frozen_histories: Option<Arc<crate::history::ResourceHistories>>,
+    pub frozen_sensors: Option<Arc<Vec<planora_core::SensorReading>>>,
 }
 
 #[derive(Clone, Copy, Debug)]

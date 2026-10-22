@@ -78,7 +78,8 @@
       <ComponentRef Id="NoticeFile" />
       <ComponentRef Id="PersistedAuthorization" />
     </Feature>
-    <Feature Id="AdvancedSensors" Title="Advanced sensors" Description="Advanced hardware sensor broker for CPU package power, core temperatures, and storage health" Level="1">
+    <Feature Id="AdvancedSensors" Title="Advanced sensors" Description="Advanced hardware sensor broker for CPU package power, core temperatures, and storage health" Level="2">
+      <Level Value="1" Condition="PLANORA_ADVANCED_SENSORS=1" />
       <ComponentRef Id="PlanoraSensorBroker" />
     </Feature>
   </Package>

@@ -751,11 +751,23 @@ impl App {
             app_state = AppState::Replay;
             frame_opt = self.replay.frame.clone();
             topo_opt = self.replay.topology.clone();
-        } else if app_state == AppState::Live
+        }
+        #[cfg(windows)]
+        let live_sensors = {
+            let mut readings = frame_opt
+                .as_ref()
+                .map(|frame| frame.sensors.clone())
+                .unwrap_or_default();
+            if !self.fixture_mode && app_state != AppState::Replay {
+                readings.extend(shared_copy.sensor_readings.iter().cloned());
+            }
+            Arc::new(readings)
+        };
+        if app_state == AppState::Live
             && let Some(frame) = &frame_opt
         {
             #[cfg(windows)]
-            let recording_sensors = shared_copy.sensor_readings.as_ref();
+            let recording_sensors = live_sensors.as_ref();
             #[cfg(not(windows))]
             let recording_sensors = &frame.sensors;
             self.recorder
@@ -816,11 +828,7 @@ impl App {
             let key = (frame.session_id, frame.sequence, self.selected.clone());
             if self.history_last_enqueued.as_ref() != Some(&key) {
                 #[cfg(windows)]
-                let sensors = if app_state == AppState::Replay {
-                    Arc::new(frame.sensors.clone())
-                } else {
-                    shared_copy.sensor_readings.clone()
-                };
+                let sensors = live_sensors.clone();
                 #[cfg(not(windows))]
                 let sensors = Arc::new(frame.sensors.clone());
                 self.history_worker.submit(HistoryInput {
@@ -848,11 +856,16 @@ impl App {
                 self.display_pause.frozen_frame = frame_opt.clone();
                 self.display_pause.frozen_instant = Some(visual_now);
                 self.display_pause.frozen_histories = Some(self.histories.clone());
+                #[cfg(windows)]
+                {
+                    self.display_pause.frozen_sensors = Some(live_sensors.clone());
+                }
             }
         } else {
             self.display_pause.frozen_frame = None;
             self.display_pause.frozen_instant = None;
             self.display_pause.frozen_histories = None;
+            self.display_pause.frozen_sensors = None;
         }
 
         let render_frame: Option<Arc<planora_core::TelemetryFrame>> =
@@ -874,6 +887,8 @@ impl App {
         // Live collection continues in self.histories without mutating the display.
         // Clone only the Arc handle so page controls can mutably borrow pause state.
         let frozen_histories = self.display_pause.frozen_histories.clone();
+        #[cfg(windows)]
+        let frozen_sensors = self.display_pause.frozen_sensors.clone();
 
         // At compact widths, preserve the full content area with an icon rail.
         let compact_nav = root.available_width() < 1180.0;
@@ -1212,7 +1227,7 @@ impl App {
                                 render_histories,
                                 {
                                     #[cfg(windows)]
-                                    { if self.fixture_mode || app_state == AppState::Replay { &frame.sensors } else { shared_copy.sensor_readings.as_ref() } }
+                                    { frozen_sensors.as_deref().unwrap_or(live_sensors.as_ref()) }
                                     #[cfg(not(windows))]
                                     { &frame.sensors }
                                 },

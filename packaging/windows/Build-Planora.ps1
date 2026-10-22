@@ -32,7 +32,7 @@ try {
         cargo build --release --bins --locked
         if ($LASTEXITCODE -ne 0) { throw 'Release build failed' }
 
-        dotnet publish (Join-Path $root 'crates\planora-sensor-broker\PlanoraSensorBroker.csproj') -c Release -r win-x64 --self-contained -o $sourceDir
+        dotnet publish (Join-Path $root 'crates\planora-sensor-broker\PlanoraSensorBroker.csproj') -c Release -r win-x64 --self-contained -p:PlanoraGitCommit=$commit -o $sourceDir
         if ($LASTEXITCODE -ne 0) { throw 'Sensor broker publish failed' }
     }
 
@@ -40,6 +40,10 @@ try {
         if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) {
             throw "Release binary missing: $binary"
         }
+    }
+    $brokerIdentity = (& $broker --build-info | ConvertFrom-Json)
+    if ($LASTEXITCODE -ne 0 -or $brokerIdentity.version -ne $version -or $brokerIdentity.build_commit -ne $commit) {
+        throw "Sensor broker identity does not match source: version=$($brokerIdentity.version), commit=$($brokerIdentity.build_commit); expected $version, $commit"
     }
 
     $pawnIoInstaller = Join-Path $root 'packaging\windows\deps\PawnIO_setup.exe'
@@ -50,6 +54,10 @@ try {
     $expectedPawnIoHash = '1f519a22e47187f70a1379a48ca604981c4fcf694f4e65b734aaa74a9fba3032'
     if ($pawnIoHash -ne $expectedPawnIoHash) {
         throw "PawnIO installer hash mismatch: expected $expectedPawnIoHash, got $pawnIoHash"
+    }
+    $pawnIoSignature = Get-AuthenticodeSignature -LiteralPath $pawnIoInstaller
+    if ($pawnIoSignature.Status -ne 'Valid' -or $pawnIoSignature.SignerCertificate.Subject -notmatch 'namazso') {
+        throw "PawnIO installer signature is not valid and issued to namazso: $($pawnIoSignature.Status)"
     }
     $uiBytes = [IO.File]::ReadAllBytes($ui)
     $peOffset = [BitConverter]::ToInt32($uiBytes, 0x3c)
@@ -92,7 +100,7 @@ try {
 
     $setup = Join-Path $root "dist\Planora-$version-x64-Setup.exe"
     wix build 'packaging/windows/Planora-Bundle.wxs' -arch x64 `
-        -ext WixToolset.BootstrapperApplications.wixext `
+        -ext WixToolset.BootstrapperApplications.wixext -ext WixToolset.Util.wixext `
         -d "BundleVersion=$productVersion" -d "AppVersion=$version" -d "ProjectDir=$root" -d "MsiPath=$msi" -o $setup
     if ($LASTEXITCODE -ne 0) { throw 'WiX Burn setup build failed' }
 

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using LibreHardwareMonitor.Hardware;
@@ -17,6 +18,9 @@ public class BrokerReading
 
     [JsonPropertyName("device_name")]
     public string DeviceName { get; set; } = string.Empty;
+
+    [JsonPropertyName("hardware_type")]
+    public string HardwareType { get; set; } = string.Empty;
 
     [JsonPropertyName("name")]
     public string Name { get; set; } = string.Empty;
@@ -45,6 +49,12 @@ public class SampleResponse
     [JsonPropertyName("status")]
     public string Status { get; set; } = "ok";
 
+    [JsonPropertyName("version")]
+    public string Version { get; set; } = "0.3.0-beta.9";
+
+    [JsonPropertyName("build_commit")]
+    public string BuildCommit { get; set; } = Program.BuildCommit;
+
     [JsonPropertyName("timestamp_ms")]
     public ulong TimestampMs { get; set; }
 
@@ -58,7 +68,10 @@ public class PingResponse
     public string Status { get; set; } = "ok";
 
     [JsonPropertyName("version")]
-    public string Version { get; set; } = "0.3.0-beta.8";
+    public string Version { get; set; } = "0.3.0-beta.9";
+
+    [JsonPropertyName("build_commit")]
+    public string BuildCommit { get; set; } = Program.BuildCommit;
 
     [JsonPropertyName("lhm_version")]
     public string LhmVersion { get; set; } = "0.9.6";
@@ -84,8 +97,33 @@ public class UpdateVisitor : IVisitor
 
 public static class Program
 {
+    public static readonly string BuildCommit = typeof(Program).Assembly
+        .GetCustomAttributes<AssemblyMetadataAttribute>()
+        .FirstOrDefault(attribute => attribute.Key == "PlanoraGitCommit")?.Value ?? "unknown";
+
+    private static string? ReadRequestLine()
+    {
+        const int maxRequestCharacters = 4096;
+        var request = new System.Text.StringBuilder();
+        int character;
+        while ((character = Console.In.Read()) != -1)
+        {
+            if (character == '\n')
+                return request.ToString().TrimEnd('\r');
+            if (request.Length >= maxRequestCharacters)
+                throw new InvalidDataException("Broker request exceeds 4096 characters");
+            request.Append((char)character);
+        }
+        return request.Length == 0 ? null : request.ToString();
+    }
+
     public static void Main(string[] args)
     {
+        if (args.Length == 1 && args[0] == "--build-info")
+        {
+            Console.WriteLine(JsonSerializer.Serialize(new PingResponse()));
+            return;
+        }
         // Enforce culture invariant for numeric conversions
         System.Threading.Thread.CurrentThread.CurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
 
@@ -124,22 +162,35 @@ public static class Program
         }
 
         string? line;
-        while ((line = Console.ReadLine()) != null)
+        while ((line = ReadRequestLine()) != null)
         {
-            line = line.Trim();
-            if (string.IsNullOrEmpty(line))
-                continue;
-
-            if (line.Equals("exit", StringComparison.OrdinalIgnoreCase) ||
-                line.Contains("\"exit\"", StringComparison.OrdinalIgnoreCase))
+            string? command;
+            try
             {
-                break;
+                using var request = JsonDocument.Parse(line, new JsonDocumentOptions { MaxDepth = 4 });
+                command = request.RootElement.GetProperty("command").GetString();
+            }
+            catch (Exception)
+            {
+                Console.WriteLine("{\"status\":\"error\",\"message\":\"Malformed broker request\"}");
+                Console.Out.Flush();
+                continue;
             }
 
-            if (line.Contains("\"ping\"", StringComparison.OrdinalIgnoreCase))
+            if (command == "exit")
+                break;
+
+            if (command == "ping")
             {
                 var ping = new PingResponse();
                 Console.WriteLine(JsonSerializer.Serialize(ping));
+                Console.Out.Flush();
+                continue;
+            }
+
+            if (command != "sample")
+            {
+                Console.WriteLine("{\"status\":\"error\",\"message\":\"Unknown broker command\"}");
                 Console.Out.Flush();
                 continue;
             }
@@ -262,17 +313,26 @@ public static class Program
             }
 
             string sensorId = sensor.Identifier.ToString().TrimStart('/');
+            // LibreHardwareMonitor can expose a CPU package power sensor with a
+            // permanent zero when the required register access is unavailable.
+            // A running CPU consumes power; report that case as unavailable.
+            float? value = sensor.Value;
+            if (hardware.HardwareType == HardwareType.Cpu &&
+                sensor.SensorType == SensorType.Power && value <= 0)
+                value = null;
+
             readings.Add(new BrokerReading
             {
                 Id = sensorId,
                 DeviceId = deviceId,
                 DeviceName = deviceName,
+                HardwareType = hardware.HardwareType.ToString(),
                 Name = sensor.Name,
                 SensorType = typeStr,
                 Scope = defaultScope,
                 Provider = "LibreHardwareMonitor",
                 Unit = unitStr,
-                Value = sensor.Value,
+                Value = value,
                 SampledAtMs = nowMs
             });
         }
