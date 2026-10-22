@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $true)][ValidateRange(1, 100)][int]$ProtocolVersion,
-    [ValidateRange(1, 1000)][int]$Count = 20
+    [ValidateRange(1, 1000)][int]$Count = 20,
+    [switch]$IncludeSensorSummary
 )
 
 $ErrorActionPreference = 'Stop'
@@ -44,6 +45,7 @@ try {
     if ($sampling.SamplingStatus.effective_ms -gt 100) { throw 'Helper did not apply the 100 ms sampling request' }
     $sequences = [Collections.Generic.HashSet[long]]::new()
     $maximumAgeMs = 0L
+    $lastFrame = $null
     for ($index = 0; $index -lt $Count; $index++) {
         $frame = (Exchange $pipe ($index + 3) 'Snapshot').Snapshot
         if (-not $frame) { throw "Snapshot $index was not returned" }
@@ -51,10 +53,20 @@ try {
         if ($age -lt 0 -or $age -gt 2500) { throw "Snapshot $index CPU reading is stale or future-dated: ${age}ms" }
         $maximumAgeMs = [Math]::Max($maximumAgeMs, $age)
         [void]$sequences.Add([long]$frame.sequence)
+        $lastFrame = $frame
         Start-Sleep -Milliseconds 180
     }
     if ($sequences.Count -lt $Count) { throw "Only $($sequences.Count) distinct snapshots arrived out of $Count" }
-    [pscustomobject]@{ ProtocolVersion = $ProtocolVersion; FreshDistinctSnapshots = $sequences.Count; MaximumCpuAgeMs = $maximumAgeMs }
+    $result = [ordered]@{ ProtocolVersion = $ProtocolVersion; FreshDistinctSnapshots = $sequences.Count; MaximumCpuAgeMs = $maximumAgeMs }
+    if ($IncludeSensorSummary) {
+        $sensors = @($lastFrame.sensors)
+        $result.SensorEntries = $sensors.Count
+        $result.AvailableSensors = @($sensors | Where-Object { $null -ne $_.value.value }).Count
+        $result.AvailableCpuPackagePower = @($sensors | Where-Object { $_.sensor_type -eq 'CpuPackagePowerWatts' -and $null -ne $_.value.value }).Count
+        $result.AvailableCpuTemperature = @($sensors | Where-Object { $_.sensor_type -eq 'CpuTemperatureCelsius' -and $null -ne $_.value.value }).Count
+        $result.SensorProviders = @(($sensors | ForEach-Object { $_.provider } | Sort-Object -Unique))
+    }
+    [pscustomobject]$result
 } finally {
     $pipe.Dispose()
 }

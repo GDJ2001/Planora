@@ -1320,6 +1320,7 @@ impl App {
                                 ui,
                                 shared_copy.benchmark_state.as_ref(),
                                 shared_copy.profile_state.as_ref(),
+                                self.selected.as_ref(),
                                 &mut self.benchmarks_state,
                                 &app_state,
                                 &mut self.display_pause,

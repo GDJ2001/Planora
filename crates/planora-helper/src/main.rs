@@ -178,6 +178,7 @@ impl BenchmarkManager {
 
 struct ProfileManager {
     current_job_id: AtomicU64,
+    started_at: Mutex<Option<Instant>>,
     state: Mutex<ProfileState>,
     cancel: Mutex<Arc<AtomicBool>>,
     worker: Mutex<Option<thread::JoinHandle<()>>>,
@@ -187,6 +188,7 @@ impl ProfileManager {
     fn new() -> Self {
         Self {
             current_job_id: AtomicU64::new(0),
+            started_at: Mutex::new(None),
             state: Mutex::new(ProfileState::Idle),
             cancel: Mutex::new(Arc::new(AtomicBool::new(false))),
             worker: Mutex::new(None),
@@ -194,7 +196,13 @@ impl ProfileManager {
     }
 
     fn status(&self) -> ProfileState {
-        self.state.lock().unwrap().clone()
+        let mut status = self.state.lock().unwrap().clone();
+        if let ProfileState::Running { elapsed_ms, .. } = &mut status
+            && let Some(started) = *self.started_at.lock().unwrap()
+        {
+            *elapsed_ms = started.elapsed().as_millis() as u64;
+        }
+        status
     }
 
     fn cancel(&self, job_id: u64) -> Response {
@@ -1026,6 +1034,7 @@ fn dispatch(command: Command, req_id: u64, connection_id: u64, state: &State) ->
                 .profiling
                 .current_job_id
                 .store(job_id, Ordering::SeqCst);
+            *state.profiling.started_at.lock().unwrap() = Some(Instant::now());
             *prof_state = ProfileState::Running {
                 job_id,
                 target_desc: target_desc.clone(),
@@ -1541,6 +1550,30 @@ mod lifecycle_tests {
         ));
         assert!(matches!(state.profiling.status(), ProfileState::Idle));
         assert!(state.profiling.worker.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn running_profile_status_reports_elapsed_time_without_changing_stored_state() {
+        let manager = ProfileManager::new();
+        *manager.started_at.lock().unwrap() = Some(Instant::now() - Duration::from_secs(2));
+        *manager.state.lock().unwrap() = ProfileState::Running {
+            job_id: 7,
+            target_desc: "system disk I/O".into(),
+            elapsed_ms: 0,
+            duration_seconds: 15,
+        };
+        assert!(matches!(
+            manager.status(),
+            ProfileState::Running {
+                job_id: 7,
+                elapsed_ms: 2000..,
+                ..
+            }
+        ));
+        assert!(matches!(
+            *manager.state.lock().unwrap(),
+            ProfileState::Running { elapsed_ms: 0, .. }
+        ));
     }
 
     #[cfg(windows)]

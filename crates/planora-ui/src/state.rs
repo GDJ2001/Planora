@@ -3,8 +3,8 @@ use crate::{
     theme::{Density, Theme},
 };
 use planora_core::{
-    BenchmarkState, Capability, Command, DiagnosticEntry, ErrorCode, PROTOCOL_VERSION, Request,
-    Response, ResponseEnvelope, TelemetryFrame, Topology,
+    BenchmarkState, Capability, Command, DiagnosticEntry, ErrorCode, PROTOCOL_VERSION,
+    ProfileState, Request, Response, ResponseEnvelope, TelemetryFrame, Topology,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -632,6 +632,7 @@ pub fn background_worker(
             }
         }
         let mut last_sample_request = Instant::now();
+        let mut last_activity_status_poll = Instant::now() - Duration::from_secs(1);
         context.request_repaint();
 
         // Main command/sample loop with strict request-response pairing and deadlines
@@ -701,6 +702,56 @@ pub fn background_worker(
                     }
                 }
                 context.request_repaint();
+            }
+
+            // Long-running actions complete asynchronously in the helper.
+            // Poll only while active so the UI receives completion and
+            // cancellation acknowledgements without spending an IPC round
+            // trip on every telemetry frame.
+            if connection_healthy && last_activity_status_poll.elapsed() >= Duration::from_secs(1) {
+                let (benchmark_active, profile_active) = {
+                    let shared = state.lock().unwrap();
+                    (
+                        matches!(
+                            shared.benchmark_state.as_ref(),
+                            Some(
+                                BenchmarkState::Running { .. } | BenchmarkState::Cancelling { .. }
+                            )
+                        ),
+                        matches!(
+                            shared.profile_state.as_ref(),
+                            Some(ProfileState::Running { .. } | ProfileState::Cancelling { .. })
+                        ),
+                    )
+                };
+                for command in [
+                    benchmark_active.then_some(Command::BenchmarkStatus),
+                    profile_active.then_some(Command::ProfileStatus),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    next_request_id = next_request_id.wrapping_add(1);
+                    let request = Request {
+                        request_id: next_request_id,
+                        command,
+                    };
+                    let status_ok = match planora_helper::exchange_request_timeout(
+                        &mut stream,
+                        &request,
+                        planora_helper::REQUEST_TIMEOUT,
+                    ) {
+                        Ok(response) => handle_response(response.response, &state),
+                        Err(_) => false,
+                    };
+                    if status_ok {
+                        context.request_repaint();
+                    } else {
+                        connection_healthy = false;
+                        break;
+                    }
+                }
+                last_activity_status_poll = Instant::now();
             }
 
             if !connection_healthy {

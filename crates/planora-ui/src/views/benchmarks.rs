@@ -5,7 +5,10 @@ use crate::{
     theme::{CORNER_RADIUS, Palette},
 };
 use eframe::egui::{self, CornerRadius, Pos2, Rect, Shape, Stroke, Vec2};
-use planora_core::{BenchmarkPoint, BenchmarkResult, BenchmarkState, Command, ProfileState};
+use planora_core::{
+    BenchmarkPoint, BenchmarkResult, BenchmarkState, Command, ProcessIdentity, ProfileState,
+    ProfileTarget,
+};
 use std::sync::mpsc::SyncSender;
 
 pub struct BenchmarksViewState {
@@ -13,12 +16,8 @@ pub struct BenchmarksViewState {
     pub matrix_input: String,
     pub active_tab: usize, // 0: Cache latency table, 1: Core heatmap, 2: Raw table
     // Profiling options:
-    pub profile_type: usize, // 0: Disk I/O, 1: PMU Sampling
     pub duration_seconds: u32,
-    pub target_pid_input: String,
-    pub pmu_source_cycles: bool,
-    pub pmu_source_instructions: bool,
-    pub pmu_source_branches: bool,
+    pub profile_selected_process: bool,
 }
 
 impl Default for BenchmarksViewState {
@@ -27,12 +26,8 @@ impl Default for BenchmarksViewState {
             section: 0,
             matrix_input: "0, 1, 2, 3".to_string(),
             active_tab: 0,
-            profile_type: 0,
             duration_seconds: 15,
-            target_pid_input: String::new(),
-            pmu_source_cycles: true,
-            pmu_source_instructions: true,
-            pmu_source_branches: false,
+            profile_selected_process: false,
         }
     }
 }
@@ -41,6 +36,7 @@ pub fn render_benchmarks_view(
     ui: &mut egui::Ui,
     benchmark_state: Option<&BenchmarkState>,
     profile_state: Option<&ProfileState>,
+    selected_process: Option<&ProcessIdentity>,
     state: &mut BenchmarksViewState,
     app_state: &AppState,
     pause_state: &mut DisplayPause,
@@ -86,7 +82,16 @@ pub fn render_benchmarks_view(
     if state.section == 0 {
         render_probes_section(ui, benchmark_state, state, app_state, tx, p);
     } else {
-        render_profiling_section(ui, profile_state, benchmark_state, state, app_state, tx, p);
+        render_profiling_section(
+            ui,
+            profile_state,
+            benchmark_state,
+            selected_process,
+            state,
+            app_state,
+            tx,
+            p,
+        );
     }
 }
 
@@ -250,11 +255,12 @@ fn render_probes_section(
 
 fn render_profiling_section(
     ui: &mut egui::Ui,
-    _profile_state: Option<&ProfileState>,
-    _benchmark_state: Option<&BenchmarkState>,
-    _state: &mut BenchmarksViewState,
-    _app_state: &AppState,
-    _tx: &SyncSender<Command>,
+    profile_state: Option<&ProfileState>,
+    benchmark_state: Option<&BenchmarkState>,
+    selected_process: Option<&ProcessIdentity>,
+    state: &mut BenchmarksViewState,
+    app_state: &AppState,
+    tx: &SyncSender<Command>,
     p: Palette,
 ) {
     egui::Frame::group(ui.style())
@@ -263,10 +269,184 @@ fn render_profiling_section(
         .corner_radius(CornerRadius::same(CORNER_RADIUS as u8))
         .inner_margin(egui::Margin::same(14))
         .show(ui, |ui| {
-            ui.heading("Advanced profiling unavailable");
-            ui.label("This build does not collect ETW disk events or sampled PMU data. No event counts or attribution percentages are inferred.");
-            ui.label("The capability table records this limitation. Profiling controls will be enabled after a measured provider and cancellation path pass native tests.");
+            ui.heading("Disk I/O profiling · Windows ETW");
+            ui.label("An explicit, bounded trace of physical disk read and write events. Attribution uses issuing-thread and process creation identity; event loss and unattributed activity remain visible.");
+            ui.colored_label(p.warning, "Experimental: native attribution and cancellation acceptance is still in progress.");
+            ui.label("PMU sampled profiling is not implemented. Source discovery is not a measurement.");
         });
+
+    ui.add_space(12.0);
+    let profile = profile_state.unwrap_or(&ProfileState::Idle);
+    let profile_busy = matches!(
+        profile,
+        ProfileState::Running { .. } | ProfileState::Cancelling { .. }
+    );
+    let benchmark_busy = matches!(
+        benchmark_state,
+        Some(BenchmarkState::Running { .. } | BenchmarkState::Cancelling { .. })
+    );
+    let can_start = *app_state == AppState::Live && !profile_busy && !benchmark_busy;
+
+    if selected_process.is_none() {
+        state.profile_selected_process = false;
+    }
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Duration:");
+        egui::ComboBox::from_id_salt("disk_profile_duration")
+            .selected_text(format!("{} seconds", state.duration_seconds))
+            .show_ui(ui, |ui| {
+                for seconds in [15, 30, 60] {
+                    ui.selectable_value(
+                        &mut state.duration_seconds,
+                        seconds,
+                        format!("{seconds} seconds"),
+                    );
+                }
+            });
+        ui.add_enabled(
+            selected_process.is_some(),
+            egui::Checkbox::new(&mut state.profile_selected_process, "Selected process only"),
+        );
+        if let Some(process) = selected_process {
+            ui.label(format!(
+                "PID {} · creation {}",
+                process.pid, process.started
+            ));
+        } else {
+            ui.label("System-wide");
+        }
+    });
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        let button = ui.add_enabled(can_start, egui::Button::new("Start disk I/O profile"));
+        if button.clicked() {
+            let job_id = planora_telemetry::unix_ms();
+            let target_process = state
+                .profile_selected_process
+                .then(|| selected_process.cloned())
+                .flatten();
+            if let Err(error) = tx.try_send(Command::StartProfile {
+                job_id,
+                target: ProfileTarget::DiskIo {
+                    target_process,
+                    duration_seconds: state.duration_seconds,
+                },
+            }) {
+                ui.colored_label(p.error, format!("Could not queue profile: {error}"));
+            }
+        }
+        if let ProfileState::Running { job_id, .. } = profile
+            && ui.button("Cancel profile").clicked()
+        {
+            let _ = tx.try_send(Command::CancelProfile { job_id: *job_id });
+        }
+    });
+
+    ui.add_space(12.0);
+    match profile {
+        ProfileState::Idle => {
+            ui.label("Choose a scope and start a trace to collect disk events.");
+        }
+        ProfileState::Running {
+            job_id,
+            target_desc,
+            elapsed_ms,
+            duration_seconds,
+        } => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(format!(
+                    "Profile #{job_id}: {target_desc} · {:.1}/{duration_seconds} seconds",
+                    *elapsed_ms as f32 / 1000.0
+                ));
+            });
+        }
+        ProfileState::Cancelling { job_id } => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(format!(
+                    "Cancelling profile #{job_id}; waiting for ETW cleanup…"
+                ));
+            });
+        }
+        ProfileState::Failed { code, message, .. } => {
+            ui.colored_label(p.error, format!("Profile failed ({code:?}): {message}"));
+        }
+        ProfileState::Cancelled { job_id } => {
+            ui.colored_label(p.warning, format!("Profile #{job_id} was cancelled."));
+        }
+        ProfileState::Completed { result, .. } => {
+            ui.heading("Disk I/O result");
+            ui.horizontal_wrapped(|ui| {
+                ui.label(format!(
+                    "Elapsed: {:.1} s",
+                    result.elapsed_ms as f64 / 1000.0
+                ));
+                ui.label(format!("Events: {}", result.events_traced));
+                ui.label(format!("Lost: {}", result.events_lost));
+                ui.label(format!(
+                    "Attributed bytes: {:.1}%",
+                    result.attribution_coverage_percent
+                ));
+            });
+            if result.events_lost > 0 {
+                ui.colored_label(
+                    p.warning,
+                    "ETW reported lost events; totals and attribution are incomplete.",
+                );
+            } else if result.events_traced == 0 {
+                ui.label("No disk I/O events were observed during this trace.");
+            }
+            ui.label(format!(
+                "Unattributed: {} read, {} written, {} operations",
+                format_bytes(result.unattributed_read_bytes),
+                format_bytes(result.unattributed_write_bytes),
+                result.unattributed_operations
+            ));
+            ui.add_space(8.0);
+            let widths = [200.0, 60.0, 90.0, 90.0, 90.0, 90.0];
+            ui.horizontal(|ui| {
+                for (title, width) in ["Process", "PID", "Read", "Write", "Read ops", "Write ops"]
+                    .into_iter()
+                    .zip(widths)
+                {
+                    ui.add_sized(
+                        [width, 24.0],
+                        egui::Label::new(egui::RichText::new(title).strong()),
+                    );
+                }
+            });
+            egui::ScrollArea::vertical()
+                .id_salt("disk_profile_rows")
+                .max_height(320.0)
+                .show_rows(ui, 28.0, result.disk_records.len(), |ui, range| {
+                    for record in &result.disk_records[range] {
+                        ui.horizontal(|ui| {
+                            ui.add_sized([widths[0], 26.0], egui::Label::new(&record.process_name))
+                                .on_hover_text(record.identity.as_ref().map_or_else(
+                                    || "Process creation identity unavailable".to_owned(),
+                                    |identity| {
+                                        format!(
+                                            "Created: {} ({:?})",
+                                            identity.started, identity.source
+                                        )
+                                    },
+                                ));
+                            for (value, width) in [
+                                (record.pid.to_string(), widths[1]),
+                                (format_bytes(record.read_bytes), widths[2]),
+                                (format_bytes(record.write_bytes), widths[3]),
+                                (record.read_operations.to_string(), widths[4]),
+                                (record.write_operations.to_string(), widths[5]),
+                            ] {
+                                ui.add_sized([width, 26.0], egui::Label::new(value));
+                            }
+                        });
+                    }
+                });
+            ui.label("Physical disk event totals; process I/O counters shown elsewhere include non-disk I/O.");
+        }
+    }
 }
 
 fn render_benchmark_result(

@@ -578,6 +578,12 @@ fn run_disk_io_profile(
 
     let _ = consumer_thread.join();
 
+    // Cancellation still requires stopping and joining our ETW session, but
+    // its partial counters must not be published as a completed profile.
+    if cancel.load(Ordering::SeqCst) {
+        return Err((ErrorCode::Cancelled, "Disk I/O profile cancelled".into()));
+    }
+
     let stats_lock = stats.lock().unwrap();
     let events_lost = session_props.props.EventsLost as u64;
     let events_traced = stats_lock.events_traced;
