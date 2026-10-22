@@ -4,3 +4,5 @@ state/
 target/
 dist/
 .wix/
+bin/
+obj/

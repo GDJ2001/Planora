@@ -19,6 +19,13 @@
     <Variable Name="PlanoraInstallLocation" Type="formatted" Value="[ProgramFiles64Folder]Planora" />
     <Variable Name="PlanoraDisplayVersion" Type="string" Value="$(var.AppVersion)" />
     <Chain>
+      <ExePackage Id="PawnIOSetup"
+                  SourceFile="$(var.ProjectDir)\packaging\windows\deps\PawnIO_setup.exe"
+                  InstallArguments="-install -silent"
+                  UninstallArguments="-uninstall -silent"
+                  Permanent="no"
+                  Vital="no"
+                  Compressed="yes" />
       <MsiPackage SourceFile="$(var.MsiPath)" Visible="no" Vital="yes">
         <!-- The bundle is the sole Installed Apps entry; direct MSI deployments remain manageable. -->
         <MsiProperty Name="ARPSYSTEMCOMPONENT" Value="1" />

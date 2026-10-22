@@ -1,6 +1,8 @@
 use crate::components::table::{SortColumn, sort_processes};
 use crate::history::{HistoryRange, ResourceHistories, TimeSeries};
-use planora_core::{BenchmarkState, DiagnosticEntry, Metric, TelemetryFrame, Topology};
+use planora_core::{
+    BenchmarkState, DiagnosticEntry, Metric, SensorReading, TelemetryFrame, Topology,
+};
 use std::{
     fs::{self, OpenOptions},
     io::{self, BufWriter, Write},
@@ -379,6 +381,86 @@ impl ExportManager {
                 })
                 .collect();
             serde_json::to_writer_pretty(&mut file, &redacted).map_err(io::Error::other)?;
+            file.sync_all()
+        })
+    }
+
+    pub fn sensors(&mut self, sensors: Vec<SensorReading>) -> io::Result<()> {
+        self.start("sensors", "csv", move |path, cancel| {
+            fs::create_dir_all(path.parent().unwrap())?;
+            let mut writer =
+                BufWriter::new(OpenOptions::new().create_new(true).write(true).open(path)?);
+            csv_line(
+                &mut writer,
+                &[
+                    "device_id".into(),
+                    "device_name".into(),
+                    "scope".into(),
+                    "sensor_id".into(),
+                    "sensor_name".into(),
+                    "sensor_type".into(),
+                    "value".into(),
+                    "unit".into(),
+                    "source".into(),
+                    "sampled_at_ms".into(),
+                    "unavailable_reason".into(),
+                ],
+            )?;
+            for s in &sensors {
+                if cancel.load(Ordering::Acquire) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "export cancelled",
+                    ));
+                }
+                csv_line(
+                    &mut writer,
+                    &[
+                        s.device_id.clone(),
+                        s.device_name.clone(),
+                        s.scope.clone(),
+                        s.id.clone(),
+                        s.name.clone(),
+                        format!("{:?}", s.sensor_type),
+                        s.value.value.map_or_else(String::new, |v| v.to_string()),
+                        s.value.unit.clone(),
+                        s.provider.clone(),
+                        s.value.sampled_at_ms.to_string(),
+                        s.value
+                            .unavailable_reason
+                            .as_ref()
+                            .map_or_else(String::new, ToString::to_string),
+                    ],
+                )?;
+            }
+            writer.flush()
+        })
+    }
+
+    pub fn snapshot_json(
+        &mut self,
+        frame: Arc<TelemetryFrame>,
+        sensors: Vec<SensorReading>,
+    ) -> io::Result<()> {
+        self.start("snapshot", "json", move |path, cancel| {
+            if cancel.load(Ordering::Acquire) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "export cancelled",
+                ));
+            }
+            fs::create_dir_all(path.parent().unwrap())?;
+            let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
+            let document = serde_json::json!({
+                "format_version": 1,
+                "application_version": crate::state::BUILD_INFO.version,
+                "source_commit": crate::state::BUILD_INFO.git_commit,
+                "target": crate::state::BUILD_INFO.target,
+                "captured_at_ms": planora_telemetry::unix_ms(),
+                "frame": &*frame,
+                "sensors": sensors,
+            });
+            serde_json::to_writer_pretty(&mut file, &document).map_err(io::Error::other)?;
             file.sync_all()
         })
     }

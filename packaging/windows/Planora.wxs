@@ -60,9 +60,12 @@
           <RegistryValue Root="HKLM" Key="SOFTWARE\Planora" Name="AuthorizedEnvironment" Type="string" Value="[PLANORA_PREVIOUS_ENV][PLANORA_PERSISTENT_ENV]" />
           <RemoveRegistryKey Root="HKLM" Key="SOFTWARE\Planora" Action="removeOnUninstall" />
         </Component>
+        <Component Id="PlanoraSensorBroker" Guid="*" Bitness="always64">
+          <File Id="PlanoraSensorBrokerExe" Source="$(var.SourceDir)\planora-sensor-broker.exe" KeyPath="yes" />
+        </Component>
       </Directory>
     </StandardDirectory>
-    <Feature Id="Main" Title="Planora" Level="1">
+    <Feature Id="Core" Title="Core application" Description="Planora core application and privileged helper service" Level="1" Absent="disallow">
       <ComponentRef Id="PlanoraApp" />
       <ComponentRef Id="PlanoraShortcut" />
       <ComponentRef Id="PlanoraHelper" />
@@ -74,6 +77,9 @@
       <ComponentRef Id="LicenseApacheFile" />
       <ComponentRef Id="NoticeFile" />
       <ComponentRef Id="PersistedAuthorization" />
+    </Feature>
+    <Feature Id="AdvancedSensors" Title="Advanced sensors" Description="Advanced hardware sensor broker for CPU package power, core temperatures, and storage health" Level="1">
+      <ComponentRef Id="PlanoraSensorBroker" />
     </Feature>
   </Package>
 </Wix>

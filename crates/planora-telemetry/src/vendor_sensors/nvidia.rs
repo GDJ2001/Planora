@@ -8,7 +8,7 @@ unsafe extern "system" {
 
 pub struct NvidiaNvmlProvider {
     h_module: *mut std::ffi::c_void,
-    device_count: u32,
+    _device_count: u32,
     devices: Vec<*mut std::ffi::c_void>,
     device_names: Vec<String>,
 }
@@ -18,6 +18,14 @@ unsafe impl Sync for NvidiaNvmlProvider {}
 
 impl NvidiaNvmlProvider {
     pub fn try_init() -> Result<Self, (planora_core::CapabilityState, String)> {
+        #[cfg(windows)]
+        if !crate::has_pci_vendor_gpu(0x10DE) {
+            return Err((
+                planora_core::CapabilityState::NotApplicable,
+                "No NVIDIA graphics adapter present on this system".into(),
+            ));
+        }
+
         let dll_path = super::trusted_system_dll("nvml.dll").ok_or((
             planora_core::CapabilityState::TemporarilyFailed,
             "Could not resolve the Windows system directory".into(),
@@ -119,7 +127,7 @@ impl NvidiaNvmlProvider {
                             if unsafe { get_name(dev, buf.as_mut_ptr(), buf.len() as u32) } == 0 {
                                 let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
                                 if let Ok(s) = std::str::from_utf8(&buf[..len]) {
-                                    name = s.to_string();
+                                    name = s.trim().to_string();
                                 }
                             }
                         }
@@ -130,10 +138,30 @@ impl NvidiaNvmlProvider {
             }
         }
 
+        if devices.is_empty() {
+            let shutdown_ptr = unsafe {
+                windows_sys::Win32::System::LibraryLoader::GetProcAddress(
+                    h_module,
+                    c"nvmlShutdown".as_ptr() as *const u8,
+                )
+            };
+            if let Some(shutdown_fn) = shutdown_ptr {
+                type NvmlShutdownFn = unsafe extern "system" fn() -> i32;
+                let nvml_shutdown: NvmlShutdownFn = unsafe { std::mem::transmute(shutdown_fn) };
+                unsafe { nvml_shutdown() };
+            }
+            unsafe { FreeLibrary(h_module) };
+            return Err((
+                planora_core::CapabilityState::NotApplicable,
+                "No NVIDIA GPU devices found via NVML".into(),
+            ));
+        }
+
         let device_count = devices.len() as u32;
+
         Ok(Self {
             h_module,
-            device_count,
+            _device_count: device_count,
             devices,
             device_names,
         })
@@ -141,9 +169,6 @@ impl NvidiaNvmlProvider {
 
     pub fn sample(&self, stamp: u64) -> Vec<SensorReading> {
         let mut readings = Vec::new();
-        if self.device_count == 0 {
-            return readings;
-        }
 
         let power_ptr = unsafe {
             windows_sys::Win32::System::LibraryLoader::GetProcAddress(
@@ -171,14 +196,13 @@ impl NvidiaNvmlProvider {
         };
 
         for (idx, &dev) in self.devices.iter().enumerate() {
-            let scope = format!(
-                "GPU {} ({})",
-                idx,
-                self.device_names
-                    .get(idx)
-                    .map(|s| s.as_str())
-                    .unwrap_or("NVIDIA")
-            );
+            let dev_id = format!("nvidia_gpu/{idx}");
+            let dev_name = self
+                .device_names
+                .get(idx)
+                .cloned()
+                .unwrap_or_else(|| format!("NVIDIA GPU {idx}"));
+            let scope = format!("GPU {} ({})", idx, dev_name);
 
             // 1. Power (milliwatts -> watts)
             if let Some(pfn) = power_ptr {
@@ -187,6 +211,9 @@ impl NvidiaNvmlProvider {
                 let mut mw = 0u32;
                 if unsafe { get_power(dev, &mut mw) } == 0 {
                     readings.push(SensorReading {
+                        id: format!("{dev_id}/power"),
+                        device_id: dev_id.clone(),
+                        device_name: dev_name.clone(),
                         name: "GPU Board Power".into(),
                         sensor_type: SensorType::GpuBoardPowerWatts,
                         scope: scope.clone(),
@@ -204,6 +231,9 @@ impl NvidiaNvmlProvider {
                 let mut temp = 0u32;
                 if unsafe { get_temp(dev, 0, &mut temp) } == 0 {
                     readings.push(SensorReading {
+                        id: format!("{dev_id}/temperature"),
+                        device_id: dev_id.clone(),
+                        device_name: dev_name.clone(),
                         name: "GPU Temperature".into(),
                         sensor_type: SensorType::GpuTemperatureCelsius,
                         scope: scope.clone(),
@@ -221,6 +251,9 @@ impl NvidiaNvmlProvider {
                 let mut mhz = 0u32;
                 if unsafe { get_clock(dev, 0, &mut mhz) } == 0 {
                     readings.push(SensorReading {
+                        id: format!("{dev_id}/clock"),
+                        device_id: dev_id.clone(),
+                        device_name: dev_name.clone(),
                         name: "GPU Graphics Clock".into(),
                         sensor_type: SensorType::ClockMhz,
                         scope: scope.clone(),
@@ -237,6 +270,9 @@ impl NvidiaNvmlProvider {
                 let mut pct = 0u32;
                 if unsafe { get_fan(dev, &mut pct) } == 0 {
                     readings.push(SensorReading {
+                        id: format!("{dev_id}/fan"),
+                        device_id: dev_id.clone(),
+                        device_name: dev_name.clone(),
                         name: "GPU Fan Speed".into(),
                         sensor_type: SensorType::FanRpm,
                         scope: scope.clone(),

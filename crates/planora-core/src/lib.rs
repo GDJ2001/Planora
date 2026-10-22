@@ -1,7 +1,7 @@
 //! Portable versioned contracts shared by the UI, helper, and collectors.
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 pub const SUPPORTED_SAMPLE_INTERVALS_MS: [u64; 5] = [100, 250, 500, 1_000, 2_000];
 pub const MAX_REQUEST_SIZE: usize = 64 * 1024;
 pub const MAX_RESPONSE_SIZE: usize = 8 * 1024 * 1024;
@@ -261,8 +261,13 @@ pub enum SensorType {
     ThermalZoneCelsius,
     GpuTemperatureCelsius,
     CpuTemperatureCelsius,
+    StorageTemperatureCelsius,
     FanRpm,
     ClockMhz,
+    VoltageVolts,
+    CurrentAmperes,
+    LoadPercent,
+    EnergyJoules,
 }
 
 impl std::fmt::Display for SensorType {
@@ -274,17 +279,30 @@ impl std::fmt::Display for SensorType {
             Self::ThermalZoneCelsius => write!(f, "Thermal Zone"),
             Self::GpuTemperatureCelsius => write!(f, "GPU Temperature"),
             Self::CpuTemperatureCelsius => write!(f, "CPU Temperature"),
+            Self::StorageTemperatureCelsius => write!(f, "Storage Temperature"),
             Self::FanRpm => write!(f, "Fan Speed"),
             Self::ClockMhz => write!(f, "Clock Frequency"),
+            Self::VoltageVolts => write!(f, "Voltage"),
+            Self::CurrentAmperes => write!(f, "Current"),
+            Self::LoadPercent => write!(f, "Load"),
+            Self::EnergyJoules => write!(f, "Energy"),
         }
     }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SensorReading {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub device_id: String,
+    #[serde(default)]
+    pub device_name: String,
     pub name: String,
     pub sensor_type: SensorType,
+    #[serde(default)]
     pub scope: String,
+    #[serde(default)]
     pub provider: String,
     pub value: Metric<f32>,
 }
@@ -535,6 +553,8 @@ pub enum CapabilityState {
     Unsupported,
     TemporarilyFailed,
     DeviceRemoved,
+    NotApplicable,
+    NotImplemented,
 }
 
 impl CapabilityState {
@@ -650,6 +670,8 @@ pub enum ProfileTarget {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct DiskIoProfileRecord {
     pub pid: u32,
+    #[serde(default)]
+    pub identity: Option<ProcessIdentity>,
     pub process_name: String,
     pub read_bytes: u64,
     pub write_bytes: u64,
@@ -662,6 +684,8 @@ pub struct PmuProfileRecord {
     pub source: String,
     pub sample_count: u64,
     pub target_pid: Option<u32>,
+    #[serde(default)]
+    pub target_identity: Option<ProcessIdentity>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -676,6 +700,8 @@ pub struct ProfileResult {
     pub pmu_records: Vec<PmuProfileRecord>,
     pub unattributed_read_bytes: u64,
     pub unattributed_write_bytes: u64,
+    #[serde(default)]
+    pub unattributed_operations: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

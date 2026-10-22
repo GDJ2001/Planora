@@ -574,17 +574,28 @@ impl ResourceHistories {
         }
         for sensor in sensors {
             let metric = &sensor.value;
+            let instant = measurement_instant(now, wall_clock_now_ms, metric.sampled_at_ms);
             self.push_detail(
                 format!(
                     "sensor:{}:{}:{}:{:?}",
                     sensor.scope, sensor.provider, sensor.name, sensor.sensor_type
                 ),
-                measurement_instant(now, wall_clock_now_ms, metric.sampled_at_ms),
+                instant,
                 metric.sampled_at_ms,
                 metric.value,
                 &metric.source,
                 metric.unavailable_reason.as_ref(),
             );
+            if !sensor.id.is_empty() {
+                self.push_detail(
+                    format!("sensor:{}", sensor.id),
+                    instant,
+                    metric.sampled_at_ms,
+                    metric.value,
+                    &metric.source,
+                    metric.unavailable_reason.as_ref(),
+                );
+            }
         }
     }
     pub fn reset_if_new_session(&mut self, current_session: u64) {

@@ -16,6 +16,14 @@ unsafe impl Sync for AmdAdlxProvider {}
 
 impl AmdAdlxProvider {
     pub fn try_init() -> Result<Self, (planora_core::CapabilityState, String)> {
+        #[cfg(windows)]
+        if !crate::has_pci_vendor_gpu(0x1002) {
+            return Err((
+                planora_core::CapabilityState::NotApplicable,
+                "No AMD graphics adapter present on this system".into(),
+            ));
+        }
+
         let dll_path = super::trusted_system_dll("amdadlx64.dll").ok_or((
             planora_core::CapabilityState::TemporarilyFailed,
             "Could not resolve the Windows system directory".into(),
@@ -24,7 +32,8 @@ impl AmdAdlxProvider {
         if !dll_path.exists() {
             return Err((
                 planora_core::CapabilityState::MissingRuntime,
-                "amdadlx64.dll not found in administrator-owned system path".into(),
+                "AMD GPU detected but amdadlx64.dll not found in administrator-owned system path"
+                    .into(),
             ));
         }
 

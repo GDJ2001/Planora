@@ -410,6 +410,9 @@ pub fn create_native_fixture_app(theme: Theme, page: Page) -> App {
         link_state: Some("Up".into()),
     }];
     frame.sensors = vec![SensorReading {
+        id: "gpu/temperature/0".into(),
+        device_id: "gpu:0".into(),
+        device_name: "Intel Iris Xe Graphics".into(),
         name: "GPU temperature".into(),
         sensor_type: SensorType::GpuTemperatureCelsius,
         scope: "Intel Iris Xe Graphics".into(),

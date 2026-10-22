@@ -23,17 +23,33 @@ try {
     $commit = (git rev-parse --short HEAD).Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Could not determine source commit' }
 
-    if (-not $SkipBuild) {
-        cargo build --release --bins --locked
-        if ($LASTEXITCODE -ne 0) { throw 'Release build failed' }
-    }
     $sourceDir = Join-Path $root 'target\release'
     $ui = Join-Path $sourceDir 'planora.exe'
     $helper = Join-Path $sourceDir 'planora-helper.exe'
-    foreach ($binary in @($ui, $helper)) {
+    $broker = Join-Path $sourceDir 'planora-sensor-broker.exe'
+
+    if (-not $SkipBuild) {
+        cargo build --release --bins --locked
+        if ($LASTEXITCODE -ne 0) { throw 'Release build failed' }
+
+        dotnet publish (Join-Path $root 'crates\planora-sensor-broker\PlanoraSensorBroker.csproj') -c Release -r win-x64 --self-contained -o $sourceDir
+        if ($LASTEXITCODE -ne 0) { throw 'Sensor broker publish failed' }
+    }
+
+    foreach ($binary in @($ui, $helper, $broker)) {
         if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) {
             throw "Release binary missing: $binary"
         }
+    }
+
+    $pawnIoInstaller = Join-Path $root 'packaging\windows\deps\PawnIO_setup.exe'
+    if (-not (Test-Path -LiteralPath $pawnIoInstaller -PathType Leaf)) {
+        throw "PawnIO installer missing: $pawnIoInstaller"
+    }
+    $pawnIoHash = (Get-FileHash -LiteralPath $pawnIoInstaller -Algorithm SHA256).Hash.ToLowerInvariant()
+    $expectedPawnIoHash = '1f519a22e47187f70a1379a48ca604981c4fcf694f4e65b734aaa74a9fba3032'
+    if ($pawnIoHash -ne $expectedPawnIoHash) {
+        throw "PawnIO installer hash mismatch: expected $expectedPawnIoHash, got $pawnIoHash"
     }
     $uiBytes = [IO.File]::ReadAllBytes($ui)
     $peOffset = [BitConverter]::ToInt32($uiBytes, 0x3c)
@@ -90,7 +106,9 @@ try {
         uiSubsystem = 'Windows GUI'
         binaries = @(
             [pscustomobject]@{ file = 'planora.exe'; sha256 = (Get-FileHash -LiteralPath $ui -Algorithm SHA256).Hash },
-            [pscustomobject]@{ file = 'planora-helper.exe'; sha256 = (Get-FileHash -LiteralPath $helper -Algorithm SHA256).Hash }
+            [pscustomobject]@{ file = 'planora-helper.exe'; sha256 = (Get-FileHash -LiteralPath $helper -Algorithm SHA256).Hash },
+            [pscustomobject]@{ file = 'planora-sensor-broker.exe'; sha256 = (Get-FileHash -LiteralPath $broker -Algorithm SHA256).Hash },
+            [pscustomobject]@{ file = 'PawnIO_setup.exe'; sha256 = (Get-FileHash -LiteralPath $pawnIoInstaller -Algorithm SHA256).Hash }
         )
         msi = [pscustomobject]@{ file = [IO.Path]::GetFileName($msi); sha256 = (Get-FileHash -LiteralPath $msi -Algorithm SHA256).Hash }
         setup = [pscustomobject]@{ file = [IO.Path]::GetFileName($setup); sha256 = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash }

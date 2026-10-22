@@ -16,6 +16,72 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SensorTrendKind {
+    #[default]
+    Power,
+    Temperature,
+    Clock,
+    Fan,
+    Load,
+}
+
+impl SensorTrendKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Power => "Power (W)",
+            Self::Temperature => "Temperatures (°C)",
+            Self::Clock => "Clocks (MHz)",
+            Self::Fan => "Fans (RPM)",
+            Self::Load => "Load (%)",
+        }
+    }
+
+    pub fn unit(self) -> &'static str {
+        match self {
+            Self::Power => "W",
+            Self::Temperature => "°C",
+            Self::Clock => "MHz",
+            Self::Fan => "RPM",
+            Self::Load => "%",
+        }
+    }
+
+    pub fn matches_sensor(self, reading: &SensorReading) -> bool {
+        match self {
+            Self::Power => {
+                matches!(
+                    reading.sensor_type,
+                    planora_core::SensorType::CpuPackagePowerWatts
+                        | planora_core::SensorType::GpuChipPowerWatts
+                        | planora_core::SensorType::GpuBoardPowerWatts
+                ) || reading.value.unit == "W"
+            }
+            Self::Temperature => {
+                matches!(
+                    reading.sensor_type,
+                    planora_core::SensorType::CpuTemperatureCelsius
+                        | planora_core::SensorType::GpuTemperatureCelsius
+                        | planora_core::SensorType::ThermalZoneCelsius
+                        | planora_core::SensorType::StorageTemperatureCelsius
+                ) || reading.value.unit == "°C"
+            }
+            Self::Clock => {
+                matches!(reading.sensor_type, planora_core::SensorType::ClockMhz)
+                    || reading.value.unit == "MHz"
+            }
+            Self::Fan => {
+                matches!(reading.sensor_type, planora_core::SensorType::FanRpm)
+                    || reading.value.unit == "RPM"
+            }
+            Self::Load => {
+                matches!(reading.sensor_type, planora_core::SensorType::LoadPercent)
+                    || reading.value.unit == "%"
+            }
+        }
+    }
+}
+
 pub struct ResourcesViewState {
     pub active_tab: usize, // 0: CPU, 1: Memory, 2: GPU, 3: Storage, 4: Network, 5: Sensors
     pub search_query: String,
@@ -26,6 +92,7 @@ pub struct ResourcesViewState {
     pub small_multiples: bool,
     pub show_provider_details: bool,
     pub export_message: Option<(Instant, String)>,
+    pub selected_sensor_trend: SensorTrendKind,
     plots: BTreeMap<String, PlotState>,
 }
 
@@ -41,6 +108,7 @@ impl Default for ResourcesViewState {
             small_multiples: false,
             show_provider_details: false,
             export_message: None,
+            selected_sensor_trend: SensorTrendKind::default(),
             plots: BTreeMap::new(),
         }
     }
@@ -689,7 +757,7 @@ fn render_selected(
     histories: &ResourceHistories,
     sensors: &[SensorReading],
     topology: Option<&Topology>,
-    exporter: Option<&mut ExportManager>,
+    mut exporter: Option<&mut ExportManager>,
     state: &mut ResourcesViewState,
     app_state: &AppState,
     pause_state: &mut DisplayPause,
@@ -821,7 +889,7 @@ fn render_selected(
             item.label.as_str()
         };
 
-        if let Some(exp) = exporter {
+        if let Some(exp) = exporter.as_deref_mut() {
             ui.separator();
             if ui
                 .button("Export CSV")
@@ -1311,7 +1379,16 @@ fn render_selected(
             2 => render_gpu_tab(ui, frame, p),
             3 => render_storage_tab(ui, frame, p),
             4 => render_network_tab(ui, frame, p),
-            5 => render_sensors_tab(ui, sensors, p),
+            5 => render_sensors_tab(
+                ui,
+                sensors,
+                histories,
+                state,
+                graph_modes[5],
+                exporter,
+                now,
+                p,
+            ),
             _ => render_cpu_tab(ui, frame, topology, histories, state.range, now, p),
         });
 }
@@ -1741,11 +1818,42 @@ fn render_network_tab(ui: &mut egui::Ui, frame: &TelemetryFrame, p: Palette) {
         });
 }
 
-fn render_sensors_tab(ui: &mut egui::Ui, sensors: &[SensorReading], p: Palette) {
-    ui.heading("Hardware Sensors & Telemetry Providers");
+fn render_sensors_tab(
+    ui: &mut egui::Ui,
+    sensors: &[SensorReading],
+    histories: &ResourceHistories,
+    state: &mut ResourcesViewState,
+    show_graphs: bool,
+    exporter: Option<&mut ExportManager>,
+    now: Instant,
+    p: Palette,
+) {
+    ui.horizontal(|ui| {
+        ui.heading("Hardware Sensors & Telemetry Providers");
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if let Some(exp) = exporter
+                && ui
+                    .button("Export Sensors CSV")
+                    .on_hover_text("Export current sensor snapshot to CSV")
+                    .clicked()
+            {
+                match exp.sensors(sensors.to_vec()) {
+                    Ok(()) => {
+                        state.export_message =
+                            Some((Instant::now(), "Sensors exported to CSV".into()));
+                    }
+                    Err(e) => {
+                        state.export_message =
+                            Some((Instant::now(), format!("Export failed: {e}")));
+                    }
+                }
+            }
+        });
+    });
+
     ui.label(
         egui::RichText::new(
-            "Vendor hardware metrics (Intel IGCL, NVIDIA NVML, AMD ADLX) from isolated workers.",
+            "Substantiated hardware metrics from isolated workers: Intel IGCL, NVIDIA NVML, AMD ADLX, and Advanced Sensors (LibreHardwareMonitor / PawnIO).",
         )
         .size(11.5)
         .color(p.secondary),
@@ -1754,7 +1862,7 @@ fn render_sensors_tab(ui: &mut egui::Ui, sensors: &[SensorReading], p: Palette) 
 
     if sensors.is_empty() {
         ui.label(
-            "No active vendor sensors reported. Sensors require supported GPU hardware and driver runtimes.",
+            "No active vendor sensors reported. Sensors require supported GPU/CPU hardware and driver runtimes.",
         );
         ui.label(
             egui::RichText::new(
@@ -1766,47 +1874,241 @@ fn render_sensors_tab(ui: &mut egui::Ui, sensors: &[SensorReading], p: Palette) 
         return;
     }
 
-    egui::ScrollArea::horizontal()
-        .id_salt("performance_sensors_table")
-        .show(ui, |ui| {
-            egui::Grid::new("resources_sensors_grid")
-                .striped(true)
-                .num_columns(5)
-                .spacing([20.0, 8.0])
-                .min_row_height(32.0)
-                .show(ui, |ui| {
-                    ui.strong("Hardware Scope");
-                    ui.strong("Sensor");
-                    ui.strong("Type");
-                    ui.strong("Reading");
-                    ui.strong("Provider");
-                    ui.end_row();
+    // 1. Selectable Trend Charts by Compatible Unit
+    if show_graphs {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("Trend Group:").strong());
+            for kind in [
+                SensorTrendKind::Power,
+                SensorTrendKind::Temperature,
+                SensorTrendKind::Clock,
+                SensorTrendKind::Fan,
+                SensorTrendKind::Load,
+            ] {
+                ui.selectable_value(&mut state.selected_sensor_trend, kind, kind.label());
+            }
+        });
 
-                    for sensor in sensors {
-                        ui.label(&sensor.scope);
-                        ui.label(&sensor.name);
-                        ui.monospace(format!("{:?}", sensor.sensor_type));
+        let current_kind = state.selected_sensor_trend;
+        let matching_sensors: Vec<&SensorReading> = sensors
+            .iter()
+            .filter(|s| current_kind.matches_sensor(s))
+            .collect();
 
-                        let age_ms =
-                            planora_telemetry::unix_ms().saturating_sub(sensor.value.sampled_at_ms);
-                        let val_str = if age_ms > 5_000 {
-                            format!("Stale ({} s)", age_ms / 1_000)
-                        } else {
-                            sensor.value.value.map_or_else(
-                                || "Unavailable".into(),
-                                |v| format!("{v:.1} {}", sensor.value.unit),
-                            )
-                        };
-                        ui.monospace(val_str).on_hover_text(
-                            sensor.value.unavailable_reason.as_ref().map_or_else(
-                                || format!("Sampled {} ms ago", age_ms),
-                                ToString::to_string,
-                            ),
-                        );
-
-                        ui.label(&sensor.provider);
-                        ui.end_row();
+        if !matching_sensors.is_empty() {
+            ui.add_space(6.0);
+            let colors = [
+                p.accent, p.cpu, p.gpu, p.memory, p.disk, p.network, p.warning, p.success,
+            ];
+            let mut plot_series: Vec<PlotSeries<'_>> = Vec::new();
+            for (idx, sensor) in matching_sensors.iter().enumerate() {
+                let id = format!(
+                    "sensor:{}:{}:{}:{:?}",
+                    sensor.scope, sensor.provider, sensor.name, sensor.sensor_type
+                );
+                let series = histories.detail(&id).or_else(|| {
+                    if !sensor.id.is_empty() {
+                        histories.detail(&format!("sensor:{}", sensor.id))
+                    } else {
+                        None
                     }
                 });
-        });
+                if let Some(s) = series {
+                    let color = colors[idx % colors.len()];
+                    plot_series.push(PlotSeries {
+                        name: &sensor.name,
+                        samples: s,
+                        color,
+                        dashed: idx >= colors.len(),
+                    });
+                }
+            }
+
+            if !plot_series.is_empty() {
+                let key = format!("sensor_trend_{:?}", current_kind);
+                let plot = state.plots.entry(key.clone()).or_default();
+                let chart_h = 220.0;
+                time_plot(
+                    ui,
+                    &key,
+                    &plot_series,
+                    state.range,
+                    now,
+                    current_kind.unit(),
+                    if current_kind == SensorTrendKind::Load {
+                        Some(100.0)
+                    } else {
+                        None
+                    },
+                    chart_h,
+                    plot,
+                    p,
+                );
+
+                ui.horizontal_wrapped(|ui| {
+                    for series in &plot_series {
+                        ui.colored_label(series.color, format!("━ {}", series.name));
+                    }
+                });
+            } else {
+                ui.label(
+                    egui::RichText::new("Collecting history for selected trend group...")
+                        .color(p.secondary),
+                );
+            }
+        } else {
+            ui.label(
+                egui::RichText::new(format!(
+                    "No active sensors matching {} on this system.",
+                    current_kind.label()
+                ))
+                .color(p.secondary),
+            );
+        }
+        ui.add_space(12.0);
+    }
+
+    // 2. Device-Grouped Sensor Tables
+    let mut groups: BTreeMap<String, Vec<&SensorReading>> = BTreeMap::new();
+    for sensor in sensors {
+        let device_name = if !sensor.device_name.is_empty() {
+            sensor.device_name.clone()
+        } else if !sensor.device_id.is_empty() {
+            sensor.device_id.clone()
+        } else {
+            format!("{} Device", sensor.scope)
+        };
+        groups.entry(device_name).or_default().push(sensor);
+    }
+
+    for (device_name, device_sensors) in groups {
+        ui.add_space(8.0);
+        ui.label(
+            egui::RichText::new(&device_name)
+                .size(14.0)
+                .strong()
+                .color(p.text),
+        );
+        ui.add_space(2.0);
+
+        egui::ScrollArea::horizontal()
+            .id_salt(format!("performance_sensors_{}", device_name))
+            .show(ui, |ui| {
+                egui::Grid::new(format!("grid_sensors_{}", device_name))
+                    .striped(true)
+                    .num_columns(9)
+                    .spacing([18.0, 6.0])
+                    .min_row_height(28.0)
+                    .show(ui, |ui| {
+                        ui.strong("Sensor");
+                        ui.strong("Current");
+                        ui.strong("Minimum");
+                        ui.strong("Maximum");
+                        ui.strong("Average");
+                        ui.strong("Unit");
+                        ui.strong("Source");
+                        ui.strong("Age");
+                        ui.strong("Status");
+                        ui.end_row();
+
+                        for sensor in device_sensors {
+                            // 1. Sensor Name
+                            ui.label(&sensor.name);
+
+                            // Lookup summary for min/max/avg
+                            let key = format!(
+                                "sensor:{}:{}:{}:{:?}",
+                                sensor.scope, sensor.provider, sensor.name, sensor.sensor_type
+                            );
+                            let summary = histories
+                                .detail(&key)
+                                .or_else(|| {
+                                    if !sensor.id.is_empty() {
+                                        histories.detail(&format!("sensor:{}", sensor.id))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .and_then(|s| s.observed_summary(now, state.range));
+
+                            // 2. Current
+                            let current_str = sensor.value.value.map_or_else(
+                                || "—".into(),
+                                |v| format!("{v:.1}"),
+                            );
+                            ui.monospace(current_str);
+
+                            // 3. Minimum
+                            let min_str = summary
+                                .as_ref()
+                                .map_or_else(|| "—".into(), |s| format!("{:.1}", s.minimum));
+                            ui.monospace(min_str);
+
+                            // 4. Maximum
+                            let max_str = summary
+                                .as_ref()
+                                .map_or_else(|| "—".into(), |s| format!("{:.1}", s.maximum));
+                            ui.monospace(max_str);
+
+                            // 5. Average
+                            let avg_str = summary
+                                .as_ref()
+                                .map_or_else(|| "—".into(), |s| format!("{:.1}", s.average));
+                            ui.monospace(avg_str);
+
+                            // 6. Unit
+                            ui.label(&sensor.value.unit);
+
+                            // 7. Source
+                            let src = if !sensor.provider.is_empty() {
+                                &sensor.provider
+                            } else {
+                                &sensor.value.source
+                            };
+                            ui.label(src);
+
+                            // 8. Age
+                            let age_ms = planora_telemetry::unix_ms()
+                                .saturating_sub(sensor.value.sampled_at_ms);
+                            let age_str = if age_ms < 1_000 {
+                                "< 1s".into()
+                            } else if age_ms < 60_000 {
+                                format!("{}s", age_ms / 1_000)
+                            } else {
+                                format!("{}m", age_ms / 60_000)
+                            };
+                            ui.monospace(age_str);
+
+                            // 9. Status
+                            let (status_text, status_color) =
+                                if let Some(r) = &sensor.value.unavailable_reason {
+                                    (r.to_string(), p.secondary)
+                                } else if age_ms > 5_000 {
+                                    (format!("Stale ({}s)", age_ms / 1_000), p.warning)
+                                } else if sensor.value.value.is_some() {
+                                    ("Active".into(), p.success)
+                                } else {
+                                    ("Unavailable".into(), p.secondary)
+                                };
+
+                            let status_resp = ui.colored_label(status_color, status_text);
+                            status_resp.on_hover_text(format!(
+                                "Sensor: {}\nScope: {}\nProvider: {}\nDevice: {}\nSampled: {} ms ago\nReason: {}",
+                                sensor.name,
+                                sensor.scope,
+                                sensor.provider,
+                                if sensor.device_name.is_empty() { "—" } else { &sensor.device_name },
+                                age_ms,
+                                sensor
+                                    .value
+                                    .unavailable_reason
+                                    .as_ref()
+                                    .map_or_else(|| "None".into(), ToString::to_string)
+                            ));
+
+                            ui.end_row();
+                        }
+                    });
+            });
+    }
 }

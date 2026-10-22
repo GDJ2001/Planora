@@ -186,6 +186,74 @@ pub fn query_dxgi_adapters() -> Vec<DxgiAdapterInfo> {
     results
 }
 
+pub fn has_pci_vendor_gpu(target_vendor_id: u32) -> bool {
+    let mut found = false;
+    unsafe {
+        let dxgi =
+            windows_sys::Win32::System::LibraryLoader::LoadLibraryA(c"dxgi.dll".as_ptr().cast());
+        if dxgi.is_null() {
+            return false;
+        }
+        let create_factory_ptr = windows_sys::Win32::System::LibraryLoader::GetProcAddress(
+            dxgi,
+            c"CreateDXGIFactory1".as_ptr().cast(),
+        );
+        let Some(create_factory) = create_factory_ptr else {
+            FreeLibrary(dxgi);
+            return false;
+        };
+        type CreateFactoryFn =
+            unsafe extern "system" fn(*const Guid, *mut *mut std::ffi::c_void) -> i32;
+        let create_factory: CreateFactoryFn = std::mem::transmute(create_factory);
+
+        let iid_factory1 = Guid {
+            data1: 0x770aae78,
+            data2: 0xf26f,
+            data3: 0x4dba,
+            data4: [0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0xee],
+        };
+        let mut factory: *mut std::ffi::c_void = ptr::null_mut();
+        if create_factory(&iid_factory1, &mut factory) == 0 && !factory.is_null() {
+            let factory_vtbl = *(factory as *mut *mut usize);
+            type EnumAdapters1Fn = unsafe extern "system" fn(
+                *mut std::ffi::c_void,
+                u32,
+                *mut *mut std::ffi::c_void,
+            ) -> i32;
+            type ReleaseFn = unsafe extern "system" fn(*mut std::ffi::c_void) -> u32;
+            let enum_adapters1: EnumAdapters1Fn = std::mem::transmute(*factory_vtbl.add(12));
+            let release_factory: ReleaseFn = std::mem::transmute(*factory_vtbl.add(2));
+
+            let mut idx = 0u32;
+            loop {
+                let mut adapter: *mut std::ffi::c_void = ptr::null_mut();
+                if enum_adapters1(factory, idx, &mut adapter) != 0 || adapter.is_null() {
+                    break;
+                }
+                idx += 1;
+
+                let adapter_vtbl = *(adapter as *mut *mut usize);
+                type GetDesc1Fn =
+                    unsafe extern "system" fn(*mut std::ffi::c_void, *mut DxgiAdapterDesc1) -> i32;
+                type ReleaseAdapterFn = unsafe extern "system" fn(*mut std::ffi::c_void) -> u32;
+                let get_desc1: GetDesc1Fn = std::mem::transmute(*adapter_vtbl.add(10));
+                let release_adapter: ReleaseAdapterFn = std::mem::transmute(*adapter_vtbl.add(2));
+
+                let mut desc = std::mem::zeroed::<DxgiAdapterDesc1>();
+                if get_desc1(adapter, &mut desc) == 0 && desc.vendor_id == target_vendor_id {
+                    found = true;
+                    release_adapter(adapter);
+                    break;
+                }
+                release_adapter(adapter);
+            }
+            release_factory(factory);
+        }
+        FreeLibrary(dxgi);
+    }
+    found
+}
+
 pub struct WindowsGpu {
     query: usize,
     engine_counter: usize,

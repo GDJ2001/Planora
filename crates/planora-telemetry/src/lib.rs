@@ -11,9 +11,11 @@ pub mod vendor_sensors;
 #[cfg(windows)]
 pub mod windows_counters;
 #[cfg(windows)]
-mod windows_gpu;
+pub mod windows_gpu;
 #[cfg(windows)]
 pub use windows_gpu::counter_available as windows_gpu_counter_available;
+#[cfg(windows)]
+pub use windows_gpu::has_pci_vendor_gpu;
 
 pub const MIN_SAMPLE_INTERVAL: Duration = Duration::from_millis(50);
 pub const DEFAULT_SAMPLE_INTERVAL: Duration = Duration::from_millis(100);

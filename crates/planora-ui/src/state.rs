@@ -64,7 +64,7 @@ pub struct UserSettings {
 impl Default for UserSettings {
     fn default() -> Self {
         Self {
-            schema_version: 4,
+            schema_version: 5,
             theme: Theme::System,
             density: Density::Normal,
             poll_interval_ms: 100,
@@ -115,7 +115,7 @@ impl UserSettings {
                 if let Ok(data) = std::fs::read_to_string(path)
                     && let Ok(mut settings) = serde_json::from_str::<Self>(&data)
                 {
-                    settings.schema_version = 4;
+                    settings.schema_version = 5;
                     settings.performance_engines.truncate(4);
                     settings.performance_resource =
                         settings.performance_resource.filter(|id| id.len() <= 256);
@@ -1051,7 +1051,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_migration_v3_to_v4_preserves_preferences() {
+    fn settings_migration_v3_and_v4_to_v5_preserves_preferences() {
         let v3_json = r#"{
             "schema_version": 3,
             "theme": "Dark",
@@ -1075,8 +1075,8 @@ mod tests {
         }"#;
 
         let mut settings: UserSettings = serde_json::from_str(v3_json).expect("v3 json parse");
-        settings.schema_version = 4;
-        assert_eq!(settings.schema_version, 4);
+        settings.schema_version = 5;
+        assert_eq!(settings.schema_version, 5);
         assert_eq!(settings.theme, Theme::Dark);
         assert_eq!(settings.density, Density::Compact);
         assert_eq!(settings.poll_interval_ms, 250);
@@ -1092,5 +1092,17 @@ mod tests {
         assert!(settings.process_columns.show_gpu);
         assert_eq!(settings.resource_graphs, [true; 6]);
         assert_eq!(settings.performance_range, HistoryRange::Sec60);
+
+        let v4_json = r#"{
+            "schema_version": 4,
+            "theme": "Light",
+            "density": "Normal",
+            "poll_interval_ms": 100
+        }"#;
+        let mut settings_v4: UserSettings = serde_json::from_str(v4_json).expect("v4 json parse");
+        settings_v4.schema_version = 5;
+        assert_eq!(settings_v4.schema_version, 5);
+        assert_eq!(settings_v4.theme, Theme::Light);
+        assert_eq!(settings_v4.poll_interval_ms, 100);
     }
 }

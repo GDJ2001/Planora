@@ -2,7 +2,7 @@ use interprocess::local_socket::prelude::*;
 use planora_bench::{ChaseMode, run_cache_probe, run_core_matrix};
 use planora_core::{
     BenchmarkState, Capability, CapabilityState, Command, DiagnosticEntry, ErrorCode,
-    PROTOCOL_VERSION, ProcessIdentity, ProfileState, Response, ResponseEnvelope,
+    PROTOCOL_VERSION, ProcessIdentity, ProfileState, ProfileTarget, Response, ResponseEnvelope,
     SUPPORTED_SAMPLE_INTERVALS_MS, TelemetryFrame,
 };
 use planora_helper::{
@@ -10,6 +10,7 @@ use planora_helper::{
     receive_request_deadline, send_response_deadline,
 };
 use planora_telemetry::Sampler;
+mod profiler;
 use std::{
     collections::{HashMap, VecDeque},
     io,
@@ -361,16 +362,24 @@ fn capabilities() -> Vec<Capability> {
             "PMU sampled profiling",
             "Selected process",
             "Windows ETW profiling",
-            CapabilityState::Unsupported,
-            Some("No ETW PMU trace collector is implemented in this build"),
+            if cfg!(windows) {
+                CapabilityState::Available
+            } else {
+                CapabilityState::Unsupported
+            },
+            (!cfg!(windows)).then_some("PMU sampled profiling requires Windows ETW profiling"),
             None,
         ),
         make(
             "Disk I/O profiling",
             "System and processes",
             "Windows ETW profiling",
-            CapabilityState::Unsupported,
-            Some("No ETW disk trace collector is implemented in this build"),
+            if cfg!(windows) {
+                CapabilityState::Available
+            } else {
+                CapabilityState::Unsupported
+            },
+            (!cfg!(windows)).then_some("Disk I/O profiling requires Windows ETW profiling"),
             None,
         ),
         make(
@@ -594,6 +603,23 @@ fn dispatch(command: Command, req_id: u64, connection_id: u64, state: &State) ->
             Response::Capabilities(capabilities())
         }
         Command::RunCacheProbe { job_id, page_mode } => {
+            let prof_state = state.profiling.state.lock().unwrap();
+            if matches!(
+                *prof_state,
+                ProfileState::Running { .. } | ProfileState::Cancelling { .. }
+            ) {
+                state.diagnostics.log(
+                    req_id,
+                    ErrorCode::Busy,
+                    "benchmark start rejected: a profiling session is already running",
+                );
+                return Response::Error {
+                    code: ErrorCode::Busy,
+                    message: "a profiling session is already running".into(),
+                };
+            }
+            drop(prof_state);
+
             let mut bm_state = state.benchmarks.state.lock().unwrap();
             if matches!(
                 *bm_state,
@@ -682,6 +708,23 @@ fn dispatch(command: Command, req_id: u64, connection_id: u64, state: &State) ->
                     message: "select between 2 and 8 logical CPUs".into(),
                 };
             }
+            let prof_state = state.profiling.state.lock().unwrap();
+            if matches!(
+                *prof_state,
+                ProfileState::Running { .. } | ProfileState::Cancelling { .. }
+            ) {
+                state.diagnostics.log(
+                    req_id,
+                    ErrorCode::Busy,
+                    "matrix start rejected: a profiling session is already running",
+                );
+                return Response::Error {
+                    code: ErrorCode::Busy,
+                    message: "a profiling session is already running".into(),
+                };
+            }
+            drop(prof_state);
+
             let mut bm_state = state.benchmarks.state.lock().unwrap();
             if matches!(
                 *bm_state,
@@ -756,16 +799,168 @@ fn dispatch(command: Command, req_id: u64, connection_id: u64, state: &State) ->
         }
         Command::CancelBenchmark { job_id } => state.benchmarks.cancel(job_id),
         Command::BenchmarkStatus => Response::BenchmarkStatus(state.benchmarks.status()),
-        Command::StartProfile { job_id, .. } => {
-            state.diagnostics.log(
-                job_id,
-                ErrorCode::Unsupported,
-                "profiling requested but no ETW trace provider is implemented",
-            );
-            Response::Error {
-                code: ErrorCode::Unsupported,
-                message: "Disk I/O and PMU profiles require an ETW provider; this build cannot collect them yet".into(),
+        Command::StartProfile { job_id, target } => {
+            let bm_state = state.benchmarks.state.lock().unwrap();
+            if matches!(
+                *bm_state,
+                BenchmarkState::Running { .. } | BenchmarkState::Cancelling { .. }
+            ) {
+                state.diagnostics.log(
+                    req_id,
+                    ErrorCode::Busy,
+                    "profile start rejected: a benchmark is already running",
+                );
+                return Response::Error {
+                    code: ErrorCode::Busy,
+                    message: "a benchmark is already running".into(),
+                };
             }
+            drop(bm_state);
+
+            let mut prof_state = state.profiling.state.lock().unwrap();
+            if matches!(
+                *prof_state,
+                ProfileState::Running { .. } | ProfileState::Cancelling { .. }
+            ) {
+                state.diagnostics.log(
+                    req_id,
+                    ErrorCode::Busy,
+                    "profile start rejected: another profiling session is already running",
+                );
+                return Response::Error {
+                    code: ErrorCode::Busy,
+                    message: "a profiling session is already running".into(),
+                };
+            }
+
+            let target_desc = match &target {
+                ProfileTarget::DiskIo { target_process, .. } => {
+                    if let Some(target) = target_process {
+                        format!("Disk I/O profile (PID {})", target.pid)
+                    } else {
+                        "System-wide Disk I/O profile".to_string()
+                    }
+                }
+                ProfileTarget::PmuSampling {
+                    target_process,
+                    sources,
+                    ..
+                } => {
+                    if let Some(target) = target_process {
+                        format!(
+                            "PMU profile (PID {}) with {} sources",
+                            target.pid,
+                            sources.len()
+                        )
+                    } else {
+                        format!("System PMU profile with {} sources", sources.len())
+                    }
+                }
+            };
+            let duration_raw = match &target {
+                ProfileTarget::DiskIo {
+                    duration_seconds, ..
+                } => *duration_seconds,
+                ProfileTarget::PmuSampling {
+                    duration_seconds,
+                    sources,
+                    ..
+                } => {
+                    if sources.len() > 2 {
+                        state.diagnostics.log(
+                            req_id,
+                            ErrorCode::InvalidInput,
+                            "profile start rejected: maximum of 2 PMU sources allowed",
+                        );
+                        return Response::Error {
+                            code: ErrorCode::InvalidInput,
+                            message: "PMU sampled profiling is limited to a maximum of 2 concurrent sources".into(),
+                        };
+                    }
+                    *duration_seconds
+                }
+            };
+            if duration_raw > 60 {
+                state.diagnostics.log(
+                    req_id,
+                    ErrorCode::InvalidInput,
+                    "profile start rejected: duration exceeds 60 seconds",
+                );
+                return Response::Error {
+                    code: ErrorCode::InvalidInput,
+                    message: "profile duration cannot exceed 60 seconds".into(),
+                };
+            }
+            if !cfg!(windows) {
+                state.diagnostics.log(
+                    req_id,
+                    ErrorCode::Unsupported,
+                    "profile start rejected: profiling requires Windows ETW",
+                );
+                return Response::Error {
+                    code: ErrorCode::Unsupported,
+                    message: "profiling requires Windows ETW".into(),
+                };
+            }
+            let duration_seconds = if duration_raw == 0 { 15 } else { duration_raw };
+
+            let cancel = Arc::new(AtomicBool::new(false));
+            *state.profiling.cancel.lock().unwrap() = cancel.clone();
+            state
+                .profiling
+                .current_job_id
+                .store(job_id, Ordering::SeqCst);
+            *prof_state = ProfileState::Running {
+                job_id,
+                target_desc: target_desc.clone(),
+                elapsed_ms: 0,
+                duration_seconds,
+            };
+
+            let prof = state.profiling.clone();
+            let diag = state.diagnostics.clone();
+            let target_clone = target.clone();
+            let worker = thread::spawn(move || {
+                let res = profiler::run_profile(job_id, target_clone, cancel);
+                let mut lock = prof.state.lock().unwrap();
+                if prof.current_job_id.load(Ordering::SeqCst) != job_id {
+                    return;
+                }
+                match res {
+                    Ok(result) => {
+                        *lock = ProfileState::Completed { job_id, result };
+                        diag.log(
+                            job_id,
+                            ErrorCode::Internal,
+                            "profiling session completed successfully",
+                        );
+                    }
+                    Err((ErrorCode::Cancelled, _err)) => {
+                        *lock = ProfileState::Cancelled { job_id };
+                        diag.log(
+                            job_id,
+                            ErrorCode::Cancelled,
+                            "profiling session cancelled by user",
+                        );
+                    }
+                    Err((code, err)) => {
+                        *lock = ProfileState::Failed {
+                            job_id,
+                            code,
+                            message: err.clone(),
+                        };
+                        diag.log(job_id, code, format!("profiling session failed: {err}"));
+                    }
+                }
+            });
+            *state.profiling.worker.lock().unwrap() = Some(worker);
+
+            Response::ProfileStatus(ProfileState::Running {
+                job_id,
+                target_desc,
+                elapsed_ms: 0,
+                duration_seconds,
+            })
         }
         Command::CancelProfile { job_id } => state.profiling.cancel(job_id),
         Command::ProfileStatus => Response::ProfileStatus(state.profiling.status()),
@@ -1154,7 +1349,7 @@ mod lifecycle_tests {
     use super::*;
 
     #[test]
-    fn unsupported_profile_never_starts_worker_or_fabricates_result() {
+    fn invalid_profile_never_starts_worker_or_fabricates_result() {
         let state = State {
             session_id: 1,
             latest_frame: Arc::new(RwLock::new(Sampler::new().sample())),
@@ -1163,12 +1358,13 @@ mod lifecycle_tests {
             diagnostics: Arc::new(DiagnosticLogger::new()),
             sampling: Arc::new(SamplingCoordinator::default()),
         };
+        // Duration > 60s exceeds limit
         let response = dispatch(
             Command::StartProfile {
                 job_id: 17,
                 target: planora_core::ProfileTarget::DiskIo {
                     target_process: None,
-                    duration_seconds: 15,
+                    duration_seconds: 90,
                 },
             },
             17,
@@ -1178,7 +1374,7 @@ mod lifecycle_tests {
         assert!(matches!(
             response,
             Response::Error {
-                code: ErrorCode::Unsupported,
+                code: ErrorCode::InvalidInput,
                 ..
             }
         ));

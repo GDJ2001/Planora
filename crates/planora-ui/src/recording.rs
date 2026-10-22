@@ -17,7 +17,7 @@ use std::{
     time::Duration,
 };
 
-const FORMAT_VERSION: u32 = 3;
+const FORMAT_VERSION: u32 = 4;
 const MAX_RECORDING_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_RECORDING_MS: u64 = 2 * 60 * 60 * 1_000;
 const MAX_LINE_BYTES: u64 = 8 * 1024 * 1024;
@@ -597,6 +597,57 @@ mod tests {
             matches!(&events[1], ReplayMessage::Sample(replayed) if replayed.sequence == frame.sequence)
         );
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn legacy_v2_and_v3_recordings_import_cleanly() {
+        let frame = crate::smoke_test::test_frame();
+        let sample = RecordedSnapshot::from_frame(&frame, None);
+
+        for version in [2, 3] {
+            let path = std::env::temp_dir().join(format!(
+                "planora-recording-v{}-{}-{}.jsonl",
+                version,
+                std::process::id(),
+                planora_telemetry::unix_ms()
+            ));
+            let mut file = File::create(&path).unwrap();
+            writeln!(
+                file,
+                "{}",
+                serde_json::to_string(&RecordLine::Header {
+                    format_version: version,
+                    created_at_ms: frame.sampled_at_ms,
+                    build_version: "test-legacy".into(),
+                    build_commit: "test-commit".into(),
+                    topology: Box::new(None),
+                })
+                .unwrap()
+            )
+            .unwrap();
+            writeln!(
+                file,
+                "{}",
+                serde_json::to_string(&RecordLine::Sample {
+                    snapshot: Box::new(sample.clone()),
+                    dropped_before: 0
+                })
+                .unwrap()
+            )
+            .unwrap();
+            drop(file);
+
+            let (tx, rx) = mpsc::sync_channel(8);
+            let ctx = egui::Context::default();
+            read_recording(&path, &tx, &AtomicBool::new(false), &ctx).unwrap();
+            let events: Vec<_> = rx.try_iter().collect();
+            assert_eq!(events.len(), 2);
+            assert!(matches!(events[0], ReplayMessage::Header(_)));
+            assert!(
+                matches!(&events[1], ReplayMessage::Sample(replayed) if replayed.sequence == frame.sequence)
+            );
+            fs::remove_file(path).unwrap();
+        }
     }
 
     #[test]

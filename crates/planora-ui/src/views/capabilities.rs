@@ -39,6 +39,8 @@ fn state_label(state: CapabilityState) -> &'static str {
         CapabilityState::Unsupported => "Unsupported",
         CapabilityState::TemporarilyFailed => "Temporary failure",
         CapabilityState::DeviceRemoved => "Device removed",
+        CapabilityState::NotApplicable => "Not applicable",
+        CapabilityState::NotImplemented => "Not implemented",
     }
 }
 
@@ -189,15 +191,19 @@ pub fn render_capabilities_view(
                                 ui.label(&cap.provider);
                                 match &cap.reason {
                                     Some(r) => {
-                                        ui.label(
-                                            egui::RichText::new(format!(
-                                                "{r}{}",
-                                                cap.recovery_action
-                                                    .as_ref()
-                                                    .map_or(String::new(), |a| format!(" · {a}"))
-                                            ))
-                                            .size(12.0)
-                                            .color(p.secondary),
+                                        let details = format!(
+                                            "{r}{}",
+                                            cap.recovery_action
+                                                .as_ref()
+                                                .map_or(String::new(), |a| format!(" · {a}"))
+                                        );
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(details)
+                                                    .size(12.0)
+                                                    .color(p.secondary),
+                                            )
+                                            .wrap(),
                                         );
                                     }
                                     None => {
