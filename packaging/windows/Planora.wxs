@@ -65,7 +65,7 @@
         </Component>
       </Directory>
     </StandardDirectory>
-    <Feature Id="Core" Title="Core application" Description="Planora core application and privileged helper service" Level="1" Absent="disallow">
+    <Feature Id="Core" Title="Core application" Description="Planora core application and privileged helper service" Level="1" AllowAbsent="no">
       <ComponentRef Id="PlanoraApp" />
       <ComponentRef Id="PlanoraShortcut" />
       <ComponentRef Id="PlanoraHelper" />

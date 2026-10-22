@@ -23,6 +23,7 @@
                   SourceFile="$(var.ProjectDir)\packaging\windows\deps\PawnIO_setup.exe"
                   InstallArguments="-install -silent"
                   UninstallArguments="-uninstall -silent"
+                  DetectCondition="PawnIOInstalled"
                   Permanent="no"
                   Vital="no"
                   Compressed="yes" />
