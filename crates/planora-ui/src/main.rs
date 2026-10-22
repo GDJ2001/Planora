@@ -107,6 +107,16 @@ pub struct App {
     normal_window: bool,
     window_recovered: bool,
     startup_connected_logged: bool,
+    pub lifecycle: LifecycleState,
+    shutdown_started: Option<Instant>,
+    shutdown_completed: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LifecycleState {
+    Starting,
+    Running,
+    Stopping,
 }
 
 impl App {
@@ -158,6 +168,15 @@ impl App {
     }
 
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        if let Some(rs) = cc.wgpu_render_state.as_ref() {
+            startup::record(&format!(
+                "renderer-init backend={:?} adapter={}",
+                rs.adapter.get_info().backend,
+                rs.adapter.get_info().name,
+            ));
+        } else {
+            startup::record("renderer-init backend=default");
+        }
         let (tx, rx) = mpsc::sync_channel(64);
         let settings = UserSettings::load();
         let mut processes_state = ProcessesViewState::default();
@@ -275,6 +294,9 @@ impl App {
             normal_window: true,
             window_recovered: false,
             startup_connected_logged: false,
+            lifecycle: LifecycleState::Starting,
+            shutdown_started: None,
+            shutdown_completed: false,
         }
     }
 
@@ -419,11 +441,169 @@ impl App {
         });
     }
 
+    pub fn begin_shutdown(&mut self, ctx: &egui::Context) {
+        if self.lifecycle == LifecycleState::Stopping {
+            return;
+        }
+        self.lifecycle = LifecycleState::Stopping;
+        self.shutdown_started = Some(Instant::now());
+        startup::record("shutdown-begin");
+
+        if let Ok(guard) = self.shared.lock() {
+            if let Some(planora_core::BenchmarkState::Running { job_id, .. }) =
+                guard.benchmark_state
+            {
+                let _ = self.tx.send(Command::CancelBenchmark { job_id });
+            }
+            if let Some(planora_core::ProfileState::Running { job_id, .. }) = guard.profile_state {
+                let _ = self.tx.send(Command::CancelProfile { job_id });
+            }
+        }
+        self.client_stop.store(true, Ordering::Release);
+        if let Some(worker) = &self.client_worker {
+            worker.thread().unpark();
+        }
+        #[cfg(windows)]
+        {
+            if let Some(stop) = &self.sensor_stop {
+                stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            if let Some(worker) = &self.sensor_worker {
+                worker.thread().unpark();
+            }
+        }
+        self.history_worker.stop();
+        self.recorder.request_stop();
+        self.exporter.request_cancel();
+        self.replay.stop();
+        #[cfg(windows)]
+        if let Some(mut child) = self.authorization_child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+
+        if self.normal_window {
+            if let Err(error) = window_placement::save(&self.window_placement) {
+                startup::record(&format!("placement-save-error {error}"));
+            }
+            self.settings_error = self
+                .settings
+                .save()
+                .err()
+                .map(|e| format!("Could not save preferences: {e}"));
+            if let Some(error) = &self.settings_error {
+                startup::record(&format!("settings-save-error {error}"));
+            }
+        }
+
+        ctx.request_repaint();
+    }
+
+    pub fn update_shutdown(&mut self, ctx: &egui::Context) {
+        let client_done = self.client_worker.as_ref().is_none_or(|w| w.is_finished());
+        let history_done = self.history_worker.is_finished();
+        #[cfg(windows)]
+        let sensor_done = self.sensor_worker.as_ref().is_none_or(|w| w.is_finished());
+        #[cfg(not(windows))]
+        let sensor_done = true;
+        let recording_done = self.recorder.is_finished();
+        let export_done = self.exporter.is_finished();
+
+        let all_done = client_done && history_done && sensor_done && recording_done && export_done;
+        if all_done {
+            if let Some(worker) = self.client_worker.take() {
+                let _ = worker.join();
+            }
+            self.history_worker.join();
+            #[cfg(windows)]
+            if let Some(worker) = self.sensor_worker.take() {
+                let _ = worker.join();
+            }
+            self.recorder.join();
+            self.exporter.cancel();
+            self.shutdown_completed = true;
+            startup::record("shutdown-complete");
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        ctx.request_repaint_after(std::time::Duration::from_millis(50));
+
+        let elapsed = self
+            .shutdown_started
+            .map_or(std::time::Duration::ZERO, |t| t.elapsed());
+        if elapsed >= std::time::Duration::from_secs(5) {
+            egui::Window::new("Planora Shutdown")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.heading("Waiting for operations to complete...");
+                    ui.add_space(8.0);
+                    if !recording_done {
+                        ui.label("• Finalizing recording output to disk...");
+                    }
+                    if !export_done {
+                        ui.label("• Finalizing export file...");
+                    }
+                    if !client_done {
+                        ui.label("• Closing telemetry connection...");
+                    }
+                    if !history_done {
+                        ui.label("• Finalizing history buffer...");
+                    }
+                    #[cfg(windows)]
+                    if !sensor_done {
+                        ui.label("• Stopping sensor worker...");
+                    }
+                    ui.add_space(14.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Keep waiting").clicked() {
+                            self.shutdown_started = Some(Instant::now());
+                        }
+                        if ui
+                            .button("Exit without completing pending writes")
+                            .clicked()
+                        {
+                            startup::record("shutdown-abandon-pending-writes");
+                            self.client_worker.take();
+                            #[cfg(windows)]
+                            self.sensor_worker.take();
+                            self.shutdown_completed = true;
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                    });
+                });
+        }
+    }
+
     pub fn render_ui(&mut self, root: &mut egui::Ui) {
+        if self.lifecycle == LifecycleState::Starting {
+            self.lifecycle = LifecycleState::Running;
+        }
+
+        let close_requested = root.ctx().input(|i| i.viewport().close_requested());
+        if close_requested && self.lifecycle == LifecycleState::Running {
+            self.begin_shutdown(root.ctx());
+        }
+
+        if self.lifecycle == LifecycleState::Stopping {
+            self.update_shutdown(root.ctx());
+            return;
+        }
+
+        if let Some((start, duration)) = self.auto_close
+            && start.elapsed() >= duration
+        {
+            self.begin_shutdown(root.ctx());
+            return;
+        }
+
         if self.normal_window && self.frames_rendered == 0 {
             let viewport = root.ctx().input(|input| input.viewport().clone());
             startup::record(&format!(
-                "first-ui-frame inner={:?} outer={:?} scale={:?} maximized={:?}",
+                "first-painted-frame inner={:?} outer={:?} scale={:?} maximized={:?}",
                 viewport.inner_rect.map(|r| r.size()),
                 viewport.outer_rect.map(|r| r.size()),
                 viewport.native_pixels_per_point,
@@ -581,9 +761,28 @@ impl App {
             self.recorder
                 .record(frame, self.selected.as_ref(), recording_sensors);
         }
-        if self.normal_window && !self.startup_connected_logged && app_state == AppState::Live {
-            startup::record("helper-connected");
-            self.startup_connected_logged = true;
+        if self.normal_window && !self.startup_connected_logged {
+            match &app_state {
+                AppState::Live => {
+                    startup::record("helper-connection result=connected");
+                    self.startup_connected_logged = true;
+                }
+                AppState::AwaitingAuthorization => {
+                    startup::record("helper-connection result=awaiting-authorization");
+                    self.startup_connected_logged = true;
+                }
+                AppState::IncompatibleVersion { helper_version } => {
+                    startup::record(&format!(
+                        "helper-connection result=incompatible-version helper_version={helper_version}"
+                    ));
+                    self.startup_connected_logged = true;
+                }
+                AppState::Failed(msg) => {
+                    startup::record(&format!("helper-connection result=failed message={msg}"));
+                    self.startup_connected_logged = true;
+                }
+                _ => {}
+            }
         }
 
         // Evaluate staleness if in Live state
@@ -1199,22 +1398,29 @@ impl eframe::App for App {
 
 impl Drop for App {
     fn drop(&mut self) {
-        self.client_stop.store(true, Ordering::Release);
-        self.recorder.stop();
-        self.replay.stop();
-        self.exporter.cancel();
-        if let Some(worker) = self.client_worker.take() {
-            worker.thread().unpark();
-            let _ = worker.join();
-        }
-        #[cfg(windows)]
-        {
-            if let Some(stop) = &self.sensor_stop {
-                stop.store(true, std::sync::atomic::Ordering::SeqCst);
-            }
-            if let Some(worker) = self.sensor_worker.take() {
+        if !self.shutdown_completed {
+            self.client_stop.store(true, Ordering::Release);
+            self.recorder.stop();
+            self.replay.stop();
+            self.exporter.cancel();
+            if let Some(worker) = self.client_worker.take() {
                 worker.thread().unpark();
                 let _ = worker.join();
+            }
+            self.history_worker.join();
+            #[cfg(windows)]
+            {
+                if let Some(stop) = &self.sensor_stop {
+                    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                if let Some(worker) = self.sensor_worker.take() {
+                    worker.thread().unpark();
+                    let _ = worker.join();
+                }
+                if let Some(mut child) = self.authorization_child.take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
             }
         }
     }
@@ -1231,17 +1437,56 @@ fn main() -> eframe::Result<()> {
     }
 
     if std::env::args().any(|a| a == "--build-info") {
+        #[cfg(windows)]
+        unsafe {
+            use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+            let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+        }
         let info = state::BUILD_INFO;
-        println!(
-            "{}",
-            serde_json::json!({
-                "version": info.version,
-                "protocolVersion": info.protocol_version,
-                "gitCommit": info.git_commit,
-                "target": info.target,
-                "profile": info.profile,
-            })
-        );
+        let val = serde_json::json!({
+            "version": info.version,
+            "protocolVersion": info.protocol_version,
+            "gitCommit": info.git_commit,
+            "target": info.target,
+            "profile": info.profile,
+        });
+        let text = serde_json::to_string_pretty(&val).unwrap_or_else(|_| "{}".into());
+        println!("{text}");
+        if let Some(out_path) = std::env::args()
+            .position(|a| a == "--output" || a == "-o")
+            .and_then(|idx| std::env::args().nth(idx + 1))
+        {
+            let _ = std::fs::write(out_path, &text);
+        }
+        return Ok(());
+    }
+
+    if std::env::args().any(|a| a == "--diagnostics") {
+        #[cfg(windows)]
+        unsafe {
+            use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+            let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+        }
+        let info = state::BUILD_INFO;
+        let log_content = startup::log_path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .unwrap_or_else(|| "No startup log recorded".into());
+        let diag = serde_json::json!({
+            "version": info.version,
+            "protocolVersion": info.protocol_version,
+            "gitCommit": info.git_commit,
+            "target": info.target,
+            "profile": info.profile,
+            "startupLog": log_content,
+        });
+        let text = serde_json::to_string_pretty(&diag).unwrap_or_else(|_| "{}".into());
+        println!("{text}");
+        if let Some(out_path) = std::env::args()
+            .position(|a| a == "--output" || a == "-o")
+            .and_then(|idx| std::env::args().nth(idx + 1))
+        {
+            let _ = std::fs::write(out_path, &text);
+        }
         return Ok(());
     }
     if std::env::args().any(|a| a == "--headless-smoke-test") {
@@ -1384,17 +1629,31 @@ fn main() -> eframe::Result<()> {
     } else {
         capture_state_path
     };
+    #[cfg(windows)]
+    let dpi_scale =
+        (unsafe { windows_sys::Win32::UI::HiDpi::GetDpiForSystem() }.max(96) as f32) / 96.0;
+    #[cfg(not(windows))]
+    let dpi_scale = 1.0f32;
+
     if !capture_mode && !native_fixture {
         startup::record(&format!(
-            "launch version={} commit={} protocol={} requested={}x{} maximized={} work={}x{} renderer=wgpu",
+            "build-identity version={} commit={} protocol={} target={} profile={}",
             state::BUILD_INFO.version,
             state::BUILD_INFO.git_commit,
             PROTOCOL_VERSION,
-            placement.normal_size[0],
-            placement.normal_size[1],
-            placement.maximized,
+            state::BUILD_INFO.target,
+            state::BUILD_INFO.profile,
+        ));
+        startup::record("launch-mode normal");
+        startup::record(&format!(
+            "monitor-dpi work_area={:.1}x{:.1} dpi_scale={:.2}",
             work_area.max[0] - work_area.min[0],
             work_area.max[1] - work_area.min[1],
+            dpi_scale,
+        ));
+        startup::record(&format!(
+            "restored-geometry requested={:.1}x{:.1} maximized={}",
+            placement.normal_size[0], placement.normal_size[1], placement.maximized,
         ));
     }
     let options = eframe::NativeOptions {
@@ -1631,5 +1890,32 @@ mod tests {
     #[test]
     fn test_headless_smoke_suite_executes() {
         smoke_test::run_smoke_fast_check().expect("Headless smoke fast check should pass");
+    }
+
+    #[test]
+    fn test_lifecycle_and_coordinated_shutdown() {
+        let mut app = smoke_test::create_test_app(Theme::Dark, Page::Performance);
+        assert_eq!(app.lifecycle, LifecycleState::Running);
+        assert!(app.shutdown_started.is_none());
+        assert!(!app.shutdown_completed);
+
+        // Simulate active benchmark
+        {
+            let mut shared = app.shared.lock().unwrap();
+            shared.benchmark_state = Some(planora_core::BenchmarkState::Running {
+                job_id: 42,
+                elapsed_ms: 100,
+            });
+        }
+
+        let ctx = egui::Context::default();
+        app.begin_shutdown(&ctx);
+        assert_eq!(app.lifecycle, LifecycleState::Stopping);
+        assert!(app.shutdown_started.is_some());
+        assert!(app.client_stop.load(Ordering::Acquire));
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        app.update_shutdown(&ctx);
+        assert!(app.shutdown_completed);
     }
 }

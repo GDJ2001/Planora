@@ -266,11 +266,23 @@ impl Recorder {
         Ok(path)
     }
 
-    pub fn stop(&mut self) {
+    pub fn request_stop(&mut self) {
         self.tx = None;
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.worker.as_ref().is_none_or(|w| w.is_finished())
+    }
+
+    pub fn join(&mut self) {
+        self.request_stop();
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
+    }
+
+    pub fn stop(&mut self) {
+        self.join();
     }
 
     pub fn record(

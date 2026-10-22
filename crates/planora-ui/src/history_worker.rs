@@ -100,13 +100,25 @@ impl HistoryWorker {
     pub fn dropped(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
     }
+
+    pub fn stop(&mut self) {
+        self.input.take();
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.thread.as_ref().is_none_or(|t| t.is_finished())
+    }
+
+    pub fn join(&mut self) {
+        self.stop();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 impl Drop for HistoryWorker {
     fn drop(&mut self) {
-        self.input.take();
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+        self.join();
     }
 }

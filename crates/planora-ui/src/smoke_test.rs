@@ -320,6 +320,9 @@ pub fn create_test_app(theme: Theme, page: Page) -> App {
         normal_window: false,
         window_recovered: false,
         startup_connected_logged: false,
+        lifecycle: crate::LifecycleState::Running,
+        shutdown_started: None,
+        shutdown_completed: false,
     }
 }
 

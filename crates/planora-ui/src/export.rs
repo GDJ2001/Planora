@@ -126,8 +126,16 @@ impl ExportManager {
         Ok(())
     }
 
-    pub fn cancel(&mut self) {
+    pub fn request_cancel(&mut self) {
         self.cancel.store(true, Ordering::Release);
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.worker.as_ref().is_none_or(|w| w.is_finished())
+    }
+
+    pub fn cancel(&mut self) {
+        self.request_cancel();
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
