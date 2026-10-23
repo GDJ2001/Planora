@@ -1,7 +1,7 @@
 use crate::{
     components::{
         header::render_page_header,
-        plot::{PlotSeries, PlotState, capacity_bar, sparkline, time_plot},
+        plot::{PlotSeries, PlotState, activity_bars, capacity_bar, sparkline, time_plot},
     },
     export::ExportManager,
     formatting::{format_bytes, format_percent, format_rate},
@@ -652,6 +652,44 @@ fn format_summary_value(value: f32, unit: &str) -> String {
     }
 }
 
+fn cpu_utilization_ring(ui: &mut egui::Ui, value: Option<f32>, p: Palette) {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(72.0), egui::Sense::hover());
+    let center = rect.center();
+    let radius = 29.0;
+    ui.painter()
+        .circle_stroke(center, radius, Stroke::new(7.0, p.border_control));
+    if let Some(percent) = value.filter(|value| value.is_finite()) {
+        let sweep = percent.clamp(0.0, 100.0) / 100.0 * std::f32::consts::TAU;
+        if sweep > 0.0 {
+            let steps = ((sweep / std::f32::consts::TAU * 64.0).ceil() as usize).max(2);
+            let points = (0..=steps)
+                .map(|step| {
+                    let angle = -std::f32::consts::FRAC_PI_2 + sweep * step as f32 / steps as f32;
+                    center + Vec2::new(angle.cos(), angle.sin()) * radius
+                })
+                .collect();
+            ui.painter()
+                .add(egui::Shape::line(points, Stroke::new(7.0, p.cpu)));
+        }
+        ui.painter().text(
+            center,
+            egui::Align2::CENTER_CENTER,
+            format!("{percent:.0}%"),
+            egui::FontId::monospace(13.0),
+            p.text,
+        );
+    } else {
+        ui.painter().text(
+            center,
+            egui::Align2::CENTER_CENTER,
+            "—",
+            egui::FontId::proportional(18.0),
+            p.secondary,
+        );
+    }
+    response.on_hover_text("Current overall CPU utilization");
+}
+
 fn cpu_heatmap(
     ui: &mut egui::Ui,
     frame: &TelemetryFrame,
@@ -664,11 +702,9 @@ fn cpu_heatmap(
     }
     ui.heading("Logical processor heatmap");
     ui.label(
-        egui::RichText::new(
-            "Select a logical processor to inspect its observed trend. Windows processor-group addressing is preserved.",
-        )
-        .color(p.secondary)
-        .size(12.0),
+        egui::RichText::new("Select a processor for its history.")
+            .color(p.secondary)
+            .size(12.0),
     );
     let mut cpus: Vec<_> = frame.logical_cpus.iter().collect();
     cpus.sort_by_key(|cpu| (cpu.group, cpu.cpu_index));
@@ -777,7 +813,7 @@ fn render_selected(
         .corner_radius(CornerRadius::same(8))
         .inner_margin(egui::Margin::symmetric(18, 14))
         .show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
+            ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.label(
                         egui::RichText::new(&item.label)
@@ -793,7 +829,8 @@ fn render_selected(
                             .color(item.color),
                     );
                 });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space((ui.available_width() - 86.0).max(8.0));
+                ui.vertical(|ui| {
                     let (badge_text, badge_color) = if pause_state.is_paused {
                         ("Paused", p.warning)
                     } else if *app_state == AppState::Replay {
@@ -807,19 +844,15 @@ fn render_selected(
                     } else {
                         ("● Live", p.success)
                     };
-                    egui::Frame::new()
-                        .fill(badge_color.gamma_multiply(0.15))
-                        .stroke(Stroke::new(1.0, badge_color))
-                        .corner_radius(CornerRadius::same(4))
-                        .inner_margin(egui::Margin::symmetric(10, 5))
-                        .show(ui, |ui| {
-                            ui.label(
-                                egui::RichText::new(badge_text)
-                                    .size(12.0)
-                                    .strong()
-                                    .color(badge_color),
-                            );
-                        });
+                    ui.label(
+                        egui::RichText::new(badge_text)
+                            .size(12.0)
+                            .strong()
+                            .color(badge_color),
+                    );
+                    if item.category == 0 {
+                        cpu_utilization_ring(ui, frame.cpu_percent.value, p);
+                    }
                 });
             });
         });
@@ -1084,32 +1117,54 @@ fn render_selected(
         }
         if legends[item.category] {
             ui.horizontal(|ui| {
-                for plotted in &plot_series {
-                    ui.colored_label(
-                        plotted.color,
-                        if plotted.dashed {
-                            format!("┄ {}", plotted.name)
-                        } else {
-                            format!("━ {}", plotted.name)
-                        },
-                    );
+                if item.category == 0 {
+                    ui.colored_label(item.color, "▮ Average load  ━ Short peak");
+                } else {
+                    for plotted in &plot_series {
+                        ui.colored_label(
+                            plotted.color,
+                            if plotted.dashed {
+                                format!("┄ {}", plotted.name)
+                            } else {
+                                format!("━ {}", plotted.name)
+                            },
+                        );
+                    }
                 }
             });
         }
         let plot = state.plots.entry(item.id.clone()).or_default();
-        let chart_h = (ui.available_height() * 0.42).clamp(240.0, 360.0);
-        time_plot(
-            ui,
-            &item.id,
-            &plot_series,
-            state.range,
-            now,
-            unit,
-            fixed_max,
-            chart_h,
-            plot,
-            p,
-        );
+        let chart_h = if item.category == 0 {
+            240.0
+        } else {
+            (ui.available_height() * 0.42).clamp(240.0, 360.0)
+        };
+        if item.category == 0 {
+            activity_bars(
+                ui,
+                &item.id,
+                primary,
+                state.range,
+                now,
+                chart_h,
+                plot,
+                item.color,
+                p,
+            );
+        } else {
+            time_plot(
+                ui,
+                &item.id,
+                &plot_series,
+                state.range,
+                now,
+                unit,
+                fixed_max,
+                chart_h,
+                plot,
+                p,
+            );
+        }
 
         if item.category == 0 {
             ui.add_space(10.0);

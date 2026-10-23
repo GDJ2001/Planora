@@ -356,6 +356,27 @@ impl TimeSeries {
 
         best
     }
+
+    /// Keep a chart cursor from displaying a distant reading over an
+    /// unobserved interval. The caller chooses tolerance for its pixel scale.
+    pub fn query_sample_near(
+        &self,
+        now: Instant,
+        range: HistoryRange,
+        norm_x: f32,
+        tolerance: Duration,
+    ) -> Option<(&Sample, Duration)> {
+        let cutoff = now.checked_sub(range.duration()).unwrap_or(now);
+        let target = cutoff
+            + Duration::from_secs_f32(norm_x.clamp(0.0, 1.0) * range.duration().as_secs_f32());
+        self.query_sample(now, range, norm_x).filter(|(sample, _)| {
+            if sample.time >= target {
+                sample.time.duration_since(target) <= tolerance
+            } else {
+                target.duration_since(sample.time) <= tolerance
+            }
+        })
+    }
 }
 
 /// Collection of resource time-series histories
@@ -807,6 +828,28 @@ mod tests {
         assert!(query.is_some());
         let (s, _age) = query.unwrap();
         assert_eq!(s.value, Some(75.0));
+    }
+
+    #[test]
+    fn chart_cursor_does_not_report_a_reading_across_unobserved_time() {
+        let now = Instant::now();
+        let mut series = TimeSeries::new();
+        series.push(now - Duration::from_secs(2), 1_000, Some(25.0));
+        assert!(
+            series
+                .query_sample_near(now, HistoryRange::Sec60, 0.1, Duration::from_secs(2))
+                .is_none()
+        );
+        assert!(
+            series
+                .query_sample_near(
+                    now,
+                    HistoryRange::Sec60,
+                    58.0 / 60.0,
+                    Duration::from_secs(2)
+                )
+                .is_some()
+        );
     }
 
     #[test]
