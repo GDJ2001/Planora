@@ -437,17 +437,61 @@ pub fn create_native_fixture_app(theme: Theme, page: Page) -> App {
             continue;
         } // visible missing-data gap
         let age = 59 - index;
-        let sample_time = now - std::time::Duration::from_secs(age);
-        let sample_ms = timestamp - age * 1_000;
+        let base_time = now - std::time::Duration::from_secs(age);
+        let base_ms = timestamp - age * 1_000;
         let cpu = if index == 47 {
             88.0
         } else {
             32.0 + 12.0 * (index as f32 * 0.27).sin()
         };
         let mem = 68.0 + index as f32 * 0.02;
-        histories
-            .cpu
-            .push_with_metadata(sample_time, sample_ms, Some(cpu), "Fixture data", None);
+
+        // Sub-samples across the second to exercise aggregate midpoint, min..max band, and bursty telemetry
+        for sub in 0..5 {
+            let sample_time = base_time + std::time::Duration::from_millis(sub * 180);
+            let sample_ms = base_ms + sub * 180;
+            let sub_cpu = if index == 47 && sub == 2 {
+                95.0
+            } else if sub == 0 {
+                (cpu * 0.85).max(1.0)
+            } else if sub == 4 {
+                (cpu * 1.15).min(100.0)
+            } else {
+                cpu
+            };
+            histories.cpu.push_with_metadata(
+                sample_time,
+                sample_ms,
+                Some(sub_cpu),
+                "Fixture data",
+                None,
+            );
+            let sub_net_rx = if index == 38 && sub == 3 {
+                1_800_000.0 // bursty spike
+            } else if sub % 2 == 0 {
+                0.0 // intermittent packet arrival
+            } else {
+                350_000.0 + 500_000.0 * (index as f32 * 0.31).sin().abs()
+            };
+            histories.net_rx.push_with_metadata(
+                sample_time,
+                sample_ms,
+                Some(sub_net_rx),
+                "Fixture data",
+                None,
+            );
+            histories.push_detail(
+                "net:fixture-ethernet:rx".into(),
+                sample_time,
+                sample_ms,
+                Some(sub_net_rx),
+                "Fixture data",
+                None,
+            );
+        }
+
+        let sample_time = base_time;
+        let sample_ms = base_ms;
         histories.memory_pct.push_with_metadata(
             sample_time,
             sample_ms,
@@ -466,13 +510,6 @@ pub fn create_native_fixture_app(theme: Theme, page: Page) -> App {
             sample_time,
             sample_ms,
             Some(900_000.0 + 400_000.0 * (index as f32 * 0.15).cos().abs()),
-            "Fixture data",
-            None,
-        );
-        histories.net_rx.push_with_metadata(
-            sample_time,
-            sample_ms,
-            Some(350_000.0 + 500_000.0 * (index as f32 * 0.31).sin().abs()),
             "Fixture data",
             None,
         );
@@ -495,10 +532,6 @@ pub fn create_native_fixture_app(theme: Theme, page: Page) -> App {
             (
                 "disk:fixture-disk-0:write",
                 900_000.0 + 400_000.0 * (index as f32 * 0.15).cos().abs(),
-            ),
-            (
-                "net:fixture-ethernet:rx",
-                350_000.0 + 500_000.0 * (index as f32 * 0.31).sin().abs(),
             ),
             (
                 "net:fixture-ethernet:tx",

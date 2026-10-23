@@ -41,6 +41,13 @@ pub enum HardwareViewMode {
     Canvas,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum PercentScale {
+    #[default]
+    Fit,
+    Full,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UserSettings {
@@ -53,6 +60,7 @@ pub struct UserSettings {
     pub hardware_view_mode: HardwareViewMode,
     #[serde(skip)]
     pub reduced_motion: bool,
+    pub percent_scale: PercentScale,
     pub default_history_range: HistoryRange,
     pub resource_graphs: [bool; 6],
     pub resource_legends: [bool; 6],
@@ -73,6 +81,7 @@ impl Default for UserSettings {
             poll_interval_ms: 100,
             hardware_view_mode: HardwareViewMode::Canvas,
             reduced_motion: false,
+            percent_scale: PercentScale::Fit,
             default_history_range: HistoryRange::Sec60,
             resource_graphs: [true; 6],
             resource_legends: [true; 6],

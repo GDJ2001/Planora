@@ -1,12 +1,14 @@
 use crate::{
     components::{
         header::render_page_header,
-        plot::{PlotSeries, PlotState, activity_bars, capacity_bar, sparkline, time_plot},
+        plot::{
+            PlotSeries, PlotState, ValueScale, activity_bars, capacity_bar, sparkline, time_plot,
+        },
     },
     export::ExportManager,
     formatting::{format_bytes, format_percent, format_rate},
     history::{HistoryRange, ResourceHistories, TimeSeries},
-    state::{AppState, DisplayPause},
+    state::{AppState, DisplayPause, PercentScale},
     theme::{CORNER_RADIUS, Palette},
 };
 use eframe::egui::{self, CornerRadius, Rect, Stroke, Vec2};
@@ -64,6 +66,7 @@ mod workspace_tests {
                                     None,
                                     None,
                                     &mut state,
+                                    &mut PercentScale::Fit,
                                     &AppState::Live,
                                     &mut DisplayPause::default(),
                                     100,
@@ -203,7 +206,12 @@ pub struct Choice {
     pub unavailable_reason: Option<String>,
 }
 
-pub fn choices(frame: &TelemetryFrame, sensors: &[SensorReading], p: Palette) -> Vec<Choice> {
+pub fn choices(
+    frame: &TelemetryFrame,
+    histories: Option<&ResourceHistories>,
+    sensors: &[SensorReading],
+    p: Palette,
+) -> Vec<Choice> {
     let mut rows = vec![
         Choice {
             id: "cpu".into(),
@@ -328,10 +336,14 @@ pub fn choices(frame: &TelemetryFrame, sensors: &[SensorReading], p: Palette) ->
     disks.sort_by(|a, b| a.id.cmp(&b.id));
     for disk in disks {
         let is_ok = disk.read_bytes_per_sec.value.is_some();
+        let stable_rate = histories
+            .and_then(|h| h.details.get(&format!("disk:{}:read", disk.id)))
+            .and_then(|ts| ts.latest_stable_value())
+            .or_else(|| disk.read_bytes_per_sec.value.map(|v| v as f32));
         rows.push(Choice {
             id: format!("disk:{}", disk.id),
             label: disk.label.clone(),
-            value: format_rate(disk.read_bytes_per_sec.value.map(|v| v as f32)),
+            value: format_rate(stable_rate),
             status_text: if is_ok {
                 "Active".into()
             } else {
@@ -370,10 +382,14 @@ pub fn choices(frame: &TelemetryFrame, sensors: &[SensorReading], p: Palette) ->
     interfaces.sort_by(|a, b| a.id.cmp(&b.id));
     for iface in interfaces {
         let is_connected = iface.link_state.as_deref() != Some("Disconnected");
+        let stable_rx = histories
+            .and_then(|h| h.details.get(&format!("net:{}:rx", iface.id)))
+            .and_then(|ts| ts.latest_stable_value())
+            .or_else(|| iface.read_bytes_per_sec.value.map(|v| v as f32));
         rows.push(Choice {
             id: format!("net:{}", iface.id),
             label: iface.label.clone(),
-            value: format_rate(iface.read_bytes_per_sec.value.map(|v| v as f32)),
+            value: format_rate(stable_rx),
             status_text: iface.link_state.as_deref().unwrap_or("Connected").into(),
             status_symbol: if is_connected { "●" } else { "○" },
             status_color: if is_connected { p.success } else { p.error },
@@ -469,6 +485,7 @@ pub fn render_resources_view(
     topology: Option<&Topology>,
     mut exporter: Option<&mut ExportManager>,
     state: &mut ResourcesViewState,
+    percent_scale: &mut PercentScale,
     app_state: &AppState,
     pause_state: &mut DisplayPause,
     poll_interval_ms: u64,
@@ -487,7 +504,7 @@ pub fn render_resources_view(
         p,
     );
 
-    let mut all = choices(frame, sensors, p);
+    let mut all = choices(frame, Some(histories), sensors, p);
     for item in &mut all {
         if item.unavailable_reason.is_some() {
             continue;
@@ -659,6 +676,7 @@ pub fn render_resources_view(
                             topology,
                             exporter.as_deref_mut(),
                             state,
+                            percent_scale,
                             app_state,
                             pause_state,
                             poll_interval_ms,
@@ -722,6 +740,7 @@ pub fn render_resources_view(
                         topology,
                         exporter,
                         state,
+                        percent_scale,
                         app_state,
                         pause_state,
                         poll_interval_ms,
@@ -956,6 +975,7 @@ fn render_selected(
     topology: Option<&Topology>,
     mut exporter: Option<&mut ExportManager>,
     state: &mut ResourcesViewState,
+    percent_scale: &mut PercentScale,
     app_state: &AppState,
     pause_state: &mut DisplayPause,
     poll_interval_ms: u64,
@@ -997,6 +1017,13 @@ fn render_selected(
                                 .monospace()
                                 .color(item.color),
                         );
+                        if item.category == 3 || item.category == 4 {
+                            ui.label(
+                                egui::RichText::new("1 s avg")
+                                    .size(11.0 * crate::appearance::text_scale(ui.ctx()))
+                                    .color(p.secondary),
+                            );
+                        }
                     },
                 );
 
@@ -1054,6 +1081,17 @@ fn render_selected(
         if graph_modes[item.category] {
             ui.separator();
             ui.checkbox(&mut legends[item.category], "Legend");
+        }
+
+        if graph_modes[item.category] && item.category <= 2 {
+            ui.separator();
+            let is_full = matches!(percent_scale, PercentScale::Full);
+            if ui.selectable_label(!is_full, "Fit scale").clicked() {
+                *percent_scale = PercentScale::Fit;
+            }
+            if ui.selectable_label(is_full, "0–100%").clicked() {
+                *percent_scale = PercentScale::Full;
+            }
         }
 
         if item.category == 0 {
@@ -1197,11 +1235,12 @@ fn render_selected(
     let secondary = secondary_key
         .as_deref()
         .and_then(|key| histories.detail(key));
-    let (unit, fixed_max) = match item.category {
-        0..=2 => ("%", Some(100.0)),
-        3 | 4 => ("B/s", None),
-        _ => (
-            sensors
+    let is_full = matches!(percent_scale, PercentScale::Full);
+    let (unit, val_scale) = match item.category {
+        0..=2 => ("%", ValueScale::Percent { full: is_full }),
+        3 | 4 => ("B/s", ValueScale::Auto),
+        _ => {
+            let u = sensors
                 .iter()
                 .find(|s| {
                     format!(
@@ -1209,9 +1248,14 @@ fn render_selected(
                         s.scope, s.provider, s.name, s.sensor_type
                     ) == item.id
                 })
-                .map_or("Reading", |s| s.value.unit.as_str()),
-            None,
-        ),
+                .map_or("Reading", |s| s.value.unit.as_str());
+            let sc = if u == "%" {
+                ValueScale::Percent { full: is_full }
+            } else {
+                ValueScale::Auto
+            };
+            (u, sc)
+        }
     };
     let primary_name = if item.category == 3 {
         "Read"
@@ -1311,6 +1355,7 @@ fn render_selected(
                 primary,
                 state.range,
                 now,
+                val_scale,
                 chart_h,
                 plot,
                 item.color,
@@ -1324,7 +1369,7 @@ fn render_selected(
                 state.range,
                 now,
                 unit,
-                fixed_max,
+                val_scale,
                 chart_h,
                 plot,
                 p,
@@ -1420,7 +1465,7 @@ fn render_selected(
                             state.range,
                             now,
                             "%",
-                            Some(100.0),
+                            ValueScale::Percent { full: is_full },
                             180.0,
                             plot,
                             p,
@@ -1634,7 +1679,7 @@ fn render_selected(
                         state.range,
                         now,
                         "%",
-                        Some(100.0),
+                        ValueScale::Percent { full: is_full },
                         210.0,
                         plot,
                         p,
@@ -1666,7 +1711,7 @@ fn render_selected(
                         state.range,
                         now,
                         unit,
-                        None,
+                        ValueScale::Auto,
                         180.0,
                         plot,
                         p,
@@ -2251,9 +2296,9 @@ fn render_sensors_tab(
                     now,
                     current_kind.unit(),
                     if current_kind == SensorTrendKind::Load {
-                        Some(100.0)
+                        ValueScale::Percent { full: false }
                     } else {
-                        None
+                        ValueScale::Auto
                     },
                     chart_h,
                     plot,

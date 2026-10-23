@@ -58,6 +58,7 @@ impl HistoryRange {
 pub struct Sample {
     pub time: Instant,
     pub timestamp_ms: u64,
+    pub start: Instant,
     pub value: Option<f32>,
     pub minimum: Option<f32>,
     pub maximum: Option<f32>,
@@ -67,6 +68,25 @@ pub struct Sample {
     pub count: u32,
     pub source: String,
     pub unavailable_reason: Option<AvailabilityReason>,
+}
+
+impl Sample {
+    pub fn midpoint(&self) -> Instant {
+        if self.time > self.start {
+            self.start + self.time.saturating_duration_since(self.start) / 2
+        } else {
+            self.time
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChartPoint {
+    pub x: f32,
+    pub mean: f32,
+    pub min: f32,
+    pub max: f32,
+    pub weight: u32,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -177,6 +197,7 @@ impl TimeSeries {
         self.samples.push_back(Sample {
             time,
             timestamp_ms,
+            start: time,
             value,
             minimum: value,
             maximum: value,
@@ -211,32 +232,54 @@ impl TimeSeries {
         self.samples.back().map(|s| s.value)
     }
 
-    /// Extract points normalized to [0.0, 1.0] in time across the given range ending at `now`.
-    /// Segments are split when missing data (None) or time gaps exceed `gap_threshold`.
-    pub fn normalized_segments(
+    /// Stable recent measurement (e.g. completed 1-second aggregate)
+    /// to avoid flickering instantaneous rate headlines when bursts arrive.
+    pub fn latest_stable_value(&self) -> Option<f32> {
+        if self.samples.len() >= 2 {
+            let back = self.samples.back()?;
+            if back.count >= 5 {
+                back.value
+            } else if let Some(prev) = self.samples.iter().rev().nth(1) {
+                prev.value.or(back.value)
+            } else {
+                back.value
+            }
+        } else {
+            self.samples.back().and_then(|s| s.value)
+        }
+    }
+
+    /// Extract chart points normalized to [0.0, 1.0] in time across the given range ending at `now`.
+    /// Each aggregate emits exactly one point at its midpoint time, eliminating vertical needle artifacts.
+    /// Segments are split when missing data (None), source changes, or time gaps exceed `gap_threshold`.
+    /// If `pixel_columns > 0` and points exceed `pixel_columns`, points sharing a column are merged
+    /// preserving weighted mean, min of mins, and max of maxes.
+    pub fn chart_segments(
         &self,
         now: Instant,
         range: HistoryRange,
         gap_threshold: Duration,
-    ) -> Vec<Vec<(f32, f32)>> {
+        pixel_columns: usize,
+    ) -> Vec<Vec<ChartPoint>> {
         let dur = range.duration().as_secs_f32();
         if dur <= 0.0 || self.samples.is_empty() {
             return Vec::new();
         }
         let cutoff = now.checked_sub(range.duration()).unwrap_or(now);
 
-        let mut segments: Vec<Vec<(f32, f32)>> = Vec::new();
-        let mut current_segment: Vec<(f32, f32)> = Vec::new();
+        let mut segments: Vec<Vec<ChartPoint>> = Vec::new();
+        let mut current_segment: Vec<ChartPoint> = Vec::new();
         let mut prev_time: Option<Instant> = None;
         let mut prev_source: Option<&str> = None;
 
         for s in &self.samples {
+            let mid = s.midpoint();
             // Paused views use an earlier `now` and must not see future data.
-            if s.time < cutoff || s.time > now {
+            if mid < cutoff || mid > now {
                 continue;
             }
             if let Some(prev) = prev_time
-                && s.time.saturating_duration_since(prev) > gap_threshold
+                && mid.saturating_duration_since(prev) > gap_threshold
                 && !current_segment.is_empty()
             {
                 segments.push(std::mem::take(&mut current_segment));
@@ -244,19 +287,21 @@ impl TimeSeries {
             if prev_source.is_some_and(|source| source != s.source) && !current_segment.is_empty() {
                 segments.push(std::mem::take(&mut current_segment));
             }
-            prev_time = Some(s.time);
+            prev_time = Some(mid);
             prev_source = Some(&s.source);
 
             if let Some(val) = s.value {
-                let elapsed_from_cutoff = s.time.saturating_duration_since(cutoff).as_secs_f32();
-                let norm_x = (elapsed_from_cutoff / dur).clamp(0.0, 1.0);
-                if let Some(min) = s.minimum.filter(|min| *min < val) {
-                    current_segment.push((norm_x, min));
-                }
-                if let Some(max) = s.maximum.filter(|max| *max > val) {
-                    current_segment.push((norm_x, max));
-                }
-                current_segment.push((norm_x, val));
+                let elapsed = mid.saturating_duration_since(cutoff).as_secs_f32();
+                let norm_x = (elapsed / dur).clamp(0.0, 1.0);
+                let min_val = s.minimum.unwrap_or(val).min(val);
+                let max_val = s.maximum.unwrap_or(val).max(val);
+                current_segment.push(ChartPoint {
+                    x: norm_x,
+                    mean: val,
+                    min: min_val,
+                    max: max_val,
+                    weight: s.count.max(1),
+                });
             } else {
                 // Unavailable sample breaks the segment
                 if !current_segment.is_empty() {
@@ -269,7 +314,69 @@ impl TimeSeries {
             segments.push(current_segment);
         }
 
+        if pixel_columns == 0 {
+            return segments;
+        }
+
+        let columns = pixel_columns.max(1);
         segments
+            .into_iter()
+            .map(|segment| {
+                if segment.len() <= columns {
+                    return segment;
+                }
+                let mut result = Vec::with_capacity(columns);
+                let mut start = 0;
+                while start < segment.len() {
+                    let bucket =
+                        ((segment[start].x * columns as f32).floor() as usize).min(columns - 1);
+                    let mut end = start + 1;
+                    while end < segment.len()
+                        && (((segment[end].x * columns as f32).floor() as usize).min(columns - 1))
+                            == bucket
+                    {
+                        end += 1;
+                    }
+                    let mut total_weight = 0u64;
+                    let mut weighted_sum = 0.0f64;
+                    let mut weighted_x = 0.0f64;
+                    let mut col_min = f32::INFINITY;
+                    let mut col_max = f32::NEG_INFINITY;
+                    for p in &segment[start..end] {
+                        let w = p.weight as u64;
+                        total_weight += w;
+                        weighted_sum += p.mean as f64 * w as f64;
+                        weighted_x += p.x as f64 * w as f64;
+                        col_min = col_min.min(p.min);
+                        col_max = col_max.max(p.max);
+                    }
+                    let total_w = total_weight.max(1) as f32;
+                    result.push(ChartPoint {
+                        x: (weighted_x as f32 / total_w).clamp(0.0, 1.0),
+                        mean: (weighted_sum as f32 / total_w),
+                        min: col_min,
+                        max: col_max,
+                        weight: total_weight.min(u32::MAX as u64) as u32,
+                    });
+                    start = end;
+                }
+                result
+            })
+            .collect()
+    }
+
+    /// Extract points normalized to [0.0, 1.0] in time across the given range ending at `now`.
+    /// Segments are split when missing data (None) or time gaps exceed `gap_threshold`.
+    pub fn normalized_segments(
+        &self,
+        now: Instant,
+        range: HistoryRange,
+        gap_threshold: Duration,
+    ) -> Vec<Vec<(f32, f32)>> {
+        self.chart_segments(now, range, gap_threshold, 0)
+            .into_iter()
+            .map(|seg| seg.into_iter().map(|p| (p.x, p.mean)).collect())
+            .collect()
     }
 
     /// Collapse dense samples to at most two extrema per horizontal pixel.
@@ -281,46 +388,9 @@ impl TimeSeries {
         gap_threshold: Duration,
         pixel_columns: usize,
     ) -> Vec<Vec<(f32, f32)>> {
-        let columns = pixel_columns.max(1);
-        self.normalized_segments(now, range, gap_threshold)
+        self.chart_segments(now, range, gap_threshold, pixel_columns)
             .into_iter()
-            .map(|segment| {
-                if segment.len() <= columns * 2 {
-                    return segment;
-                }
-                let mut result = Vec::with_capacity(columns * 2);
-                let mut start = 0;
-                while start < segment.len() {
-                    let bucket = (segment[start].0 * columns as f32).floor() as usize;
-                    let mut end = start + 1;
-                    while end < segment.len()
-                        && (segment[end].0 * columns as f32).floor() as usize == bucket
-                    {
-                        end += 1;
-                    }
-                    let mut min_idx = start;
-                    let mut max_idx = start;
-                    for idx in start + 1..end {
-                        if segment[idx].1 < segment[min_idx].1 {
-                            min_idx = idx;
-                        }
-                        if segment[idx].1 > segment[max_idx].1 {
-                            max_idx = idx;
-                        }
-                    }
-                    if min_idx <= max_idx {
-                        result.push(segment[min_idx]);
-                        if max_idx != min_idx {
-                            result.push(segment[max_idx]);
-                        }
-                    } else {
-                        result.push(segment[max_idx]);
-                        result.push(segment[min_idx]);
-                    }
-                    start = end;
-                }
-                result
-            })
+            .map(|seg| seg.into_iter().map(|p| (p.x, p.mean)).collect())
             .collect()
     }
 
@@ -339,17 +409,18 @@ impl TimeSeries {
         let mut min_diff = Duration::MAX;
 
         for s in &self.samples {
-            if s.time < cutoff || s.time > now {
+            let mid = s.midpoint();
+            if mid < cutoff || mid > now {
                 continue;
             }
-            let diff = if s.time > target_time {
-                s.time.saturating_duration_since(target_time)
+            let diff = if mid > target_time {
+                mid.saturating_duration_since(target_time)
             } else {
-                target_time.saturating_duration_since(s.time)
+                target_time.saturating_duration_since(mid)
             };
             if diff < min_diff {
                 min_diff = diff;
-                let age = now.saturating_duration_since(s.time);
+                let age = now.saturating_duration_since(mid);
                 best = Some((s, age));
             }
         }
@@ -370,10 +441,11 @@ impl TimeSeries {
         let target = cutoff
             + Duration::from_secs_f32(norm_x.clamp(0.0, 1.0) * range.duration().as_secs_f32());
         self.query_sample(now, range, norm_x).filter(|(sample, _)| {
-            if sample.time >= target {
-                sample.time.duration_since(target) <= tolerance
+            let mid = sample.midpoint();
+            if mid >= target {
+                mid.duration_since(target) <= tolerance
             } else {
-                target.duration_since(sample.time) <= tolerance
+                target.duration_since(mid) <= tolerance
             }
         })
     }
@@ -792,7 +864,7 @@ mod tests {
     }
 
     #[test]
-    fn downsampling_retains_spikes_and_missing_data_gaps() {
+    fn band_retains_spikes_and_gaps() {
         let now = Instant::now();
         let mut ts = TimeSeries::new();
         for idx in 0..1_000 {
@@ -806,11 +878,76 @@ mod tests {
             };
             ts.push(t, idx + 1, value);
         }
-        let full = ts.normalized_segments(now, HistoryRange::Sec30, Duration::from_secs(2));
-        let compact = ts.downsampled_segments(now, HistoryRange::Sec30, Duration::from_secs(2), 40);
+        let full = ts.chart_segments(now, HistoryRange::Sec30, Duration::from_secs(2), 0);
+        let compact = ts.chart_segments(now, HistoryRange::Sec30, Duration::from_secs(2), 40);
         assert_eq!(full.len(), compact.len());
-        assert!(compact.iter().flatten().any(|(_, value)| *value == 99.0));
-        assert!(compact.iter().map(Vec::len).sum::<usize>() <= 160);
+        assert!(compact.iter().flatten().any(|p| p.max == 99.0));
+        assert!(compact.iter().map(Vec::len).sum::<usize>() <= 80);
+    }
+
+    #[test]
+    fn chart_points_have_strictly_increasing_x() {
+        let now = Instant::now();
+        let mut ts = TimeSeries::new();
+        for sec in 0..30u64 {
+            // Push several sub-samples per second
+            for sub in 0..5u64 {
+                let t = now - Duration::from_millis((29 - sec) * 1000 + (4 - sub) * 100);
+                ts.push(t, sec * 1000 + sub * 100, Some((sec * 2 + sub) as f32));
+            }
+        }
+        let segments = ts.chart_segments(now, HistoryRange::Sec30, Duration::from_secs(2), 60);
+        assert!(!segments.is_empty());
+        for segment in segments {
+            for window in segment.windows(2) {
+                assert!(
+                    window[1].x > window[0].x,
+                    "x must be strictly increasing: {} vs {}",
+                    window[0].x,
+                    window[1].x
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn column_merge_preserves_weighted_mean_and_extremes() {
+        let now = Instant::now();
+        let mut ts = TimeSeries::new();
+        // Push 28 distinct 1-second aggregates across the 30s window
+        for i in 0..28 {
+            let t = now - Duration::from_secs(28 - i);
+            ts.push_with_metadata(
+                t,
+                (i + 1) * 1000,
+                Some(if i == 5 { 100.0 } else { 10.0 }),
+                "test",
+                None,
+            );
+        }
+        // Downsample to only 2 columns across the 30s range
+        let segments = ts.chart_segments(now, HistoryRange::Sec30, Duration::from_secs(3), 2);
+        assert_eq!(segments.len(), 1);
+        let merged = &segments[0];
+        assert_eq!(merged.len(), 2);
+        // The extreme 100.0 must be preserved in max of column 0
+        assert!(merged[0].max == 100.0);
+        assert!(merged[1].max == 10.0);
+        assert!(merged[0].min == 10.0);
+        assert!(merged[1].min == 10.0);
+    }
+
+    #[test]
+    fn aggregate_is_positioned_at_its_midpoint() {
+        let start = Instant::now();
+        let end = start + Duration::from_millis(800);
+        let mut ts = TimeSeries::new();
+        ts.push_with_metadata(start, 1000, Some(10.0), "test", None);
+        ts.push_with_metadata(end, 1800, Some(20.0), "test", None);
+        let sample = ts.samples.back().unwrap();
+        assert_eq!(sample.start, start);
+        assert_eq!(sample.time, end);
+        assert_eq!(sample.midpoint(), start + Duration::from_millis(400));
     }
 
     #[test]

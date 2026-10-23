@@ -1297,6 +1297,7 @@ impl App {
                 Page::Performance => {
                     let previous_graph_modes = self.settings.resource_graphs;
                     let previous_legends = self.settings.resource_legends;
+                    let previous_scale = self.settings.percent_scale;
                             render_resources_view(
                                 ui,
                                 frame,
@@ -1310,6 +1311,7 @@ impl App {
                                 topo_opt.as_ref(),
                                 Some(&mut self.exporter),
                                 &mut self.resources_state,
+                                &mut self.settings.percent_scale,
                                 &app_state,
                                 &mut self.display_pause,
                                 current_poll,
@@ -1321,7 +1323,7 @@ impl App {
                     let selection_changed = self.settings.performance_resource != self.resources_state.selected_resource
                         || self.settings.performance_range != self.resources_state.range
                         || self.settings.performance_engines.iter().cloned().collect::<std::collections::BTreeSet<_>>() != self.resources_state.selected_engines;
-                    if self.settings.resource_graphs != previous_graph_modes || self.settings.resource_legends != previous_legends || selection_changed {
+                    if self.settings.resource_graphs != previous_graph_modes || self.settings.resource_legends != previous_legends || self.settings.percent_scale != previous_scale || selection_changed {
                         self.settings.performance_resource = self.resources_state.selected_resource.clone();
                         self.settings.performance_range = self.resources_state.range;
                         self.settings.performance_engines = self.resources_state.selected_engines.iter().take(4).cloned().collect();
@@ -1356,6 +1358,7 @@ impl App {
                     }
                 },
                 Page::History => {
+                    let previous_scale = self.settings.percent_scale;
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
@@ -1363,6 +1366,7 @@ impl App {
                                 ui,
                                 render_histories,
                                 &mut self.history_state,
+                                &mut self.settings.percent_scale,
                                 &app_state,
                                 &mut self.display_pause,
                                 current_poll,
@@ -1370,6 +1374,9 @@ impl App {
                                 p,
                             );
                         });
+                    if self.settings.percent_scale != previous_scale {
+                        self.settings_error = self.settings.save().err().map(|e| format!("Could not save preferences: {e}"));
+                    }
                 },
                 Page::Hardware => {
                     egui::ScrollArea::vertical()
@@ -1953,6 +1960,7 @@ mod tests {
             poll_interval_ms: 250,
             hardware_view_mode: state::HardwareViewMode::Tree,
             reduced_motion: true,
+            percent_scale: state::PercentScale::Fit,
             default_history_range: history::HistoryRange::Min5,
             process_columns: components::table::TableColumnsConfig::default(),
             process_sort_column: components::table::SortColumn::Cpu,

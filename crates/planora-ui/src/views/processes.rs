@@ -1,7 +1,7 @@
 use crate::{
     components::{
         header::render_page_header,
-        plot::{PlotSeries, PlotState, time_plot},
+        plot::{PlotSeries, PlotState, ValueScale, time_plot},
         table::{ProcessTableState, render_process_table, sort_processes},
     },
     formatting::{format_bytes, format_percent, format_rate},
@@ -446,15 +446,15 @@ fn render_inspector_pane(
                         ui.selectable_value(&mut state.inspector_trend, index, *label);
                     }
                 });
-                let (series, unit, fixed_max): (Vec<PlotSeries<'_>>, &str, Option<f32>) = match state.inspector_trend {
-                    1 => (vec![PlotSeries { name: "Resident memory", samples: &histories.selected_memory, color: p.memory, dashed: false }], "bytes", None),
+                let (series, unit, val_scale): (Vec<PlotSeries<'_>>, &str, ValueScale) = match state.inspector_trend {
+                    1 => (vec![PlotSeries { name: "Resident memory", samples: &histories.selected_memory, color: p.memory, dashed: false }], "bytes", ValueScale::Auto),
                     2 => (vec![
                         PlotSeries { name: "I/O read", samples: &histories.selected_io_read, color: p.disk, dashed: false },
                         PlotSeries { name: "I/O write", samples: &histories.selected_io_write, color: p.accent, dashed: true },
-                    ], "B/s", None),
-                    _ => (vec![PlotSeries { name: "CPU utilization", samples: &histories.selected_cpu, color: p.cpu, dashed: false }], "%", Some(100.0)),
+                    ], "B/s", ValueScale::Auto),
+                    _ => (vec![PlotSeries { name: "CPU utilization", samples: &histories.selected_cpu, color: p.cpu, dashed: false }], "%", ValueScale::Percent { full: false }),
                 };
-                time_plot(ui, ("process_inspector", record.identity.pid, record.identity.started), &series, HistoryRange::Sec60, now, unit, fixed_max, 178.0, &mut state.inspector_plot, p);
+                time_plot(ui, ("process_inspector", record.identity.pid, record.identity.started), &series, HistoryRange::Sec60, now, unit, val_scale, 178.0, &mut state.inspector_plot, p);
             } else {
                 ui.label("Collecting history for this process identity.");
             }

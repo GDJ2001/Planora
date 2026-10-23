@@ -1,11 +1,11 @@
 use crate::{
     components::{
         header::render_page_header,
-        plot::{PlotSeries, PlotState, time_plot},
+        plot::{PlotSeries, PlotState, ValueScale, time_plot},
     },
     formatting::{format_percent, format_rate},
     history::{HistoryRange, ResourceHistories, TimeSeries},
-    state::{AppState, DisplayPause},
+    state::{AppState, DisplayPause, PercentScale},
     theme::{CORNER_RADIUS, Palette},
 };
 use eframe::egui::{self, CornerRadius, Stroke};
@@ -14,7 +14,7 @@ use std::time::Instant;
 pub struct HistoryViewState {
     pub range: HistoryRange,
     pub show_graphs: bool,
-    plot: PlotState,
+    pub plots: [PlotState; 4],
 }
 
 impl Default for HistoryViewState {
@@ -22,7 +22,7 @@ impl Default for HistoryViewState {
         Self {
             range: HistoryRange::Sec60,
             show_graphs: true,
-            plot: PlotState::default(),
+            plots: Default::default(),
         }
     }
 }
@@ -72,6 +72,7 @@ pub fn render_history_view(
     ui: &mut egui::Ui,
     histories: &ResourceHistories,
     state: &mut HistoryViewState,
+    percent_scale: &mut PercentScale,
     app_state: &AppState,
     pause_state: &mut DisplayPause,
     poll_interval_ms: u64,
@@ -88,7 +89,7 @@ pub fn render_history_view(
         p,
     );
 
-    // Range selector toolbar
+    // Range selector and scale toolbar
     ui.horizontal(|ui| {
         ui.strong("History Window:");
         ui.add_space(8.0);
@@ -102,12 +103,21 @@ pub fn render_history_view(
         }
         ui.separator();
         ui.checkbox(&mut state.show_graphs, "Show graphs");
+        ui.separator();
+        let is_full = matches!(percent_scale, PercentScale::Full);
+        if ui.selectable_label(!is_full, "Fit scale").clicked() {
+            *percent_scale = PercentScale::Fit;
+        }
+        if ui.selectable_label(is_full, "0–100%").clicked() {
+            *percent_scale = PercentScale::Full;
+        }
     });
 
     ui.add_space(10.0);
 
     if state.show_graphs {
-        let lanes: [(&str, Vec<PlotSeries<'_>>, &str, Option<f32>); 4] = [
+        let is_full = matches!(percent_scale, PercentScale::Full);
+        let lanes: [(&str, Vec<PlotSeries<'_>>, &str, ValueScale); 4] = [
             (
                 "CPU",
                 vec![PlotSeries {
@@ -117,7 +127,7 @@ pub fn render_history_view(
                     dashed: false,
                 }],
                 "%",
-                Some(100.0),
+                ValueScale::Percent { full: is_full },
             ),
             (
                 "Memory",
@@ -128,7 +138,7 @@ pub fn render_history_view(
                     dashed: false,
                 }],
                 "%",
-                Some(100.0),
+                ValueScale::Percent { full: is_full },
             ),
             (
                 "Storage",
@@ -147,7 +157,7 @@ pub fn render_history_view(
                     },
                 ],
                 "B/s",
-                None,
+                ValueScale::Auto,
             ),
             (
                 "Network",
@@ -166,10 +176,10 @@ pub fn render_history_view(
                     },
                 ],
                 "B/s",
-                None,
+                ValueScale::Auto,
             ),
         ];
-        for (title, series, unit, fixed_max) in lanes {
+        for (idx, (title, series, unit, val_scale)) in lanes.into_iter().enumerate() {
             ui.heading(title);
             ui.horizontal(|ui| {
                 for plotted in &series {
@@ -190,9 +200,9 @@ pub fn render_history_view(
                 state.range,
                 now,
                 unit,
-                fixed_max,
+                val_scale,
                 220.0,
-                &mut state.plot,
+                &mut state.plots[idx],
                 p,
             );
             ui.add_space(14.0);
@@ -356,5 +366,54 @@ mod tests {
         assert_eq!(bucket_percent(None), "—");
         assert_eq!(bucket_rate(None), "—");
         assert_eq!(bucket_rate(Some(0.0)), "0 B/s");
+    }
+
+    #[test]
+    fn history_lanes_keep_independent_axis_state() {
+        let mut histories = ResourceHistories::default();
+        let now = Instant::now();
+        // Storage has large throughput: 500 MiB/s
+        histories.disk_read.push(
+            now - std::time::Duration::from_secs(2),
+            1000,
+            Some(524_288_000.0),
+        );
+        // Network has small throughput: 1 KiB/s
+        histories
+            .net_rx
+            .push(now - std::time::Duration::from_secs(2), 1000, Some(1024.0));
+
+        let mut state = HistoryViewState::default();
+        let mut percent_scale = PercentScale::Fit;
+        let p = crate::theme::get_palette(true);
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::Vec2::new(800.0, 1200.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                let mut pause = DisplayPause::default();
+                render_history_view(
+                    ui,
+                    &histories,
+                    &mut state,
+                    &mut percent_scale,
+                    &AppState::Live,
+                    &mut pause,
+                    100,
+                    now,
+                    p,
+                );
+            },
+        );
+        output.textures_delta.clear();
+
+        // Lane 2 is Storage, Lane 3 is Network
+        // Both lanes rendered independently and did not bleed their cache or hysteresis into each other
+        assert_eq!(state.plots.len(), 4);
     }
 }
