@@ -1,6 +1,6 @@
 # Planora 0.3.0-beta.14 capability and verification matrix
 
-**Status: beta.14 source is under verification; beta.13 remains installed on one Windows PC as an unsigned internal build.** The [beta.13 installed record](release-evidence-0.3.0-beta.13.md) separates observed behavior from package claims. The [beta.12 record](release-evidence-0.3.0-beta.12.md), [beta.10 record](release-evidence-0.3.0-beta.10.md), [beta.9 record](release-evidence-0.3.0-beta.9.md), and [beta.7 startup record](release-evidence-0.3.0-beta.7.md) are historical. The first beta.8 artifact should not be installed: source review found unsafe ETW session ownership, misleading PMU results, and an unconditional driver chain.
+**Status: beta.14 source is under verification; beta.13 remains installed on one Windows PC as an unsigned internal build.** The [beta.14 package record](release-evidence-0.3.0-beta.14.md) documents source and fixture checks. The [beta.13 installed record](release-evidence-0.3.0-beta.13.md) separates observed behavior from package claims. The [beta.12 record](release-evidence-0.3.0-beta.12.md), [beta.10 record](release-evidence-0.3.0-beta.10.md), [beta.9 record](release-evidence-0.3.0-beta.9.md), and [beta.7 startup record](release-evidence-0.3.0-beta.7.md) are historical. The first beta.8 artifact should not be installed: source review found unsafe ETW session ownership, misleading PMU results, and an unconditional driver chain.
 
 | Area | Current 0.3 source | Evidence on this revision | Remaining acceptance |
 | --- | --- | --- | --- |
