@@ -653,40 +653,37 @@ pub fn activity_bars(
         .cursor
         .map(|x| (x * buckets.len() as f32).floor() as usize)
         .filter(|index| *index < buckets.len())
+        && let Some(bucket) = &buckets[index]
     {
         let x = canvas.left() + (index as f32 + 0.5) * bucket_width;
         painter.line_segment(
             [Pos2::new(x, canvas.top()), Pos2::new(x, canvas.bottom())],
             Stroke::new(1.0, p.focus),
         );
-        if let Some(bucket) = &buckets[index] {
-            let age = now.saturating_duration_since(bucket.last_time);
-            response.on_hover_ui_at_pointer(|ui| {
-                ui.set_min_width(205.0);
-                ui.strong(format!("CPU · {} ago", format_age(age)));
-                ui.heading(format_plot_value(bucket.mean(), "%"));
-                ui.separator();
-                egui::Grid::new("cpu_activity_bucket_tooltip")
-                    .num_columns(2)
-                    .show(ui, |ui| {
-                        ui.label("Observed range");
-                        ui.label(format!("{:.1}–{:.1}%", bucket.minimum, bucket.maximum));
-                        ui.end_row();
-                        ui.label("Readings");
-                        ui.label(bucket.count.to_string());
-                        ui.end_row();
-                        ui.label("Source");
-                        ui.label(if bucket.source_changed {
-                            "Multiple providers"
-                        } else {
-                            &bucket.source
-                        });
-                        ui.end_row();
+        let age = now.saturating_duration_since(bucket.last_time);
+        response.on_hover_ui_at_pointer(|ui| {
+            ui.set_min_width(205.0);
+            ui.strong(format!("CPU · {} ago", format_age(age)));
+            ui.heading(format_plot_value(bucket.mean(), "%"));
+            ui.separator();
+            egui::Grid::new("cpu_activity_bucket_tooltip")
+                .num_columns(2)
+                .show(ui, |ui| {
+                    ui.label("Observed range");
+                    ui.label(format!("{:.1}–{:.1}%", bucket.minimum, bucket.maximum));
+                    ui.end_row();
+                    ui.label("Readings");
+                    ui.label(bucket.count.to_string());
+                    ui.end_row();
+                    ui.label("Source");
+                    ui.label(if bucket.source_changed {
+                        "Multiple providers"
+                    } else {
+                        &bucket.source
                     });
-            });
-        } else if hovered_index == Some(index) {
-            response.on_hover_text_at_pointer("No measurement in this interval");
-        }
+                    ui.end_row();
+                });
+        });
     }
 }
 
