@@ -9,7 +9,7 @@ use crate::{
     state::{AppState, DisplayPause, Page},
     theme::Palette,
 };
-use eframe::egui::{self, CornerRadius, Stroke, Vec2};
+use eframe::egui::{self, Align, CornerRadius, Stroke, Vec2};
 use planora_core::{Metric, ProcessIdentity, TelemetryFrame};
 use std::time::Instant;
 
@@ -36,50 +36,176 @@ struct SummaryRow<'a> {
     unit: &'static str,
     color: egui::Color32,
     reason: Option<String>,
+    detail: Option<String>,
 }
 
 fn metric_percent(metric: &Metric<f32>) -> String {
     metric
         .value
-        .map_or_else(|| "Unavailable".into(), |value| format!("{value:.1}"))
+        .map_or_else(|| "Unavailable".into(), |value| format!("{value:.1}%"))
 }
 
 fn metric_rate(metric: &Metric<u64>) -> String {
-    metric
-        .value
-        .map_or_else(|| "Unavailable".into(), |value| format!("{value}"))
+    format_rate(metric.value.map(|value| value as f32))
+}
+
+fn summary_value(value: f32, unit: &str) -> String {
+    if unit == "%" {
+        format!("{value:.1}%")
+    } else {
+        format_rate(Some(value))
+    }
+}
+
+fn summary_cell(
+    ui: &mut egui::Ui,
+    width: f32,
+    height: f32,
+    text: egui::RichText,
+    align: Align,
+) -> egui::Response {
+    let layout = if align == Align::RIGHT {
+        egui::Layout::right_to_left(Align::Center)
+    } else {
+        egui::Layout::left_to_right(Align::Center)
+    };
+    ui.allocate_ui_with_layout(Vec2::new(width, height), layout, |ui| {
+        if align == Align::RIGHT {
+            ui.add_space(14.0);
+        }
+        ui.add(egui::Label::new(text).truncate())
+    })
+    .inner
 }
 
 fn summary_table(ui: &mut egui::Ui, rows: &[SummaryRow<'_>], range: HistoryRange, now: Instant) {
-    egui::ScrollArea::horizontal().show(ui, |ui| {
-        egui::Grid::new("overview_resource_summary")
-            .striped(true)
-            .min_col_width(76.0)
-            .spacing([22.0, 9.0])
-            .show(ui, |ui| {
-                for title in ["Resource", "Current", "Average", "Minimum", "Maximum", "Unit", "Coverage"] {
-                    ui.strong(title);
-                }
-                ui.end_row();
-                for row in rows {
-                    ui.colored_label(row.color, row.label);
-                    ui.label(&row.current).on_hover_text(row.reason.as_deref().unwrap_or("Current reading"));
-                    if let Some(summary) = row.series.observed_summary(now, range) {
-                        for value in [summary.average, summary.minimum, summary.maximum] {
-                            ui.monospace(format!("{value:.1}"));
+    let table_width = ui.available_width().max(830.0);
+    egui::ScrollArea::horizontal()
+        .id_salt("overview_resource_summary_scroll")
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            ui.set_min_width(table_width);
+            let content_width = table_width - 20.0;
+            let widths = [
+                content_width * 0.19,
+                content_width * 0.16,
+                content_width * 0.16,
+                content_width * 0.15,
+                content_width * 0.15,
+                content_width * 0.19,
+            ];
+            let headings = ["RESOURCE", "NOW", "AVERAGE", "LOW", "PEAK", "COVERAGE"];
+            egui::Frame::NONE
+                .inner_margin(egui::Margin::symmetric(10, 4))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        for (index, (heading, width)) in headings.iter().zip(widths).enumerate() {
+                            if index == 5 {
+                                ui.add_space(14.0);
+                            }
+                            summary_cell(
+                                ui,
+                                if index == 5 { width - 14.0 } else { width },
+                                24.0,
+                                egui::RichText::new(*heading)
+                                    .small()
+                                    .color(ui.visuals().weak_text_color()),
+                                if index == 0 || index == 5 {
+                                    Align::LEFT
+                                } else {
+                                    Align::RIGHT
+                                },
+                            );
                         }
-                        ui.label(row.unit);
-                        ui.label(format!("{}/{} s ({:.0}%)", summary.observed_seconds, summary.expected_seconds, summary.coverage_percent()))
-                            .on_hover_text("One observed value per second. Missing or unavailable seconds are excluded; the average uses observed seconds only.");
+                    });
+                });
+            ui.separator();
+
+            for (index, row) in rows.iter().enumerate() {
+                let summary = row.series.observed_summary(now, range);
+                let values = summary.map(|summary| {
+                    [
+                        summary_value(summary.average, row.unit),
+                        summary_value(summary.minimum, row.unit),
+                        summary_value(summary.maximum, row.unit),
+                    ]
+                });
+                egui::Frame::NONE
+                    .fill(if index % 2 == 0 {
+                        ui.visuals().faint_bg_color
                     } else {
-                        for _ in 0..3 { ui.label("—"); }
-                        ui.label(row.unit);
-                        ui.label("Collecting history");
-                    }
-                    ui.end_row();
-                }
-            });
-    });
+                        egui::Color32::TRANSPARENT
+                    })
+                    .corner_radius(CornerRadius::same(4))
+                    .inner_margin(egui::Margin::symmetric(10, 3))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            summary_cell(
+                                ui,
+                                widths[0],
+                                32.0,
+                                egui::RichText::new(row.label).color(row.color),
+                                Align::LEFT,
+                            )
+                            .on_hover_text(row.detail.as_deref().unwrap_or(row.label));
+                            summary_cell(
+                                ui,
+                                widths[1],
+                                32.0,
+                                egui::RichText::new(&row.current).strong().monospace(),
+                                Align::RIGHT,
+                            )
+                            .on_hover_text(row.reason.as_deref().unwrap_or("Latest measured value"));
+                            for (column, width) in widths[2..5].iter().enumerate() {
+                                summary_cell(
+                                    ui,
+                                    *width,
+                                    32.0,
+                                    egui::RichText::new(
+                                        values.as_ref().map_or("—", |values| values[column].as_str()),
+                                    )
+                                    .monospace(),
+                                    Align::RIGHT,
+                                );
+                            }
+                            if let Some(summary) = summary {
+                                let coverage_detail = format!(
+                                    "{} of {} seconds observed. Missing intervals are excluded from the statistics.",
+                                    summary.observed_seconds, summary.expected_seconds
+                                );
+                                ui.add_space(14.0);
+                                summary_cell(
+                                    ui,
+                                    48.0,
+                                    32.0,
+                                    egui::RichText::new(format!(
+                                        "{:.0}%",
+                                        summary.coverage_percent()
+                                    ))
+                                    .monospace(),
+                                    Align::LEFT,
+                                )
+                                .on_hover_text(&coverage_detail);
+                                ui.add_sized(
+                                    [widths[5] - 70.0, 12.0],
+                                    egui::ProgressBar::new(summary.coverage_percent() / 100.0)
+                                        .fill(row.color),
+                                )
+                                .on_hover_text(coverage_detail);
+                            } else {
+                                ui.add_space(14.0);
+                                ui.add_sized(
+                                    [widths[5] - 14.0, 32.0],
+                                    egui::Label::new("Collecting"),
+                                )
+                                .on_hover_text("No valid observations in this range yet");
+                            }
+                        });
+                    });
+            }
+        });
 }
 
 type CardItem<'a> = (
@@ -166,7 +292,7 @@ fn resource_cards(
     ));
 
     let columns = if ui.available_width() >= 960.0 {
-        cards.len().min(5)
+        cards.len().min(4)
     } else if ui.available_width() >= 480.0 {
         2
     } else {
@@ -227,6 +353,7 @@ pub fn render_overview_view(
         .corner_radius(CornerRadius::same(8))
         .inner_margin(egui::Margin::same(14))
         .show(ui, |ui| {
+            ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.heading("Resource summary");
                 ui.add_space(12.0);
@@ -241,13 +368,14 @@ pub fn render_overview_view(
             });
             ui.label(
                 egui::RichText::new(
-                    "All rates are bytes per second; history averages exclude missing intervals.",
+                    "Readable byte rates · missing samples excluded from history · hover for details",
                 )
                 .small()
                 .color(p.secondary),
             );
             ui.add_space(8.0);
-            let rows = [
+            let empty_gpu_series = TimeSeries::default();
+            let mut rows = vec![
                 SummaryRow {
                     label: "CPU",
                     current: metric_percent(&frame.cpu_percent),
@@ -259,6 +387,7 @@ pub fn render_overview_view(
                         .unavailable_reason
                         .as_ref()
                         .map(ToString::to_string),
+                    detail: None,
                 },
                 SummaryRow {
                     label: "Memory",
@@ -269,7 +398,7 @@ pub fn render_overview_view(
                         .filter(|(_, total)| *total > 0)
                         .map_or_else(
                             || "Unavailable".into(),
-                            |(used, total)| format!("{:.1}", used as f64 * 100.0 / total as f64),
+                            |(used, total)| format!("{:.1}%", used as f64 * 100.0 / total as f64),
                         ),
                     series: &histories.memory_pct,
                     unit: "%",
@@ -279,7 +408,29 @@ pub fn render_overview_view(
                         .unavailable_reason
                         .as_ref()
                         .map(ToString::to_string),
+                    detail: None,
                 },
+            ];
+            if let Some(adapter) = frame.gpu_adapters.first() {
+                let key = format!(
+                    "gpu:{}:{:?}:busiest",
+                    adapter.adapter_luid, adapter.physical_adapter
+                );
+                rows.push(SummaryRow {
+                    label: "GPU · busiest",
+                    current: metric_percent(&adapter.busiest_engine_percent),
+                    series: histories.detail(&key).unwrap_or(&empty_gpu_series),
+                    unit: "%",
+                    color: p.gpu,
+                    reason: adapter
+                        .busiest_engine_percent
+                        .unavailable_reason
+                        .as_ref()
+                        .map(ToString::to_string),
+                    detail: Some(adapter.name.clone()),
+                });
+            }
+            rows.extend([
                 SummaryRow {
                     label: "Disk read",
                     current: metric_rate(&frame.disk_read_bytes_per_sec),
@@ -291,6 +442,7 @@ pub fn render_overview_view(
                         .unavailable_reason
                         .as_ref()
                         .map(ToString::to_string),
+                    detail: None,
                 },
                 SummaryRow {
                     label: "Disk write",
@@ -303,6 +455,7 @@ pub fn render_overview_view(
                         .unavailable_reason
                         .as_ref()
                         .map(ToString::to_string),
+                    detail: None,
                 },
                 SummaryRow {
                     label: "Network receive",
@@ -315,6 +468,7 @@ pub fn render_overview_view(
                         .unavailable_reason
                         .as_ref()
                         .map(ToString::to_string),
+                    detail: None,
                 },
                 SummaryRow {
                     label: "Network transmit",
@@ -327,8 +481,9 @@ pub fn render_overview_view(
                         .unavailable_reason
                         .as_ref()
                         .map(ToString::to_string),
+                    detail: None,
                 },
-            ];
+            ]);
             summary_table(ui, &rows, state.range, now);
         });
     ui.add_space(12.0);
