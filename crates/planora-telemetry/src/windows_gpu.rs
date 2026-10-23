@@ -23,6 +23,22 @@ struct Guid {
     data4: [u8; 8],
 }
 
+// Values from the Windows SDK DXGI headers. Keep the interface identities in
+// one place; an incorrect IID makes CreateDXGIFactory1 return E_NOINTERFACE.
+const IID_IDXGI_FACTORY1: Guid = Guid {
+    data1: 0x770aae78,
+    data2: 0xf26f,
+    data3: 0x4dba,
+    data4: [0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0x87],
+};
+const IID_IDXGI_ADAPTER3: Guid = Guid {
+    data1: 0x645967a4,
+    data2: 0x1392,
+    data3: 0x4310,
+    data4: [0xa7, 0x98, 0x80, 0x53, 0xce, 0x3e, 0x93, 0xfd],
+};
+const DXGI_ADAPTER_FLAG_SOFTWARE: u32 = 0x2;
+
 #[repr(C)]
 struct Luid {
     low_part: u32,
@@ -54,6 +70,7 @@ struct DxgiQueryVideoMemoryInfo {
 #[derive(Clone, Debug)]
 pub struct DxgiAdapterInfo {
     pub luid: u64,
+    pub vendor_id: u32,
     pub name: String,
     pub dedicated_video_bytes: u64,
     pub _dedicated_system_bytes: u64,
@@ -65,8 +82,11 @@ pub struct DxgiAdapterInfo {
 pub fn query_dxgi_adapters() -> Vec<DxgiAdapterInfo> {
     let mut results = Vec::new();
     unsafe {
-        let dxgi =
-            windows_sys::Win32::System::LibraryLoader::LoadLibraryA(c"dxgi.dll".as_ptr().cast());
+        let dxgi = windows_sys::Win32::System::LibraryLoader::LoadLibraryExA(
+            c"dxgi.dll".as_ptr().cast(),
+            ptr::null_mut(),
+            windows_sys::Win32::System::LibraryLoader::LOAD_LIBRARY_SEARCH_SYSTEM32,
+        );
         if dxgi.is_null() {
             return results;
         }
@@ -82,14 +102,8 @@ pub fn query_dxgi_adapters() -> Vec<DxgiAdapterInfo> {
             unsafe extern "system" fn(*const Guid, *mut *mut std::ffi::c_void) -> i32;
         let create_factory: CreateFactoryFn = std::mem::transmute(create_factory);
 
-        let iid_factory1 = Guid {
-            data1: 0x770aae78,
-            data2: 0xf26f,
-            data3: 0x4dba,
-            data4: [0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0xee],
-        };
         let mut factory: *mut std::ffi::c_void = ptr::null_mut();
-        if create_factory(&iid_factory1, &mut factory) != 0 || factory.is_null() {
+        if create_factory(&IID_IDXGI_FACTORY1, &mut factory) != 0 || factory.is_null() {
             FreeLibrary(dxgi);
             return results;
         }
@@ -125,7 +139,7 @@ pub fn query_dxgi_adapters() -> Vec<DxgiAdapterInfo> {
             let release_adapter: ReleaseFn = std::mem::transmute(*adapter_vtbl.add(2));
 
             let mut desc = std::mem::zeroed::<DxgiAdapterDesc1>();
-            if get_desc1(adapter, &mut desc) == 0 {
+            if get_desc1(adapter, &mut desc) == 0 && desc.flags & DXGI_ADAPTER_FLAG_SOFTWARE == 0 {
                 let name_len = desc
                     .description
                     .iter()
@@ -138,14 +152,8 @@ pub fn query_dxgi_adapters() -> Vec<DxgiAdapterInfo> {
                 let mut budget_bytes = None;
                 let mut current_usage_bytes = None;
 
-                let iid_adapter3 = Guid {
-                    data1: 0x6459677d,
-                    data2: 0x49e2,
-                    data3: 0x486c,
-                    data4: [0xba, 0xa2, 0xdc, 0x52, 0x96, 0xcc, 0xbe, 0x9e],
-                };
                 let mut adapter3: *mut std::ffi::c_void = ptr::null_mut();
-                if query_interface(adapter, &iid_adapter3, &mut adapter3) == 0
+                if query_interface(adapter, &IID_IDXGI_ADAPTER3, &mut adapter3) == 0
                     && !adapter3.is_null()
                 {
                     let adapter3_vtbl = *(adapter3 as *mut *mut usize);
@@ -170,6 +178,7 @@ pub fn query_dxgi_adapters() -> Vec<DxgiAdapterInfo> {
 
                 results.push(DxgiAdapterInfo {
                     luid,
+                    vendor_id: desc.vendor_id,
                     name,
                     dedicated_video_bytes: desc.dedicated_video_memory as u64,
                     _dedicated_system_bytes: desc.dedicated_system_memory as u64,
@@ -187,71 +196,9 @@ pub fn query_dxgi_adapters() -> Vec<DxgiAdapterInfo> {
 }
 
 pub fn has_pci_vendor_gpu(target_vendor_id: u32) -> bool {
-    let mut found = false;
-    unsafe {
-        let dxgi =
-            windows_sys::Win32::System::LibraryLoader::LoadLibraryA(c"dxgi.dll".as_ptr().cast());
-        if dxgi.is_null() {
-            return false;
-        }
-        let create_factory_ptr = windows_sys::Win32::System::LibraryLoader::GetProcAddress(
-            dxgi,
-            c"CreateDXGIFactory1".as_ptr().cast(),
-        );
-        let Some(create_factory) = create_factory_ptr else {
-            FreeLibrary(dxgi);
-            return false;
-        };
-        type CreateFactoryFn =
-            unsafe extern "system" fn(*const Guid, *mut *mut std::ffi::c_void) -> i32;
-        let create_factory: CreateFactoryFn = std::mem::transmute(create_factory);
-
-        let iid_factory1 = Guid {
-            data1: 0x770aae78,
-            data2: 0xf26f,
-            data3: 0x4dba,
-            data4: [0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0xee],
-        };
-        let mut factory: *mut std::ffi::c_void = ptr::null_mut();
-        if create_factory(&iid_factory1, &mut factory) == 0 && !factory.is_null() {
-            let factory_vtbl = *(factory as *mut *mut usize);
-            type EnumAdapters1Fn = unsafe extern "system" fn(
-                *mut std::ffi::c_void,
-                u32,
-                *mut *mut std::ffi::c_void,
-            ) -> i32;
-            type ReleaseFn = unsafe extern "system" fn(*mut std::ffi::c_void) -> u32;
-            let enum_adapters1: EnumAdapters1Fn = std::mem::transmute(*factory_vtbl.add(12));
-            let release_factory: ReleaseFn = std::mem::transmute(*factory_vtbl.add(2));
-
-            let mut idx = 0u32;
-            loop {
-                let mut adapter: *mut std::ffi::c_void = ptr::null_mut();
-                if enum_adapters1(factory, idx, &mut adapter) != 0 || adapter.is_null() {
-                    break;
-                }
-                idx += 1;
-
-                let adapter_vtbl = *(adapter as *mut *mut usize);
-                type GetDesc1Fn =
-                    unsafe extern "system" fn(*mut std::ffi::c_void, *mut DxgiAdapterDesc1) -> i32;
-                type ReleaseAdapterFn = unsafe extern "system" fn(*mut std::ffi::c_void) -> u32;
-                let get_desc1: GetDesc1Fn = std::mem::transmute(*adapter_vtbl.add(10));
-                let release_adapter: ReleaseAdapterFn = std::mem::transmute(*adapter_vtbl.add(2));
-
-                let mut desc = std::mem::zeroed::<DxgiAdapterDesc1>();
-                if get_desc1(adapter, &mut desc) == 0 && desc.vendor_id == target_vendor_id {
-                    found = true;
-                    release_adapter(adapter);
-                    break;
-                }
-                release_adapter(adapter);
-            }
-            release_factory(factory);
-        }
-        FreeLibrary(dxgi);
-    }
-    found
+    query_dxgi_adapters()
+        .iter()
+        .any(|adapter| adapter.vendor_id == target_vendor_id)
 }
 
 pub struct WindowsGpu {
@@ -744,10 +691,40 @@ mod tests {
     }
 
     #[test]
-    fn dxgi_adapter_enumeration_finds_adapters_without_panics() {
+    fn dxgi_factory_interface_id_is_accepted_by_windows() {
+        unsafe {
+            let dxgi = windows_sys::Win32::System::LibraryLoader::LoadLibraryExA(
+                c"dxgi.dll".as_ptr().cast(),
+                ptr::null_mut(),
+                windows_sys::Win32::System::LibraryLoader::LOAD_LIBRARY_SEARCH_SYSTEM32,
+            );
+            assert!(!dxgi.is_null());
+            let create_factory_ptr = windows_sys::Win32::System::LibraryLoader::GetProcAddress(
+                dxgi,
+                c"CreateDXGIFactory1".as_ptr().cast(),
+            );
+            let create_factory: unsafe extern "system" fn(
+                *const Guid,
+                *mut *mut std::ffi::c_void,
+            ) -> i32 = std::mem::transmute(create_factory_ptr.expect("CreateDXGIFactory1"));
+            let mut factory = ptr::null_mut();
+            let status = create_factory(&IID_IDXGI_FACTORY1, &mut factory);
+            assert_eq!(status, 0, "CreateDXGIFactory1: 0x{status:08x}");
+            assert!(!factory.is_null());
+            let vtable = *(factory as *mut *mut usize);
+            let release: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32 =
+                std::mem::transmute(*vtable.add(2));
+            release(factory);
+            FreeLibrary(dxgi);
+        }
+    }
+
+    #[test]
+    fn dxgi_adapter_enumeration_finds_named_hardware_adapters() {
         let adapters = query_dxgi_adapters();
         for adapter in adapters {
             assert!(!adapter.name.is_empty());
+            assert_ne!(adapter.name, "Microsoft Basic Render Driver");
         }
     }
 

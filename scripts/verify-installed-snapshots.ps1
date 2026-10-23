@@ -1,7 +1,9 @@
 param(
     [Parameter(Mandatory = $true)][ValidateRange(1, 100)][int]$ProtocolVersion,
     [ValidateRange(1, 1000)][int]$Count = 20,
-    [switch]$IncludeSensorSummary
+    [switch]$IncludeSensorSummary,
+    [switch]$IncludeGpuSummary,
+    [switch]$RequireGpuAdapter
 )
 
 $ErrorActionPreference = 'Stop'
@@ -65,6 +67,22 @@ try {
         $result.AvailableCpuPackagePower = @($sensors | Where-Object { $_.sensor_type -eq 'CpuPackagePowerWatts' -and $null -ne $_.value.value }).Count
         $result.AvailableCpuTemperature = @($sensors | Where-Object { $_.sensor_type -eq 'CpuTemperatureCelsius' -and $null -ne $_.value.value }).Count
         $result.SensorProviders = @(($sensors | ForEach-Object { $_.provider } | Sort-Object -Unique))
+    }
+    if ($IncludeGpuSummary -or $RequireGpuAdapter) {
+        $adapters = @($lastFrame.gpu_adapters | Where-Object { $null -ne $_ })
+        $engines = @($lastFrame.gpu_engines | Where-Object { $null -ne $_ })
+        if ($RequireGpuAdapter -and $adapters.Count -eq 0) {
+            throw 'No physical GPU adapter was discovered in the installed helper snapshot'
+        }
+        if ($RequireGpuAdapter -and @($adapters | Where-Object { $null -ne $_.busiest_engine_percent.value }).Count -eq 0) {
+            throw 'No discovered GPU adapter has a measured engine utilization'
+        }
+        $result.GpuAdapters = $adapters.Count
+        $result.GpuEngines = $engines.Count
+        $result.GpuAdapterNames = @($adapters | ForEach-Object { $_.name })
+        $result.GpuAdapterLuids = @($adapters | ForEach-Object { $_.adapter_luid })
+        $result.MeasuredGpuAdapters = @($adapters | Where-Object { $null -ne $_.busiest_engine_percent.value }).Count
+        $result.GpuEngineMatchesAdapter = @($engines | Where-Object { $engine = $_; @($adapters | Where-Object { $_.adapter_luid -eq $engine.adapter_luid }).Count -gt 0 }).Count
     }
     [pscustomobject]$result
 } finally {

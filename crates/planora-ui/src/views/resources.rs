@@ -446,7 +446,7 @@ pub fn render_resources_view(
         // The native fixture CLI accepts category names while device IDs remain
         // stable and specific (for example, gpu:<LUID>:<physical adapter>).
         let requested_prefix = match state.selected_resource.as_deref() {
-            Some("gpu") => Some("gpu:"),
+            Some("gpu" | "gpu:none") => Some("gpu:"),
             Some("disk" | "storage") => Some("disk:"),
             Some("network" | "net") => Some("net:"),
             Some("sensor" | "sensors") => Some("sensor:"),
