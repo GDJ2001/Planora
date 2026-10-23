@@ -6,14 +6,16 @@ use std::{io, path::PathBuf};
 
 pub const DEFAULT_SIZE: [f32; 2] = [1180.0, 790.0];
 pub const MIN_SIZE: [f32; 2] = [1024.0, 640.0];
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Placement {
     pub version: u32,
     pub position: Option<[f32; 2]>,
     pub normal_size: [f32; 2],
     pub maximized: bool,
+    pub native_scale: f32,
 }
 
 impl Default for Placement {
@@ -23,6 +25,7 @@ impl Default for Placement {
             position: None,
             normal_size: DEFAULT_SIZE,
             maximized: false,
+            native_scale: 1.0,
         }
     }
 }
@@ -101,6 +104,7 @@ impl Placement {
             position: viewport.outer_rect.map(|r| [r.min.x, r.min.y]),
             normal_size: [size.x, size.y],
             maximized: false,
+            native_scale: viewport.native_pixels_per_point.unwrap_or(1.0),
         };
         // Reject transient first frames and minimize animations rather than
         // overwriting the last known good normal rectangle.
@@ -151,19 +155,14 @@ pub fn save(placement: &Placement) -> io::Result<()> {
 }
 
 #[cfg(windows)]
-pub fn current_work_area() -> WorkArea {
-    use windows_sys::Win32::{
-        Foundation::RECT,
-        UI::{
-            HiDpi::GetDpiForSystem,
-            WindowsAndMessaging::{SPI_GETWORKAREA, SystemParametersInfoW},
-        },
+fn monitor_area(monitor: windows_sys::Win32::Graphics::Gdi::HMONITOR, scale: f32) -> WorkArea {
+    use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITORINFO};
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
     };
-    let mut rect = RECT::default();
-    let ok =
-        unsafe { SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut rect as *mut _ as *mut _, 0) } != 0;
-    let scale = (unsafe { GetDpiForSystem() }.max(96) as f32) / 96.0;
-    if ok && rect.right > rect.left && rect.bottom > rect.top {
+    if unsafe { GetMonitorInfoW(monitor, &mut info) } != 0 {
+        let rect = info.rcWork;
         WorkArea {
             min: [rect.left as f32 / scale, rect.top as f32 / scale],
             max: [rect.right as f32 / scale, rect.bottom as f32 / scale],
@@ -171,9 +170,80 @@ pub fn current_work_area() -> WorkArea {
     } else {
         WorkArea {
             min: [0.0, 0.0],
-            max: [1180.0, 790.0],
+            max: DEFAULT_SIZE,
         }
     }
+}
+
+#[cfg(windows)]
+pub fn window_work_area(handle: isize) -> WorkArea {
+    use windows_sys::Win32::{
+        Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromWindow},
+        UI::HiDpi::GetDpiForWindow,
+    };
+    let hwnd = handle as windows_sys::Win32::Foundation::HWND;
+    let scale = unsafe { GetDpiForWindow(hwnd) }.max(96) as f32 / 96.0;
+    monitor_area(
+        unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) },
+        scale,
+    )
+}
+
+/// Resolve the saved placement against its actual monitor before creating a window.
+pub fn startup_placement() -> (Placement, WorkArea) {
+    let mut saved: Placement = path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|data| serde_json::from_str(&data).ok())
+        .unwrap_or_default();
+    #[cfg(windows)]
+    let work = {
+        use windows_sys::Win32::{
+            Foundation::POINT,
+            Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromPoint},
+            UI::{
+                HiDpi::{GetDpiForMonitor, GetDpiForSystem, MDT_EFFECTIVE_DPI},
+                WindowsAndMessaging::GetCursorPos,
+            },
+        };
+        let old_scale = if saved.version == 1 {
+            unsafe { GetDpiForSystem() }.max(96) as f32 / 96.0
+        } else if saved.native_scale.is_finite() && (1.0..=8.0).contains(&saved.native_scale) {
+            saved.native_scale
+        } else {
+            1.0
+        };
+        let mut point = POINT::default();
+        if let Some(pos) = saved.position.filter(|p| p.iter().all(|n| n.is_finite())) {
+            point.x = (pos[0] * old_scale) as i32;
+            point.y = (pos[1] * old_scale) as i32;
+        } else {
+            unsafe {
+                GetCursorPos(&mut point);
+            }
+        }
+        let monitor = unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST) };
+        let (mut x, mut y) = (96, 96);
+        unsafe {
+            GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut x, &mut y);
+        }
+        let scale = x.max(96) as f32 / 96.0;
+        saved.position = saved
+            .position
+            .map(|p| [p[0] * old_scale / scale, p[1] * old_scale / scale]);
+        saved.native_scale = scale;
+        monitor_area(monitor, scale)
+    };
+    #[cfg(not(windows))]
+    let work = current_work_area();
+    if saved.version == 1 {
+        saved.version = VERSION;
+    }
+    (saved.validate(work), work)
+}
+
+#[cfg(windows)]
+pub fn current_work_area() -> WorkArea {
+    startup_placement().1
 }
 
 #[cfg(not(windows))]

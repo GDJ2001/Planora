@@ -281,6 +281,8 @@ pub fn create_test_app(theme: Theme, page: Page) -> App {
         sensor_refresh: None,
         #[cfg(windows)]
         sensor_worker: None,
+        appearance: crate::appearance::AppearanceMonitor::default(),
+        applied_appearance: None,
         settings,
         settings_error: None,
         recorder: crate::recording::Recorder::default(),
@@ -317,6 +319,9 @@ pub fn create_test_app(theme: Theme, page: Page) -> App {
         fixture_mode: false,
         window_placement: crate::window_placement::Placement::default(),
         window_work_area: crate::window_placement::current_work_area(),
+        #[cfg(windows)]
+        native_handle: 0,
+        last_monitor_geometry: None,
         normal_window: false,
         window_recovered: false,
         startup_connected_logged: false,

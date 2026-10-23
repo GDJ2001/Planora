@@ -3,9 +3,9 @@ use crate::{
     formatting::format_bytes,
     history::HistoryRange,
     state::{AppState, BUILD_INFO, DisplayPause, UserSettings},
-    theme::{CORNER_RADIUS, Density, Palette, Theme},
+    theme::{CORNER_RADIUS, Palette},
 };
-use eframe::egui::{self, Color32, CornerRadius, Stroke, Vec2};
+use eframe::egui::{self, CornerRadius, Stroke};
 use planora_core::{Command, DiagnosticEntry};
 use std::sync::{
     Arc,
@@ -229,7 +229,7 @@ pub fn render_settings_view(
     render_page_header(
         ui,
         "Settings & Preferences",
-        "Interface themes, measurement cadence, diagnostic logs, and platform build information",
+        "Measurement cadence, diagnostics, local data, and application information",
         app_state,
         pause_state,
         current_poll,
@@ -240,84 +240,8 @@ pub fn render_settings_view(
         ui.colored_label(p.error, error);
     }
 
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        // Group 1: Appearance & Display
-        egui::Frame::group(ui.style())
-            .fill(p.surface)
-            .stroke(Stroke::new(1.0, p.border))
-            .corner_radius(CornerRadius::same(CORNER_RADIUS as u8))
-            .inner_margin(egui::Margin::same(16))
-            .show(ui, |ui| {
-                ui.strong("Appearance & Motion");
-                ui.add_space(8.0);
-
-                // Theme Mode with visual preview swatches
-                ui.horizontal(|ui| {
-                    ui.label("Theme Mode:");
-                    ui.add_space(8.0);
-
-                    for (t, label, preview_bg, preview_fg) in [
-                        (Theme::System, "System Auto", p.surface_raised, p.text),
-                        (Theme::Dark, "Dark (Planora Deep)", Color32::from_rgb(11, 18, 32), Color32::from_rgb(244, 247, 251)),
-                        (Theme::Light, "Light (Planora Clean)", Color32::from_rgb(244, 247, 251), Color32::from_rgb(20, 33, 61)),
-                    ] {
-                        let is_active = settings.theme == t;
-                        let (rect, resp) = ui.allocate_exact_size(Vec2::new(140.0, 32.0), egui::Sense::click());
-                        let painter = ui.painter();
-                        painter.rect_filled(rect, CornerRadius::same(4), preview_bg);
-                        painter.rect_stroke(
-                            rect,
-                            CornerRadius::same(4),
-                            Stroke::new(if is_active { 2.0 } else { 1.0 }, if is_active { p.primary } else { p.border }),
-                            egui::StrokeKind::Inside,
-                        );
-                        painter.text(
-                            rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            label,
-                            egui::FontId::proportional(12.0),
-                            preview_fg,
-                        );
-
-                        if resp.clicked() {
-                            settings.theme = t;
-                            persist(settings, settings_error);
-                        }
-                    }
-                });
-
-                ui.add_space(10.0);
-
-                // Density Selection
-                ui.horizontal(|ui| {
-                    ui.label("Display Density:");
-                    ui.add_space(8.0);
-                    let mut changed = false;
-                    changed |= ui.selectable_value(&mut settings.density, Density::Compact, "Compact").changed();
-                    changed |= ui.selectable_value(&mut settings.density, Density::Normal, "Normal").changed();
-                    changed |= ui.selectable_value(&mut settings.density, Density::Spacious, "Spacious").changed();
-                    if changed {
-                        persist(settings, settings_error);
-                    }
-                });
-
-                ui.add_space(10.0);
-
-                // Reduced Motion Toggle
-                ui.horizontal(|ui| {
-                    if ui.checkbox(&mut settings.reduced_motion, "Reduced Motion (Disable continuous animations and transitions)").changed() {
-                        persist(settings, settings_error);
-                    }
-                });
-                ui.add_space(10.0);
-                if ui.button("Reset window placement").clicked() {
-                    state.reset_window_requested = true;
-                    state.status_message = Some((false, "Window placement reset to the current display.".into()));
-                }
-            });
-
-        ui.add_space(14.0);
-
+    egui::ScrollArea::vertical().id_salt("settings_page").auto_shrink([false, false]).show(ui, |ui| {
+        let card_width = (ui.available_width() - 34.0).max(100.0);
         // Group 2: Telemetry Cadence & History
         egui::Frame::group(ui.style())
             .fill(p.surface)
@@ -325,10 +249,11 @@ pub fn render_settings_view(
             .corner_radius(CornerRadius::same(CORNER_RADIUS as u8))
             .inner_margin(egui::Margin::same(16))
             .show(ui, |ui| {
+                ui.set_width(card_width);
                 ui.strong("Telemetry & Historical Buffers");
                 ui.add_space(8.0);
 
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("Sampling Poll Interval:");
                     ui.add_space(8.0);
                     for ms in [100, 250, 500, 1_000, 2_000] {
@@ -348,7 +273,7 @@ pub fn render_settings_view(
 
                 ui.add_space(10.0);
 
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("Default History Time Window:");
                     ui.add_space(8.0);
                     let mut changed = false;
@@ -371,7 +296,8 @@ pub fn render_settings_view(
             .corner_radius(CornerRadius::same(CORNER_RADIUS as u8))
             .inner_margin(egui::Margin::same(16))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
+                ui.set_width(card_width);
+                ui.horizontal_wrapped(|ui| {
                     ui.strong("Helper Operation Logs (256 Event Ring Buffer)");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("Copy Logs to Clipboard").clicked() {
@@ -389,7 +315,7 @@ pub fn render_settings_view(
                 });
 
                 ui.add_space(6.0);
-                egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
+                egui::ScrollArea::vertical().id_salt("settings_diagnostics").max_height(160.0).show(ui, |ui| {
                     if diagnostic_logs.is_empty() {
                         ui.label(egui::RichText::new("No diagnostic events fetched yet. Click 'Fetch Diagnostic Logs' to inspect.").color(p.secondary));
                     } else {
@@ -400,7 +326,7 @@ pub fn render_settings_view(
                                     entry.timestamp_ms, entry.operation_id, entry.code, entry.message
                                 ))
                                 .monospace()
-                                .size(11.0),
+                                .size(11.0 * crate::appearance::text_scale(ui.ctx())),
                             );
                         }
                     }
@@ -416,16 +342,17 @@ pub fn render_settings_view(
             .corner_radius(CornerRadius::same(CORNER_RADIUS as u8))
             .inner_margin(egui::Margin::same(16))
             .show(ui, |ui| {
+                ui.set_width(card_width);
                 ui.strong("Local Data & Personal Privacy");
                 ui.add_space(4.0);
                 ui.label(
                     egui::RichText::new("Planora preserves your personal preferences and recording sessions by default.")
-                        .size(11.5)
+                        .size(11.5 * crate::appearance::text_scale(ui.ctx()))
                         .color(p.secondary),
                 );
                 ui.label(
                     egui::RichText::new("Inspect and delete Planora settings and in-app recordings. Exported files are preserved.")
-                        .size(11.5)
+                        .size(11.5 * crate::appearance::text_scale(ui.ctx()))
                         .color(p.secondary),
                 );
                 ui.add_space(8.0);
@@ -467,7 +394,7 @@ pub fn render_settings_view(
                             ui.strong(format!("Total Size: {}", format_bytes(total_bytes)));
                             ui.add_space(8.0);
 
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
                                 if ui.button(egui::RichText::new("Yes, Delete My Planora Data").color(p.error)).clicked() {
                                     let files = state.preview_files.clone();
                                     let (sender, receiver) = mpsc::sync_channel(1);
@@ -488,6 +415,22 @@ pub fn render_settings_view(
 
         ui.add_space(14.0);
 
+        egui::Frame::group(ui.style())
+            .fill(p.surface)
+            .stroke(Stroke::new(1.0, p.border))
+            .corner_radius(CornerRadius::same(CORNER_RADIUS as u8))
+            .inner_margin(egui::Margin::same(16))
+            .show(ui, |ui| {
+            ui.set_width(card_width);
+            ui.strong("Troubleshooting");
+            ui.label("Appearance and display scaling follow Windows settings automatically.");
+            if ui.button("Reset window placement").clicked() {
+                state.reset_window_requested = true;
+                state.status_message = Some((false, "Window placement reset to the current display.".into()));
+            }
+        });
+        ui.add_space(14.0);
+
         // Group 5: Build & System Information
         egui::Frame::group(ui.style())
             .fill(p.surface)
@@ -495,6 +438,7 @@ pub fn render_settings_view(
             .corner_radius(CornerRadius::same(CORNER_RADIUS as u8))
             .inner_margin(egui::Margin::same(16))
             .show(ui, |ui| {
+                ui.set_width(card_width);
                 ui.strong("Build Identity & Platform Verification");
                 ui.add_space(8.0);
 

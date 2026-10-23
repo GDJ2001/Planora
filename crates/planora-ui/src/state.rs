@@ -45,10 +45,13 @@ pub enum HardwareViewMode {
 #[serde(default)]
 pub struct UserSettings {
     pub schema_version: u32,
+    #[serde(skip)] // Runtime fixture override only; normal UI follows the OS.
     pub theme: Theme,
+    #[serde(skip)]
     pub density: Density,
     pub poll_interval_ms: u64,
     pub hardware_view_mode: HardwareViewMode,
+    #[serde(skip)]
     pub reduced_motion: bool,
     pub default_history_range: HistoryRange,
     pub resource_graphs: [bool; 6],
@@ -64,7 +67,7 @@ pub struct UserSettings {
 impl Default for UserSettings {
     fn default() -> Self {
         Self {
-            schema_version: 5,
+            schema_version: 6,
             theme: Theme::System,
             density: Density::Normal,
             poll_interval_ms: 100,
@@ -115,7 +118,7 @@ impl UserSettings {
                 if let Ok(data) = std::fs::read_to_string(path)
                     && let Ok(mut settings) = serde_json::from_str::<Self>(&data)
                 {
-                    settings.schema_version = 5;
+                    settings.schema_version = 6;
                     settings.performance_engines.truncate(4);
                     settings.performance_resource =
                         settings.performance_resource.filter(|id| id.len() <= 256);
@@ -863,6 +866,28 @@ pub fn background_worker(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn legacy_appearance_is_discarded_without_losing_monitoring_preferences() {
+        let settings: super::UserSettings = serde_json::from_str(
+            r#"{
+            "schema_version":5,"theme":"Dark","density":"Compact",
+            "reduced_motion":true,"poll_interval_ms":500,
+            "performance_resource":"memory","performance_range":"Min15"
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(settings.theme, crate::theme::Theme::System);
+        assert_eq!(settings.density, crate::theme::Density::Normal);
+        assert!(!settings.reduced_motion);
+        assert_eq!(settings.poll_interval_ms, 500);
+        assert_eq!(settings.performance_resource.as_deref(), Some("memory"));
+        assert_eq!(
+            settings.performance_range,
+            crate::history::HistoryRange::Min15
+        );
+        let saved = serde_json::to_value(settings).unwrap();
+        assert!(saved.get("theme").is_none());
+    }
+    #[test]
     fn fresh_install_without_running_helper_prompts_for_authorization() {
         use super::{AppState, connection_failure_state};
         use std::{io, time::Duration};
@@ -1103,7 +1128,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_migration_v3_and_v4_to_v5_preserves_preferences() {
+    fn settings_migration_v3_and_v4_to_v6_preserves_monitoring_preferences() {
         let v3_json = r#"{
             "schema_version": 3,
             "theme": "Dark",
@@ -1127,13 +1152,13 @@ mod tests {
         }"#;
 
         let mut settings: UserSettings = serde_json::from_str(v3_json).expect("v3 json parse");
-        settings.schema_version = 5;
-        assert_eq!(settings.schema_version, 5);
-        assert_eq!(settings.theme, Theme::Dark);
-        assert_eq!(settings.density, Density::Compact);
+        settings.schema_version = 6;
+        assert_eq!(settings.schema_version, 6);
+        assert_eq!(settings.theme, Theme::System);
+        assert_eq!(settings.density, Density::Normal);
         assert_eq!(settings.poll_interval_ms, 250);
         assert_eq!(settings.hardware_view_mode, HardwareViewMode::Tree);
-        assert!(settings.reduced_motion);
+        assert!(!settings.reduced_motion);
         assert_eq!(settings.default_history_range, HistoryRange::Min5);
         assert_eq!(
             settings.process_sort_column,
@@ -1152,9 +1177,9 @@ mod tests {
             "poll_interval_ms": 100
         }"#;
         let mut settings_v4: UserSettings = serde_json::from_str(v4_json).expect("v4 json parse");
-        settings_v4.schema_version = 5;
-        assert_eq!(settings_v4.schema_version, 5);
-        assert_eq!(settings_v4.theme, Theme::Light);
+        settings_v4.schema_version = 6;
+        assert_eq!(settings_v4.schema_version, 6);
+        assert_eq!(settings_v4.theme, Theme::System);
         assert_eq!(settings_v4.poll_interval_ms, 100);
     }
 }

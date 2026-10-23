@@ -16,6 +16,77 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+
+    #[test]
+    fn performance_workspace_stays_inside_available_width() {
+        let fixture = crate::smoke_test::create_native_fixture_app(
+            crate::theme::Theme::Dark,
+            crate::state::Page::Performance,
+        );
+        let frame = fixture.shared.lock().unwrap().frame.clone().unwrap();
+        for width in [800.0, 940.0, 1120.0, 1328.0, 1712.0] {
+            for scale in [1.0, 1.5, 2.0] {
+                for resource in ["cpu", "memory", "gpu", "network"] {
+                    let ctx = egui::Context::default();
+                    crate::theme::configure_theme(
+                        &ctx,
+                        crate::theme::get_palette(true),
+                        crate::theme::Density::Normal,
+                        scale,
+                        false,
+                    );
+                    ctx.data_mut(|data| {
+                        data.insert_temp(egui::Id::unique("system_text_scale"), scale)
+                    });
+                    let mut state = ResourcesViewState {
+                        selected_resource: Some(resource.into()),
+                        ..Default::default()
+                    };
+                    for _ in 0..2 {
+                        let mut output = ctx.run_ui(
+                            egui::RawInput {
+                                screen_rect: Some(Rect::from_min_size(
+                                    egui::Pos2::ZERO,
+                                    Vec2::new(width, 790.0),
+                                )),
+                                ..Default::default()
+                            },
+                            |ui| {
+                                let right = ui.max_rect().right();
+                                render_resources_view(
+                                    ui,
+                                    &frame,
+                                    &fixture.histories,
+                                    &[],
+                                    None,
+                                    None,
+                                    &mut state,
+                                    &AppState::Live,
+                                    &mut DisplayPause::default(),
+                                    100,
+                                    &mut [true; 6],
+                                    &mut [true; 6],
+                                    Instant::now(),
+                                    crate::theme::get_palette(true),
+                                );
+                                assert!(
+                                    ui.min_rect().right() <= right + 1.0,
+                                    "{resource} at {width}, text scale {scale}: expanded to {}",
+                                    ui.min_rect().right()
+                                );
+                            },
+                        );
+                        output.textures_delta.clear();
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum SensorTrendKind {
     #[default]
@@ -85,6 +156,8 @@ impl SensorTrendKind {
 pub struct ResourcesViewState {
     pub active_tab: usize, // 0: CPU, 1: Memory, 2: GPU, 3: Storage, 4: Network, 5: Sensors
     pub search_query: String,
+    pub engine_search: String,
+    detail_height: f32,
     pub selected_resource: Option<String>,
     pub range: HistoryRange,
     pub selected_cpu: Option<(u16, u16)>,
@@ -101,6 +174,8 @@ impl Default for ResourcesViewState {
         Self {
             active_tab: 0,
             search_query: String::new(),
+            engine_search: String::new(),
+            detail_height: 790.0,
             selected_resource: None,
             range: HistoryRange::Sec60,
             selected_cpu: None,
@@ -467,117 +542,137 @@ pub fn render_resources_view(
         state.export_message = None;
     }
 
-    let wide = ui.available_width() >= 1080.0;
+    #[cfg(test)]
+    assert!(
+        ui.min_rect().right() <= ui.max_rect().right() + 1.0,
+        "page header overflow"
+    );
+    let text_scale = crate::appearance::text_scale(ui.ctx());
+    let selector_width = (240.0 * text_scale.max(1.0)).min(320.0);
+    let area = ui.available_rect_before_wrap();
+    state.detail_height = area.height();
+    let wide = area.width() >= selector_width + 16.0 + 760.0;
     if wide {
-        let content_width = ui.available_width() - 256.0;
-        ui.horizontal_top(|ui| {
-            ui.vertical(|ui| {
-                ui.set_width(240.0);
-                ui.heading("Resources");
-                ui.add_space(4.0);
-                ui.add(
-                    egui::TextEdit::singleline(&mut state.search_query)
-                        .hint_text("Filter resources...")
-                        .desired_width(230.0),
-                );
-                ui.add_space(8.0);
-                egui::ScrollArea::vertical()
-                    .id_salt("performance_resource_selector")
-                    .max_height(720.0)
-                    .show(ui, |ui| {
-                        for item in &all {
-                            if !item
-                                .label
-                                .to_lowercase()
-                                .contains(&state.search_query.to_lowercase())
-                            {
-                                continue;
-                            }
-                            let selected = state.selected_resource.as_ref() == Some(&item.id);
-                            egui::Frame::group(ui.style())
-                                .fill(if selected { p.selected } else { p.surface })
-                                .stroke(Stroke::new(
-                                    if selected { 1.5 } else { 1.0 },
-                                    if selected { item.color } else { p.border },
-                                ))
-                                .corner_radius(CornerRadius::same(8))
-                                .inner_margin(egui::Margin::same(10))
-                                .show(ui, |ui| {
-                                    ui.set_width(216.0);
-                                    ui.horizontal(|ui| {
-                                        ui.colored_label(item.color, "▌");
-                                        let resp = ui.selectable_label(selected, &item.label);
-                                        if resp.clicked() {
-                                            state.selected_resource = Some(item.id.clone());
-                                        }
-                                        resp.on_hover_text(&item.label);
-                                    });
-                                    ui.add_space(4.0);
-                                    ui.horizontal(|ui| {
-                                        ui.vertical(|ui| {
-                                            ui.label(
-                                                egui::RichText::new(&item.value)
-                                                    .monospace()
-                                                    .size(15.0)
-                                                    .strong()
-                                                    .color(item.color),
-                                            );
-                                            ui.horizontal(|ui| {
-                                                ui.colored_label(
-                                                    item.status_color,
-                                                    item.status_symbol,
-                                                );
-                                                ui.label(
-                                                    egui::RichText::new(&item.status_text)
-                                                        .size(11.0)
-                                                        .color(p.secondary),
-                                                );
-                                            });
-                                        });
-                                        ui.with_layout(
-                                            egui::Layout::right_to_left(egui::Align::Center),
-                                            |ui| {
-                                                if let Some(series) = choice_series(item, histories)
-                                                {
-                                                    sparkline(ui, series, now, item.color, p);
-                                                }
-                                            },
-                                        );
-                                    });
-                                });
-                            ui.add_space(6.0);
+        let selector = Rect::from_min_size(area.min, Vec2::new(selector_width, area.height()));
+        let detail = Rect::from_min_max(egui::pos2(selector.right() + 16.0, area.top()), area.max);
+        ui.scope_builder(egui::UiBuilder::new().max_rect(selector), |ui| {
+            ui.set_width(selector.width());
+            ui.set_clip_rect(selector.intersect(ui.clip_rect()));
+            ui.heading("Resources");
+            ui.add_space(4.0);
+            ui.add(
+                egui::TextEdit::singleline(&mut state.search_query)
+                    .hint_text("Filter resources...")
+                    .desired_width(f32::INFINITY),
+            );
+            ui.add_space(8.0);
+            egui::ScrollArea::vertical()
+                .id_salt("performance_resource_selector")
+                .max_height(ui.available_height())
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    for item in &all {
+                        if !item
+                            .label
+                            .to_lowercase()
+                            .contains(&state.search_query.to_lowercase())
+                        {
+                            continue;
                         }
-                    });
-            });
-            ui.separator();
-            ui.vertical(|ui| {
-                ui.set_width(content_width.max(260.0));
-                if let Some(item) = all
-                    .iter()
-                    .find(|item| state.selected_resource.as_ref() == Some(&item.id))
-                {
-                    render_selected(
-                        ui,
-                        frame,
-                        histories,
-                        sensors,
-                        topology,
-                        exporter.as_deref_mut(),
-                        state,
-                        app_state,
-                        pause_state,
-                        poll_interval_ms,
-                        item,
-                        graph_modes,
-                        legends,
-                        now,
-                        p,
-                    );
-                }
-            });
+                        let selected = state.selected_resource.as_ref() == Some(&item.id);
+                        let card_width = (ui.available_width() - 22.0).max(100.0);
+                        egui::Frame::group(ui.style())
+                            .fill(if selected { p.selected } else { p.surface })
+                            .stroke(Stroke::new(
+                                if selected { 1.5 } else { 1.0 },
+                                if selected { item.color } else { p.border },
+                            ))
+                            .corner_radius(CornerRadius::same(8))
+                            .inner_margin(egui::Margin::same(10))
+                            .show(ui, |ui| {
+                                ui.set_width(card_width);
+                                ui.horizontal(|ui| {
+                                    ui.colored_label(item.color, "▌");
+                                    let resp = ui.add(
+                                        egui::Button::selectable(selected, &item.label).truncate(),
+                                    );
+                                    if resp.clicked() {
+                                        state.selected_resource = Some(item.id.clone());
+                                    }
+                                    resp.on_hover_text(&item.label);
+                                });
+                                ui.add_space(4.0);
+                                ui.horizontal(|ui| {
+                                    ui.vertical(|ui| {
+                                        ui.label(
+                                            egui::RichText::new(&item.value)
+                                                .monospace()
+                                                .size(
+                                                    15.0 * crate::appearance::text_scale(ui.ctx()),
+                                                )
+                                                .strong()
+                                                .color(item.color),
+                                        );
+                                        ui.horizontal(|ui| {
+                                            ui.colored_label(item.status_color, item.status_symbol);
+                                            ui.label(
+                                                egui::RichText::new(&item.status_text)
+                                                    .size(
+                                                        11.0 * crate::appearance::text_scale(
+                                                            ui.ctx(),
+                                                        ),
+                                                    )
+                                                    .color(p.secondary),
+                                            );
+                                        });
+                                    });
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if let Some(series) = choice_series(item, histories) {
+                                                sparkline(ui, series, now, item.color, p);
+                                            }
+                                        },
+                                    );
+                                });
+                            });
+                        ui.add_space(6.0);
+                    }
+                });
+        });
+        ui.scope_builder(egui::UiBuilder::new().max_rect(detail), |ui| {
+            ui.set_width(detail.width());
+            ui.set_clip_rect(detail.intersect(ui.clip_rect()));
+            egui::ScrollArea::vertical()
+                .id_salt("performance_details_wide")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    if let Some(item) = all
+                        .iter()
+                        .find(|item| state.selected_resource.as_ref() == Some(&item.id))
+                    {
+                        render_selected(
+                            ui,
+                            frame,
+                            histories,
+                            sensors,
+                            topology,
+                            exporter.as_deref_mut(),
+                            state,
+                            app_state,
+                            pause_state,
+                            poll_interval_ms,
+                            item,
+                            graph_modes,
+                            legends,
+                            now,
+                            p,
+                        );
+                    }
+                });
         });
     } else {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new("Selected resource:").strong());
             egui::ComboBox::from_id_salt("performance_resource_picker")
                 .selected_text(
@@ -611,27 +706,69 @@ pub fn render_resources_view(
                 });
         });
         ui.add_space(8.0);
-        if let Some(item) = all
-            .iter()
-            .find(|item| state.selected_resource.as_ref() == Some(&item.id))
-        {
-            render_selected(
-                ui,
-                frame,
-                histories,
-                sensors,
-                topology,
-                exporter,
-                state,
-                app_state,
-                pause_state,
-                poll_interval_ms,
-                item,
-                graph_modes,
-                legends,
-                now,
-                p,
-            );
+        egui::ScrollArea::vertical()
+            .id_salt("performance_details_compact")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                if let Some(item) = all
+                    .iter()
+                    .find(|item| state.selected_resource.as_ref() == Some(&item.id))
+                {
+                    render_selected(
+                        ui,
+                        frame,
+                        histories,
+                        sensors,
+                        topology,
+                        exporter,
+                        state,
+                        app_state,
+                        pause_state,
+                        poll_interval_ms,
+                        item,
+                        graph_modes,
+                        legends,
+                        now,
+                        p,
+                    );
+                }
+            });
+    }
+}
+
+fn capacity_pair(
+    ui: &mut egui::Ui,
+    items: [(&str, Option<u64>, Option<u64>, egui::Color32); 2],
+    p: Palette,
+) {
+    ui.add_space(8.0);
+    let draw =
+        |ui: &mut egui::Ui,
+         (label, used, total, color): (&str, Option<u64>, Option<u64>, egui::Color32)| {
+            egui::Frame::group(ui.style())
+                .inner_margin(12.0)
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0, p.border))
+                .corner_radius(CornerRadius::same(CORNER_RADIUS as u8))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.strong(label);
+                    let value = |bytes: Option<u64>| {
+                        bytes.map_or_else(|| "Unavailable".into(), format_bytes)
+                    };
+                    ui.label(format!("{} / {}", value(used), value(total)));
+                    capacity_bar(ui, used, total, color, p);
+                });
+        };
+    if ui.available_width() >= 656.0 {
+        ui.columns(2, |columns| {
+            draw(&mut columns[0], items[0]);
+            draw(&mut columns[1], items[1]);
+        });
+    } else {
+        for item in items {
+            draw(ui, item);
+            ui.add_space(8.0);
         }
     }
 }
@@ -649,6 +786,30 @@ fn format_summary_value(value: f32, unit: &str) -> String {
         "B/s" => format_rate(Some(value)),
         "bytes" => format_bytes(value.max(0.0) as u64),
         _ => format!("{value:.1} {unit}"),
+    }
+}
+
+fn summary_badge(ui: &mut egui::Ui, text: &str, text_color: egui::Color32, p: Palette) {
+    let font_id = egui::TextStyle::Body.resolve(ui.style());
+    let max_text_width = (ui.max_rect().width() - 20.0).max(10.0);
+    let galley = ui
+        .painter()
+        .layout(text.to_owned(), font_id, text_color, max_text_width);
+    let padding = egui::vec2(20.0, 10.0);
+    let mut desired_size = galley.size() + padding;
+    desired_size.x = desired_size.x.min(ui.max_rect().width());
+    let (rect, _) = ui.allocate_exact_size(desired_size, egui::Sense::hover());
+    if ui.is_rect_visible(rect) {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(6), p.surface_raised);
+        ui.painter().rect_stroke(
+            rect,
+            CornerRadius::same(6),
+            Stroke::new(1.0, p.border),
+            egui::StrokeKind::Inside,
+        );
+        let text_pos = rect.min + egui::vec2(10.0, 5.0);
+        ui.painter().galley(text_pos, galley, text_color);
     }
 }
 
@@ -675,7 +836,7 @@ fn cpu_utilization_ring(ui: &mut egui::Ui, value: Option<f32>, p: Palette) {
             center,
             egui::Align2::CENTER_CENTER,
             format!("{percent:.0}%"),
-            egui::FontId::monospace(13.0),
+            egui::FontId::monospace(13.0 * crate::appearance::text_scale(ui.ctx())),
             p.text,
         );
     } else {
@@ -683,7 +844,7 @@ fn cpu_utilization_ring(ui: &mut egui::Ui, value: Option<f32>, p: Palette) {
             center,
             egui::Align2::CENTER_CENTER,
             "—",
-            egui::FontId::proportional(18.0),
+            egui::FontId::proportional(18.0 * crate::appearance::text_scale(ui.ctx())),
             p.secondary,
         );
     }
@@ -704,7 +865,7 @@ fn cpu_heatmap(
     ui.label(
         egui::RichText::new("Select a processor for its history.")
             .color(p.secondary)
-            .size(12.0),
+            .size(12.0 * crate::appearance::text_scale(ui.ctx())),
     );
     let mut cpus: Vec<_> = frame.logical_cpus.iter().collect();
     cpus.sort_by_key(|cpu| (cpu.group, cpu.cpu_index));
@@ -750,7 +911,7 @@ fn cpu_heatmap(
                         rect.center() - Vec2::new(0.0, 6.0),
                         egui::Align2::CENTER_CENTER,
                         cpu.cpu_index.to_string(),
-                        egui::FontId::monospace(12.0),
+                        egui::FontId::monospace(12.0 * crate::appearance::text_scale(ui.ctx())),
                         p.text,
                     );
                     let pct_str = cpu
@@ -761,7 +922,7 @@ fn cpu_heatmap(
                         rect.center() + Vec2::new(0.0, 8.0),
                         egui::Align2::CENTER_CENTER,
                         pct_str,
-                        egui::FontId::monospace(10.0),
+                        egui::FontId::monospace(10.0 * crate::appearance::text_scale(ui.ctx())),
                         p.secondary,
                     );
                     if response.clicked() {
@@ -805,6 +966,8 @@ fn render_selected(
     p: Palette,
 ) {
     state.active_tab = item.category;
+    #[cfg(test)]
+    let original_right = ui.max_rect().right();
 
     // 1. Tinted Resource Header with Prominent Value and Status Badges
     egui::Frame::group(ui.style())
@@ -813,23 +976,30 @@ fn render_selected(
         .corner_radius(CornerRadius::same(8))
         .inner_margin(egui::Margin::symmetric(18, 14))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(
-                        egui::RichText::new(&item.label)
-                            .size(22.0)
-                            .strong()
-                            .color(p.text),
-                    );
-                    ui.label(
-                        egui::RichText::new(&item.value)
-                            .size(38.0)
-                            .strong()
-                            .monospace()
-                            .color(item.color),
-                    );
-                });
-                ui.add_space((ui.available_width() - 86.0).max(8.0));
+            ui.set_width(ui.available_width());
+            let title_width = (ui.available_width() - 110.0).max(100.0);
+            ui.horizontal_top(|ui| {
+                ui.allocate_ui_with_layout(
+                    Vec2::new(title_width, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_min_width(title_width);
+                        ui.label(
+                            egui::RichText::new(&item.label)
+                                .size(22.0 * crate::appearance::text_scale(ui.ctx()))
+                                .strong()
+                                .color(p.text),
+                        );
+                        ui.label(
+                            egui::RichText::new(&item.value)
+                                .size(38.0 * crate::appearance::text_scale(ui.ctx()))
+                                .strong()
+                                .monospace()
+                                .color(item.color),
+                        );
+                    },
+                );
+
                 ui.vertical(|ui| {
                     let (badge_text, badge_color) = if pause_state.is_paused {
                         ("Paused", p.warning)
@@ -846,7 +1016,7 @@ fn render_selected(
                     };
                     ui.label(
                         egui::RichText::new(badge_text)
-                            .size(12.0)
+                            .size(12.0 * crate::appearance::text_scale(ui.ctx()))
                             .strong()
                             .color(badge_color),
                     );
@@ -859,6 +1029,13 @@ fn render_selected(
 
     ui.add_space(10.0);
 
+    #[cfg(test)]
+    assert!(
+        ui.min_rect().right() <= original_right + 1.0,
+        "overflow before // 2. Control: {} > {}",
+        ui.min_rect().right(),
+        original_right
+    );
     // 2. Control Toolbar: Mode selector, Time range, Legend, Small-multiples, Details toggle, CSV export
     ui.horizontal_wrapped(|ui| {
         ui.selectable_value(&mut graph_modes[item.category], true, "Graphs + details");
@@ -1044,6 +1221,13 @@ fn render_selected(
         item.label.as_str()
     };
 
+    #[cfg(test)]
+    assert!(
+        ui.min_rect().right() <= original_right + 1.0,
+        "overflow before // 3. Summary: {} > {}",
+        ui.min_rect().right(),
+        original_right
+    );
     // 3. Summary Metrics Bar (Prominent in both modes)
     if let Some(summary) = primary.observed_summary(now, state.range) {
         ui.horizontal_wrapped(|ui| {
@@ -1052,38 +1236,16 @@ fn render_selected(
                 ("Minimum", summary.minimum),
                 ("Maximum", summary.maximum),
             ] {
-                egui::Frame::new()
-                    .fill(p.surface_raised)
-                    .stroke(Stroke::new(1.0, p.border))
-                    .corner_radius(CornerRadius::same(6))
-                    .inner_margin(egui::Margin::symmetric(10, 5))
-                    .show(ui, |ui| {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{label}: {}",
-                                format_summary_value(value, unit)
-                            ))
-                            .strong()
-                            .color(p.text),
-                        );
-                    });
+                let text = format!("{label}: {}", format_summary_value(value, unit));
+                summary_badge(ui, &text, p.text, p);
             }
-            egui::Frame::new()
-                .fill(p.surface_raised)
-                .stroke(Stroke::new(1.0, p.border))
-                .corner_radius(CornerRadius::same(6))
-                .inner_margin(egui::Margin::symmetric(10, 5))
-                .show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "Coverage: {}/{} s ({:.0}%)",
-                            summary.observed_seconds,
-                            summary.expected_seconds,
-                            summary.coverage_percent()
-                        ))
-                        .color(p.secondary),
-                    );
-                });
+            let cov_text = format!(
+                "Coverage: {}/{} s ({:.0}%)",
+                summary.observed_seconds,
+                summary.expected_seconds,
+                summary.coverage_percent()
+            );
+            summary_badge(ui, &cov_text, p.secondary, p);
         });
     } else {
         let status = if histories.not_retained.contains(&item.series_key) {
@@ -1094,6 +1256,13 @@ fn render_selected(
         ui.label(egui::RichText::new(status).color(p.secondary));
     }
 
+    #[cfg(test)]
+    assert!(
+        ui.min_rect().right() <= original_right + 1.0,
+        "overflow before // 4. Large: {} > {}",
+        ui.min_rect().right(),
+        original_right
+    );
     // 4. Large Interactive Chart (in Graphs + details mode)
     if graph_modes[item.category] {
         ui.add_space(8.0);
@@ -1134,11 +1303,7 @@ fn render_selected(
             });
         }
         let plot = state.plots.entry(item.id.clone()).or_default();
-        let chart_h = if item.category == 0 {
-            240.0
-        } else {
-            (ui.available_height() * 0.42).clamp(240.0, 360.0)
-        };
+        let chart_h = (state.detail_height * 0.40).clamp(240.0, 420.0);
         if item.category == 0 {
             activity_bars(
                 ui,
@@ -1175,7 +1340,7 @@ fn render_selected(
                         "Compact 60-second utilization sparklines for all logical processors.",
                     )
                     .color(p.secondary)
-                    .size(12.0),
+                    .size(12.0 * crate::appearance::text_scale(ui.ctx())),
                 );
                 let mut cpus: Vec<_> = frame.logical_cpus.iter().collect();
                 cpus.sort_by_key(|c| (c.group, c.cpu_index));
@@ -1196,7 +1361,9 @@ fn render_selected(
                                         ui.label(
                                             egui::RichText::new(format!("CPU {}", cpu.cpu_index))
                                                 .strong()
-                                                .size(11.0),
+                                                .size(
+                                                    11.0 * crate::appearance::text_scale(ui.ctx()),
+                                                ),
                                         );
                                         ui.with_layout(
                                             egui::Layout::right_to_left(egui::Align::Center),
@@ -1206,7 +1373,11 @@ fn render_selected(
                                                         cpu.utilization_percent.value,
                                                     ))
                                                     .monospace()
-                                                    .size(11.0)
+                                                    .size(
+                                                        11.0 * crate::appearance::text_scale(
+                                                            ui.ctx(),
+                                                        ),
+                                                    )
                                                     .color(p.cpu),
                                                 );
                                             },
@@ -1260,22 +1431,22 @@ fn render_selected(
         }
 
         if item.category == 1 {
-            ui.add_space(8.0);
-            ui.label(egui::RichText::new("Physical memory allocation:").strong());
-            capacity_bar(
+            capacity_pair(
                 ui,
-                frame.memory_used_bytes.value,
-                frame.memory_total_bytes.value,
-                p.memory,
-                p,
-            );
-            ui.add_space(4.0);
-            ui.label(egui::RichText::new("Windows commit charge budget:").strong());
-            capacity_bar(
-                ui,
-                frame.commit_used_bytes.value,
-                frame.commit_total_bytes.value,
-                p.primary,
+                [
+                    (
+                        "Physical memory",
+                        frame.memory_used_bytes.value,
+                        frame.memory_total_bytes.value,
+                        p.memory,
+                    ),
+                    (
+                        "Commit usage / limit",
+                        frame.commit_used_bytes.value,
+                        frame.commit_total_bytes.value,
+                        p.primary,
+                    ),
+                ],
                 p,
             );
         }
@@ -1289,22 +1460,22 @@ fn render_selected(
                     )
             })
         {
-            ui.add_space(8.0);
-            ui.label(egui::RichText::new("Dedicated GPU memory:").strong());
-            capacity_bar(
+            capacity_pair(
                 ui,
-                adapter.dedicated_used_bytes.value,
-                adapter.dedicated_total_bytes.value,
-                p.gpu,
-                p,
-            );
-            ui.add_space(4.0);
-            ui.label(egui::RichText::new("Shared GPU memory:").strong());
-            capacity_bar(
-                ui,
-                adapter.shared_used_bytes.value,
-                adapter.shared_total_bytes.value,
-                p.accent,
+                [
+                    (
+                        "Dedicated memory usage / capacity",
+                        adapter.dedicated_used_bytes.value,
+                        adapter.dedicated_total_bytes.value,
+                        p.gpu,
+                    ),
+                    (
+                        "Shared memory usage / capacity",
+                        adapter.shared_used_bytes.value,
+                        adapter.shared_total_bytes.value,
+                        p.accent,
+                    ),
+                ],
                 p,
             );
 
@@ -1325,47 +1496,131 @@ fn render_selected(
                         "Each trace is one reported counter instance; percentages are never summed across engines.",
                     )
                     .color(p.secondary)
-                    .size(11.5),
+                    .size(11.5 * crate::appearance::text_scale(ui.ctx())),
                 );
-                ui.horizontal_wrapped(|ui| {
-                    for engine in engines.into_iter().take(16) {
-                        let key = format!(
-                            "gpu-engine:{}:{:?}:{:?}:{}:{}",
-                            engine.adapter_luid.unwrap_or(0),
-                            engine.physical_adapter,
-                            engine.engine_id,
-                            engine.engine_type,
-                            engine.instance
-                        );
-                        let mut enabled = state.selected_engines.contains(&key);
-                        if ui
-                            .checkbox(
-                                &mut enabled,
-                                format!("{} #{:?}", engine.engine_type, engine.engine_id),
-                            )
-                            .on_hover_text(&engine.instance)
-                            .changed()
-                        {
-                            if enabled && state.selected_engines.len() < 4 {
-                                state.selected_engines.insert(key);
-                            } else if !enabled {
-                                state.selected_engines.remove(&key);
-                            }
-                        }
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.engine_search)
+                        .hint_text("Filter engines or process IDs")
+                        .desired_width(f32::INFINITY),
+                );
+                let query = state.engine_search.to_lowercase();
+                engines.retain(|engine| {
+                    format!("{} {}", engine.engine_type, engine.instance)
+                        .to_lowercase()
+                        .contains(&query)
+                });
+                ui.columns(4, |columns| {
+                    for (column, title) in columns.iter_mut().zip([
+                        "Engine",
+                        "Physical adapter",
+                        "Process PID",
+                        "Utilization",
+                    ]) {
+                        column.strong(title);
                     }
                 });
+                egui::ScrollArea::vertical()
+                    .id_salt(("engine_picker", &item.id))
+                    .max_height(192.0)
+                    .auto_shrink([false, true])
+                    .show_rows(
+                        ui,
+                        32.0 * crate::appearance::text_scale(ui.ctx()),
+                        engines.len(),
+                        |ui, rows| {
+                            for row in rows {
+                                let engine = engines[row];
+                                let key = format!(
+                                    "gpu-engine:{}:{:?}:{:?}:{}:{}",
+                                    engine.adapter_luid.unwrap_or(0),
+                                    engine.physical_adapter,
+                                    engine.engine_id,
+                                    engine.engine_type,
+                                    engine.instance
+                                );
+                                ui.push_id(&key, |ui| {
+                                    ui.columns(4, |columns| {
+                                        let mut enabled = state.selected_engines.contains(&key);
+                                        let label = engine.engine_id.map_or_else(
+                                            || engine.engine_type.clone(),
+                                            |id| format!("{} #{id}", engine.engine_type),
+                                        );
+                                        let can_select =
+                                            enabled || state.selected_engines.len() < 4;
+                                        if columns[0]
+                                            .add_enabled(
+                                                can_select,
+                                                egui::Checkbox::new(&mut enabled, label),
+                                            )
+                                            .on_hover_text(&engine.instance)
+                                            .changed()
+                                        {
+                                            if enabled {
+                                                state.selected_engines.insert(key.clone());
+                                            } else {
+                                                state.selected_engines.remove(&key);
+                                            }
+                                        }
+                                        columns[1].label(engine.physical_adapter.map_or_else(
+                                            || "Not reported".into(),
+                                            |id| id.to_string(),
+                                        ));
+                                        columns[2].label(engine.process_pid.map_or_else(
+                                            || "Unattributed".into(),
+                                            |id| id.to_string(),
+                                        ));
+                                        columns[3].label(format_percent(
+                                            engine.utilization_percent.value,
+                                        ));
+                                    });
+                                });
+                            }
+                        },
+                    );
+                if engines.is_empty() {
+                    ui.label("No engines match this filter.");
+                }
+                let curve_names: Vec<String> = state
+                    .selected_engines
+                    .iter()
+                    .take(4)
+                    .map(|key| {
+                        engines
+                            .iter()
+                            .find(|e| {
+                                let k = format!(
+                                    "gpu-engine:{}:{:?}:{:?}:{}:{}",
+                                    e.adapter_luid.unwrap_or(0),
+                                    e.physical_adapter,
+                                    e.engine_id,
+                                    e.engine_type,
+                                    e.instance
+                                );
+                                &k == key
+                            })
+                            .map(|e| {
+                                e.engine_id.map_or_else(
+                                    || e.engine_type.clone(),
+                                    |id| format!("{} #{id}", e.engine_type),
+                                )
+                            })
+                            .unwrap_or_else(|| "Engine instance".into())
+                    })
+                    .collect();
+
                 let curves: Vec<_> = state
                     .selected_engines
                     .iter()
-                    .filter_map(|key| {
+                    .take(4)
+                    .zip(&curve_names)
+                    .filter_map(|(key, name)| {
                         histories.detail(key).map(|series| PlotSeries {
-                            name: "Engine instance",
+                            name: name.as_str(),
                             samples: series,
                             color: p.gpu,
                             dashed: false,
                         })
                     })
-                    .take(4)
                     .collect();
                 if !curves.is_empty() {
                     let plot = state
@@ -1422,6 +1677,13 @@ fn render_selected(
         ui.add_space(14.0);
     }
 
+    #[cfg(test)]
+    assert!(
+        ui.min_rect().right() <= original_right + 1.0,
+        "overflow before // 5. Detailed: {} > {}",
+        ui.min_rect().right(),
+        original_right
+    );
     // 5. Detailed Tables (Prominently rendered in both modes)
     egui::Frame::group(ui.style())
         .fill(p.surface)
@@ -1457,25 +1719,23 @@ fn render_cpu_tab(
     now: Instant,
     p: Palette,
 ) {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.heading("Logical Processors");
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(
-                egui::RichText::new(format!(
-                    "Total System CPU: {}",
-                    format_percent(frame.cpu_percent.value)
-                ))
-                .strong()
-                .color(p.cpu),
-            );
-        });
+        ui.label(
+            egui::RichText::new(format!(
+                "Total System CPU: {}",
+                format_percent(frame.cpu_percent.value)
+            ))
+            .strong()
+            .color(p.cpu),
+        );
     });
 
     ui.label(
         egui::RichText::new(
             "Individual logical processor loads preserving Windows processor-group addressing.",
         )
-        .size(11.5)
+        .size(11.5 * crate::appearance::text_scale(ui.ctx()))
         .color(p.secondary),
     );
     ui.add_space(8.0);
@@ -1560,7 +1820,7 @@ fn render_memory_tab(ui: &mut egui::Ui, frame: &TelemetryFrame, p: Palette) {
         egui::RichText::new(
             "Physical memory allocation and Windows commit limit / page file backing.",
         )
-        .size(11.5)
+        .size(11.5 * crate::appearance::text_scale(ui.ctx()))
         .color(p.secondary),
     );
     ui.add_space(8.0);
@@ -1628,7 +1888,7 @@ fn render_gpu_tab(ui: &mut egui::Ui, frame: &TelemetryFrame, p: Palette) {
         egui::RichText::new(
             "Physical graphics adapters discovered via DXGI and engine load from Windows PDH.",
         )
-        .size(11.5)
+        .size(11.5 * crate::appearance::text_scale(ui.ctx()))
         .color(p.secondary),
     );
     ui.add_space(8.0);
@@ -1704,7 +1964,7 @@ fn render_gpu_tab(ui: &mut egui::Ui, frame: &TelemetryFrame, p: Palette) {
                 "Each row is one reported physical counter instance; percentages are never summed across engines.",
             )
             .color(p.secondary)
-            .size(11.0),
+            .size(11.0 * crate::appearance::text_scale(ui.ctx())),
         );
         ui.add_space(4.0);
         egui::ScrollArea::vertical()
@@ -1753,7 +2013,7 @@ fn render_storage_tab(ui: &mut egui::Ui, frame: &TelemetryFrame, p: Palette) {
         egui::RichText::new(
             "Throughput, response time latency, and queue depth per physical disk.",
         )
-        .size(11.5)
+        .size(11.5 * crate::appearance::text_scale(ui.ctx()))
         .color(p.secondary),
     );
     ui.add_space(8.0);
@@ -1811,7 +2071,7 @@ fn render_network_tab(ui: &mut egui::Ui, frame: &TelemetryFrame, p: Palette) {
         egui::RichText::new(
             "Network interface bandwidth, link connection status, and theoretical link speed.",
         )
-        .size(11.5)
+        .size(11.5 * crate::appearance::text_scale(ui.ctx()))
         .color(p.secondary),
     );
     ui.add_space(8.0);
@@ -1910,7 +2170,7 @@ fn render_sensors_tab(
         egui::RichText::new(
             "Substantiated hardware metrics from isolated workers: Intel IGCL, NVIDIA NVML, AMD ADLX, and Advanced Sensors (LibreHardwareMonitor / PawnIO).",
         )
-        .size(11.5)
+        .size(11.5 * crate::appearance::text_scale(ui.ctx()))
         .color(p.secondary),
     );
     ui.add_space(8.0);
@@ -1923,7 +2183,7 @@ fn render_sensors_tab(
             egui::RichText::new(
                 "Check the Capabilities tab to see provider runtime discovery status.",
             )
-            .size(11.5)
+            .size(11.5 * crate::appearance::text_scale(ui.ctx()))
             .color(p.secondary),
         );
         return;
@@ -2040,7 +2300,7 @@ fn render_sensors_tab(
         ui.add_space(8.0);
         ui.label(
             egui::RichText::new(&device_name)
-                .size(14.0)
+                .size(14.0 * crate::appearance::text_scale(ui.ctx()))
                 .strong()
                 .color(p.text),
         );

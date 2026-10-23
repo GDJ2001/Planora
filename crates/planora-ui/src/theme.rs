@@ -141,7 +141,44 @@ pub fn get_palette(is_dark: bool) -> Palette {
 }
 
 pub fn apply_egui_theme(ctx: &egui::Context, is_dark: bool, density: Density) {
-    let p = get_palette(is_dark);
+    configure_theme(ctx, get_palette(is_dark), density, 1.0, true);
+}
+
+pub fn accessible_palette(is_dark: bool, contrast: Option<(Color32, Color32)>) -> Palette {
+    let mut p = get_palette(is_dark);
+    if let Some((foreground, background)) = contrast {
+        p.background = background;
+        p.surface = background;
+        p.surface_raised = background;
+        p.hover = background;
+        p.selected = background;
+        p.text = foreground;
+        p.secondary = foreground;
+        p.border = foreground;
+        p.border_control = foreground;
+        p.primary = foreground;
+        p.accent = foreground;
+        p.focus = foreground;
+        p.success = foreground;
+        p.warning = foreground;
+        p.error = foreground;
+        p.cpu = foreground;
+        p.memory = foreground;
+        p.gpu = foreground;
+        p.disk = foreground;
+        p.network = foreground;
+    }
+    p
+}
+
+pub fn configure_theme(
+    ctx: &egui::Context,
+    p: Palette,
+    density: Density,
+    text_scale: f32,
+    animations: bool,
+) {
+    let is_dark = p.is_dark;
     let mut visuals = if is_dark {
         egui::Visuals::dark()
     } else {
@@ -177,7 +214,19 @@ pub fn apply_egui_theme(ctx: &egui::Context, is_dark: bool, density: Density) {
     visuals.selection.bg_fill = p.selected;
     visuals.selection.stroke = Stroke::new(1.0, p.primary);
 
-    ctx.set_visuals(visuals);
+    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, p.text);
+    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, p.text);
+    visuals.widgets.hovered.fg_stroke = Stroke::new(1.5, p.text);
+    visuals.widgets.active.fg_stroke = Stroke::new(1.5, p.text);
+    visuals.widgets.open.fg_stroke = Stroke::new(1.0, p.text);
+    ctx.set_visuals_of(
+        if is_dark {
+            egui::Theme::Dark
+        } else {
+            egui::Theme::Light
+        },
+        visuals,
+    );
 
     let egui_theme = if is_dark {
         egui::Theme::Dark
@@ -185,22 +234,29 @@ pub fn apply_egui_theme(ctx: &egui::Context, is_dark: bool, density: Density) {
         egui::Theme::Light
     };
     ctx.style_mut_of(egui_theme, |style| {
-        style.spacing.item_spacing = density.item_spacing();
+        style.spacing.item_spacing = density.item_spacing() * text_scale;
+        style.spacing.interact_size.y = 24.0 * text_scale;
+        style.animation_time = if animations { 0.15 } else { 0.0 };
         style.spacing.window_margin = Margin::same(CORNER_RADIUS as i8);
-        style
-            .text_styles
-            .insert(egui::TextStyle::Body, egui::FontId::proportional(14.0));
-        style
-            .text_styles
-            .insert(egui::TextStyle::Button, egui::FontId::proportional(13.5));
-        style
-            .text_styles
-            .insert(egui::TextStyle::Heading, egui::FontId::proportional(18.0));
-        style
-            .text_styles
-            .insert(egui::TextStyle::Small, egui::FontId::proportional(12.0));
-        style
-            .text_styles
-            .insert(egui::TextStyle::Monospace, egui::FontId::monospace(12.5));
+        style.text_styles.insert(
+            egui::TextStyle::Body,
+            egui::FontId::proportional(14.0 * text_scale),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Button,
+            egui::FontId::proportional(13.5 * text_scale),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Heading,
+            egui::FontId::proportional(18.0 * text_scale),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Small,
+            egui::FontId::proportional(12.0 * text_scale),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Monospace,
+            egui::FontId::monospace(12.5 * text_scale),
+        );
     });
 }

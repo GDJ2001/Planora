@@ -374,7 +374,7 @@ fn render_process_table_inner(
                     Pos2::new(rect_name.min.x, rect_name.center().y),
                     egui::Align2::LEFT_CENTER,
                     format!("Process Name{name_arrow}"),
-                    egui::FontId::proportional(12.0),
+                    egui::FontId::proportional(12.0 * crate::appearance::text_scale(ui.ctx())),
                     p.text,
                 );
                 if resp_name.clicked() {
@@ -405,7 +405,7 @@ fn render_process_table_inner(
                         Pos2::new(rect.max.x - 4.0, rect.center().y),
                         egui::Align2::RIGHT_CENTER,
                         format!("PID{arrow}"),
-                        egui::FontId::proportional(12.0),
+                        egui::FontId::proportional(12.0 * crate::appearance::text_scale(ui.ctx())),
                         p.text,
                     );
                     if resp.clicked() {
@@ -437,7 +437,7 @@ fn render_process_table_inner(
                         Pos2::new(rect.max.x - 4.0, rect.center().y),
                         egui::Align2::RIGHT_CENTER,
                         format!("CPU{arrow}"),
-                        egui::FontId::proportional(12.0),
+                        egui::FontId::proportional(12.0 * crate::appearance::text_scale(ui.ctx())),
                         p.text,
                     );
                     if resp.clicked() {
@@ -469,7 +469,7 @@ fn render_process_table_inner(
                         Pos2::new(rect.max.x - 4.0, rect.center().y),
                         egui::Align2::RIGHT_CENTER,
                         format!("Memory{arrow}"),
-                        egui::FontId::proportional(12.0),
+                        egui::FontId::proportional(12.0 * crate::appearance::text_scale(ui.ctx())),
                         p.text,
                     );
                     if resp.clicked() {
@@ -501,7 +501,7 @@ fn render_process_table_inner(
                         Pos2::new(rect.max.x - 4.0, rect.center().y),
                         egui::Align2::RIGHT_CENTER,
                         format!("I/O R{arrow}"),
-                        egui::FontId::proportional(12.0),
+                        egui::FontId::proportional(12.0 * crate::appearance::text_scale(ui.ctx())),
                         p.text,
                     );
                     if resp.clicked() {
@@ -533,7 +533,7 @@ fn render_process_table_inner(
                         Pos2::new(rect.max.x - 4.0, rect.center().y),
                         egui::Align2::RIGHT_CENTER,
                         format!("I/O W{arrow}"),
-                        egui::FontId::proportional(12.0),
+                        egui::FontId::proportional(12.0 * crate::appearance::text_scale(ui.ctx())),
                         p.text,
                     );
                     if resp.clicked() {
@@ -565,7 +565,7 @@ fn render_process_table_inner(
                         Pos2::new(rect.max.x - 4.0, rect.center().y),
                         egui::Align2::RIGHT_CENTER,
                         format!("Disk R{arrow}"),
-                        egui::FontId::proportional(12.0),
+                        egui::FontId::proportional(12.0 * crate::appearance::text_scale(ui.ctx())),
                         p.text,
                     );
                     if resp.clicked() {
@@ -597,7 +597,7 @@ fn render_process_table_inner(
                         Pos2::new(rect.max.x - 4.0, rect.center().y),
                         egui::Align2::RIGHT_CENTER,
                         format!("Disk W{arrow}"),
-                        egui::FontId::proportional(12.0),
+                        egui::FontId::proportional(12.0 * crate::appearance::text_scale(ui.ctx())),
                         p.text,
                     );
                     if resp.clicked() {
@@ -629,7 +629,7 @@ fn render_process_table_inner(
                         Pos2::new(rect.max.x - 4.0, rect.center().y),
                         egui::Align2::RIGHT_CENTER,
                         format!("GPU{arrow}"),
-                        egui::FontId::proportional(12.0),
+                        egui::FontId::proportional(12.0 * crate::appearance::text_scale(ui.ctx())),
                         p.text,
                     );
                     if resp.clicked() {
@@ -648,6 +648,7 @@ fn render_process_table_inner(
 
     // Virtualized Table Rows with zero-drift height accounting
     let total_rows = rows.len();
+    let row_height = row_height.max(32.0 * crate::appearance::text_scale(ui.ctx()));
     let cell_h = (row_height - 6.0).max(16.0);
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -688,7 +689,9 @@ fn render_process_table_inner(
                                 Pos2::new(name_rect.min.x, name_rect.center().y),
                                 egui::Align2::LEFT_CENTER,
                                 display_name,
-                                egui::FontId::proportional(13.0),
+                                egui::FontId::proportional(
+                                    13.0 * crate::appearance::text_scale(ui.ctx()),
+                                ),
                                 if is_selected { p.focus } else { p.text },
                             );
 
@@ -707,7 +710,9 @@ fn render_process_table_inner(
                                     Pos2::new(pid_rect.max.x - 4.0, pid_rect.center().y),
                                     egui::Align2::RIGHT_CENTER,
                                     process.identity.pid.to_string(),
-                                    egui::FontId::monospace(12.0),
+                                    egui::FontId::monospace(
+                                        12.0 * crate::appearance::text_scale(ui.ctx()),
+                                    ),
                                     p.secondary,
                                 );
                                 if pid_resp.clicked() {
@@ -741,7 +746,9 @@ fn render_process_table_inner(
                                     Pos2::new(cpu_rect.max.x - 4.0, cpu_rect.center().y),
                                     egui::Align2::RIGHT_CENTER,
                                     format_percent(process.cpu_percent.value),
-                                    egui::FontId::monospace(12.0),
+                                    egui::FontId::monospace(
+                                        12.0 * crate::appearance::text_scale(ui.ctx()),
+                                    ),
                                     p.text,
                                 );
                                 if cpu_resp.clicked() {
@@ -778,7 +785,9 @@ fn render_process_table_inner(
                                     Pos2::new(mem_rect.max.x - 4.0, mem_rect.center().y),
                                     egui::Align2::RIGHT_CENTER,
                                     &mem_text,
-                                    egui::FontId::monospace(12.0),
+                                    egui::FontId::monospace(
+                                        12.0 * crate::appearance::text_scale(ui.ctx()),
+                                    ),
                                     p.text,
                                 );
                                 if mem_resp.clicked() {
@@ -805,7 +814,9 @@ fn render_process_table_inner(
                                     format_rate(
                                         process.io_read_bytes_per_sec.value.map(|v| v as f32),
                                     ),
-                                    egui::FontId::monospace(12.0),
+                                    egui::FontId::monospace(
+                                        12.0 * crate::appearance::text_scale(ui.ctx()),
+                                    ),
                                     p.secondary,
                                 );
                                 if io_r_resp.clicked() {
@@ -825,7 +836,9 @@ fn render_process_table_inner(
                                     format_rate(
                                         process.io_write_bytes_per_sec.value.map(|v| v as f32),
                                     ),
-                                    egui::FontId::monospace(12.0),
+                                    egui::FontId::monospace(
+                                        12.0 * crate::appearance::text_scale(ui.ctx()),
+                                    ),
                                     p.secondary,
                                 );
                                 if io_w_resp.clicked() {
@@ -845,7 +858,9 @@ fn render_process_table_inner(
                                     format_rate(
                                         process.disk_read_bytes_per_sec.value.map(|v| v as f32),
                                     ),
-                                    egui::FontId::monospace(12.0),
+                                    egui::FontId::monospace(
+                                        12.0 * crate::appearance::text_scale(ui.ctx()),
+                                    ),
                                     p.secondary,
                                 );
                                 if dr_resp.clicked() {
@@ -865,7 +880,9 @@ fn render_process_table_inner(
                                     format_rate(
                                         process.disk_write_bytes_per_sec.value.map(|v| v as f32),
                                     ),
-                                    egui::FontId::monospace(12.0),
+                                    egui::FontId::monospace(
+                                        12.0 * crate::appearance::text_scale(ui.ctx()),
+                                    ),
                                     p.secondary,
                                 );
                                 if dw_resp.clicked() {
@@ -883,7 +900,9 @@ fn render_process_table_inner(
                                     Pos2::new(gpu_rect.max.x - 4.0, gpu_rect.center().y),
                                     egui::Align2::RIGHT_CENTER,
                                     format_percent(process.gpu_percent.value),
-                                    egui::FontId::monospace(12.0),
+                                    egui::FontId::monospace(
+                                        12.0 * crate::appearance::text_scale(ui.ctx()),
+                                    ),
                                     p.secondary,
                                 );
                                 if gpu_resp.clicked() {

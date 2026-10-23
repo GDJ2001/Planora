@@ -1,6 +1,7 @@
 #![allow(clippy::too_many_arguments)]
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+pub mod appearance;
 pub mod components;
 pub mod export;
 pub mod formatting;
@@ -32,7 +33,7 @@ use std::{
     thread,
     time::Instant,
 };
-use theme::{Palette, SIDEBAR_WIDTH, apply_egui_theme, get_palette, theme_is_dark};
+use theme::{Palette, SIDEBAR_WIDTH, accessible_palette, configure_theme, theme_is_dark};
 use views::{
     benchmarks::{BenchmarksViewState, render_benchmarks_view},
     capabilities::{CapabilitiesViewState, render_capabilities_view},
@@ -63,6 +64,8 @@ pub struct App {
     sensor_refresh: Option<Arc<std::sync::atomic::AtomicBool>>,
     #[cfg(windows)]
     sensor_worker: Option<std::thread::JoinHandle<()>>,
+    appearance: appearance::AppearanceMonitor,
+    applied_appearance: Option<appearance::SystemAppearance>,
     settings: UserSettings,
     settings_error: Option<String>,
     recorder: Recorder,
@@ -104,6 +107,9 @@ pub struct App {
     fixture_mode: bool,
     window_placement: Placement,
     window_work_area: WorkArea,
+    #[cfg(windows)]
+    native_handle: isize,
+    last_monitor_geometry: Option<(Option<Rect>, Option<f32>)>,
     normal_window: bool,
     window_recovered: bool,
     startup_connected_logged: bool,
@@ -243,6 +249,18 @@ impl App {
                 .ok()
         };
 
+        #[cfg(windows)]
+        let native_handle = {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            cc.window_handle()
+                .ok()
+                .and_then(|handle| match handle.as_raw() {
+                    RawWindowHandle::Win32(handle) => Some(handle.hwnd.get()),
+                    _ => None,
+                })
+                .unwrap_or(0)
+        };
+        let (placement, work_area) = window_placement::startup_placement();
         Self {
             shared,
             tx,
@@ -255,6 +273,8 @@ impl App {
             sensor_refresh: Some(sensor_refresh),
             #[cfg(windows)]
             sensor_worker,
+            appearance: appearance::AppearanceMonitor::start(cc.egui_ctx.clone()),
+            applied_appearance: None,
             settings,
             settings_error: None,
             recorder: Recorder::default(),
@@ -289,8 +309,11 @@ impl App {
             screenshot_pending: false,
             frames_rendered: 0,
             fixture_mode: false,
-            window_placement: window_placement::load(window_placement::current_work_area()),
-            window_work_area: window_placement::current_work_area(),
+            window_placement: placement,
+            window_work_area: work_area,
+            #[cfg(windows)]
+            native_handle,
+            last_monitor_geometry: None,
             normal_window: true,
             window_recovered: false,
             startup_connected_logged: false,
@@ -301,13 +324,47 @@ impl App {
     }
 
     fn palette(&self, ctx: &egui::Context) -> Palette {
-        let is_dark = theme_is_dark(self.settings.theme, Some(ctx.theme()));
-        get_palette(is_dark)
+        let preference = if self.normal_window {
+            theme::Theme::System
+        } else {
+            self.settings.theme
+        };
+        let is_dark = theme_is_dark(preference, ctx.system_theme());
+        accessible_palette(
+            is_dark,
+            self.applied_appearance.unwrap_or_default().contrast,
+        )
     }
 
-    fn apply_theme(&self, ctx: &egui::Context) {
-        let is_dark = theme_is_dark(self.settings.theme, Some(ctx.theme()));
-        apply_egui_theme(ctx, is_dark, self.settings.density);
+    fn apply_theme(&mut self, ctx: &egui::Context) {
+        let preference = if self.normal_window {
+            theme::Theme::System
+        } else {
+            self.settings.theme
+        };
+        ctx.set_theme(match preference {
+            theme::Theme::System => egui::ThemePreference::System,
+            theme::Theme::Dark => egui::ThemePreference::Dark,
+            theme::Theme::Light => egui::ThemePreference::Light,
+        });
+        let snapshot = self.appearance.snapshot();
+        if self.applied_appearance != Some(snapshot) {
+            ctx.set_zoom_factor(1.0); // OS DPI is supplied by winit; discard stored app zoom.
+            ctx.options_mut(|options| options.zoom_with_keyboard = false);
+            ctx.data_mut(|data| {
+                data.insert_temp(egui::Id::unique("system_text_scale"), snapshot.text_scale)
+            });
+            for dark in [false, true] {
+                configure_theme(
+                    ctx,
+                    accessible_palette(dark, snapshot.contrast),
+                    theme::Density::Normal,
+                    snapshot.text_scale,
+                    snapshot.animations,
+                );
+            }
+            self.applied_appearance = Some(snapshot);
+        }
     }
 
     fn render_recordings_page(
@@ -473,6 +530,7 @@ impl App {
             }
         }
         self.history_worker.stop();
+        self.appearance.request_stop();
         self.recorder.request_stop();
         self.exporter.request_cancel();
         self.replay.stop();
@@ -509,8 +567,14 @@ impl App {
         let recording_done = self.recorder.is_finished();
         let export_done = self.exporter.is_finished();
 
-        let all_done = client_done && history_done && sensor_done && recording_done && export_done;
+        let all_done = client_done
+            && history_done
+            && sensor_done
+            && recording_done
+            && export_done
+            && self.appearance.is_finished();
         if all_done {
+            self.appearance.join();
             if let Some(worker) = self.client_worker.take() {
                 let _ = worker.join();
             }
@@ -612,6 +676,21 @@ impl App {
         }
         if self.normal_window {
             let viewport = root.ctx().input(|input| input.viewport().clone());
+            let geometry = (viewport.outer_rect, viewport.native_pixels_per_point);
+            if self.last_monitor_geometry != Some(geometry) {
+                #[cfg(windows)]
+                if self.native_handle != 0 {
+                    self.window_work_area = window_placement::window_work_area(self.native_handle);
+                    let width = self.window_work_area.max[0] - self.window_work_area.min[0];
+                    let height = self.window_work_area.max[1] - self.window_work_area.min[1];
+                    root.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::MinInnerSize(Vec2::new(
+                            window_placement::MIN_SIZE[0].min(width),
+                            window_placement::MIN_SIZE[1].min(height),
+                        )));
+                }
+                self.last_monitor_geometry = Some(geometry);
+            }
             if self.frames_rendered >= 2
                 && !self.window_recovered
                 && viewport.minimized != Some(true)
@@ -1218,9 +1297,6 @@ impl App {
                 Page::Performance => {
                     let previous_graph_modes = self.settings.resource_graphs;
                     let previous_legends = self.settings.resource_legends;
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
                             render_resources_view(
                                 ui,
                                 frame,
@@ -1242,7 +1318,6 @@ impl App {
                                 render_now,
                                 p,
                             );
-                        });
                     let selection_changed = self.settings.performance_resource != self.resources_state.selected_resource
                         || self.settings.performance_range != self.resources_state.range
                         || self.settings.performance_engines.iter().cloned().collect::<std::collections::BTreeSet<_>>() != self.resources_state.selected_engines;
@@ -1616,8 +1691,7 @@ fn main() -> eframe::Result<()> {
     let capture_state_path = screenshot_out
         .as_ref()
         .map(|path| path.with_extension("capture.ron"));
-    let work_area = window_placement::current_work_area();
-    let placement = window_placement::load(work_area);
+    let (placement, work_area) = window_placement::startup_placement();
     let mut viewport = if capture_mode || !cfg!(windows) {
         egui::ViewportBuilder::default()
             .with_inner_size([width, height])
@@ -1698,7 +1772,9 @@ fn main() -> eframe::Result<()> {
             if native_fixture && fixture_tables_only {
                 app.settings.resource_graphs = [false; 6];
             }
-            if let Some(th) = initial_theme {
+            if (capture_mode || native_fixture)
+                && let Some(th) = initial_theme
+            {
                 app.settings.theme = th;
             }
             if let Some(ms) = auto_close_ms {
@@ -1889,14 +1965,14 @@ mod tests {
         };
         let serialized = serde_json::to_string(&s).unwrap();
         let deserialized: UserSettings = serde_json::from_str(&serialized).unwrap();
-        assert_eq!(deserialized.theme, Theme::Dark);
+        assert_eq!(deserialized.theme, Theme::System);
         assert_eq!(deserialized.poll_interval_ms, 250);
-        assert_eq!(deserialized.density, theme::Density::Compact);
+        assert_eq!(deserialized.density, theme::Density::Normal);
         assert_eq!(
             deserialized.hardware_view_mode,
             state::HardwareViewMode::Tree
         );
-        assert!(deserialized.reduced_motion);
+        assert!(!deserialized.reduced_motion);
         assert_eq!(
             deserialized.default_history_range,
             history::HistoryRange::Min5
@@ -1933,5 +2009,41 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(50));
         app.update_shutdown(&ctx);
         assert!(app.shutdown_completed);
+    }
+
+    #[test]
+    fn system_appearance_changes_replace_overrides_and_scale_controls() {
+        let mut app = smoke_test::create_test_app(Theme::Dark, Page::Performance);
+        app.normal_window = true;
+        let ctx = egui::Context::default();
+        ctx.set_zoom_factor(1.7);
+        for theme in [egui::Theme::Light, egui::Theme::Dark, egui::Theme::Light] {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    system_theme: Some(theme),
+                    ..Default::default()
+                },
+                |_ui| {
+                    app.apply_theme(&ctx);
+                    assert_eq!(app.palette(&ctx).is_dark, theme == egui::Theme::Dark);
+                },
+            );
+            output.textures_delta.clear();
+        }
+        app.appearance
+            .set_test_snapshot(appearance::SystemAppearance {
+                text_scale: 1.5,
+                animations: false,
+                contrast: Some((Color32::WHITE, Color32::BLACK)),
+            });
+        app.apply_theme(&ctx);
+        assert_eq!(ctx.zoom_factor(), 1.0);
+        assert!(!ctx.options(|o| o.zoom_with_keyboard));
+        assert_eq!(ctx.style_of(ctx.theme()).spacing.interact_size.y, 36.0);
+        assert_eq!(ctx.style_of(ctx.theme()).animation_time, 0.0);
+        assert_eq!(app.palette(&ctx).text, Color32::WHITE);
+        assert_eq!(app.palette(&ctx).background, Color32::BLACK);
+        // Keep this fixture from saving placement/preferences during shutdown.
+        app.normal_window = false;
     }
 }

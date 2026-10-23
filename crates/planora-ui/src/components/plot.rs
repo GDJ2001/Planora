@@ -133,7 +133,7 @@ pub fn time_plot(
             Pos2::new(canvas.left() - 6.0, y),
             egui::Align2::RIGHT_CENTER,
             format_axis(ymax * (4 - row) as f32 / 4.0),
-            egui::FontId::proportional(11.0),
+            egui::FontId::proportional(11.0 * crate::appearance::text_scale(ui.ctx())),
             p.secondary,
         );
     }
@@ -148,21 +148,21 @@ pub fn time_plot(
         Pos2::new(canvas.left(), rect.bottom() - 15.0),
         egui::Align2::LEFT_CENTER,
         format!("{} ago", range.label()),
-        egui::FontId::proportional(11.0),
+        egui::FontId::proportional(11.0 * crate::appearance::text_scale(ui.ctx())),
         p.secondary,
     );
     painter.text(
         Pos2::new(canvas.right(), rect.bottom() - 15.0),
         egui::Align2::RIGHT_CENTER,
         "Now",
-        egui::FontId::proportional(11.0),
+        egui::FontId::proportional(11.0 * crate::appearance::text_scale(ui.ctx())),
         p.secondary,
     );
     painter.text(
         Pos2::new(canvas.left(), rect.top() + 8.0),
         egui::Align2::LEFT_CENTER,
         unit,
-        egui::FontId::proportional(11.0),
+        egui::FontId::proportional(11.0 * crate::appearance::text_scale(ui.ctx())),
         p.secondary,
     );
 
@@ -342,7 +342,7 @@ pub fn time_plot(
                 Pos2::new(canvas.left() + 8.0, canvas.top() + 6.0),
                 egui::Align2::LEFT_TOP,
                 readout_summary,
-                egui::FontId::proportional(11.0),
+                egui::FontId::proportional(11.0 * crate::appearance::text_scale(ui.ctx())),
                 p.focus,
             );
         }
@@ -503,7 +503,7 @@ pub fn activity_bars(
             Pos2::new(canvas.left() - 7.0, y),
             egui::Align2::RIGHT_CENTER,
             format!("{tick}%"),
-            egui::FontId::proportional(11.0),
+            egui::FontId::proportional(11.0 * crate::appearance::text_scale(ui.ctx())),
             p.secondary,
         );
     }
@@ -541,7 +541,7 @@ pub fn activity_bars(
         Pos2::new(canvas.left() + 4.0, rect.top() + 9.0),
         egui::Align2::LEFT_CENTER,
         "CPU activity · average per interval",
-        egui::FontId::proportional(12.0),
+        egui::FontId::proportional(12.0 * crate::appearance::text_scale(ui.ctx())),
         p.text,
     );
     painter.text(
@@ -553,21 +553,21 @@ pub fn activity_bars(
             observed.map_or(0, |s| s.observed_seconds),
             range.duration().as_secs()
         ),
-        egui::FontId::proportional(11.0),
+        egui::FontId::proportional(11.0 * crate::appearance::text_scale(ui.ctx())),
         p.secondary,
     );
     painter.text(
         Pos2::new(canvas.left(), rect.bottom() - 14.0),
         egui::Align2::LEFT_CENTER,
         format!("{} ago", range.label()),
-        egui::FontId::proportional(11.0),
+        egui::FontId::proportional(11.0 * crate::appearance::text_scale(ui.ctx())),
         p.secondary,
     );
     painter.text(
         Pos2::new(canvas.right(), rect.bottom() - 14.0),
         egui::Align2::RIGHT_CENTER,
         "Now",
-        egui::FontId::proportional(11.0),
+        egui::FontId::proportional(11.0 * crate::appearance::text_scale(ui.ctx())),
         p.secondary,
     );
     if observed
@@ -577,14 +577,14 @@ pub fn activity_bars(
             canvas.center() - Vec2::new(0.0, 10.0),
             egui::Align2::CENTER_CENTER,
             "Building history",
-            egui::FontId::proportional(17.0),
+            egui::FontId::proportional(17.0 * crate::appearance::text_scale(ui.ctx())),
             p.secondary,
         );
         painter.text(
             canvas.center() + Vec2::new(0.0, 12.0),
             egui::Align2::CENTER_CENTER,
             "New columns appear as measurements arrive",
-            egui::FontId::proportional(11.0),
+            egui::FontId::proportional(11.0 * crate::appearance::text_scale(ui.ctx())),
             p.secondary,
         );
     }
@@ -738,7 +738,7 @@ pub fn capacity_bar(
             rect.center(),
             egui::Align2::CENTER_CENTER,
             "Unavailable",
-            egui::FontId::proportional(10.0),
+            egui::FontId::proportional(10.0 * crate::appearance::text_scale(ui.ctx())),
             p.secondary,
         );
     }
