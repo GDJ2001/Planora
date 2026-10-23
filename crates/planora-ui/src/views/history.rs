@@ -14,6 +14,7 @@ use std::time::Instant;
 pub struct HistoryViewState {
     pub range: HistoryRange,
     pub show_graphs: bool,
+    pub show_gaps: bool,
     pub plots: [PlotState; 4],
 }
 
@@ -22,6 +23,7 @@ impl Default for HistoryViewState {
         Self {
             range: HistoryRange::Sec60,
             show_graphs: true,
+            show_gaps: true,
             plots: Default::default(),
         }
     }
@@ -90,7 +92,7 @@ pub fn render_history_view(
     );
 
     // Range selector and scale toolbar
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.strong("History Window:");
         ui.add_space(8.0);
         for range in [
@@ -181,7 +183,7 @@ pub fn render_history_view(
         ];
         for (idx, (title, series, unit, val_scale)) in lanes.into_iter().enumerate() {
             ui.heading(title);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 for plotted in &series {
                     ui.colored_label(
                         plotted.color,
@@ -209,146 +211,298 @@ pub fn render_history_view(
         }
     }
 
-    // 1. Summary Statistics Table
-    egui::Frame::group(ui.style())
-        .fill(p.surface)
-        .stroke(Stroke::new(1.0, p.border))
-        .corner_radius(CornerRadius::same(CORNER_RADIUS as u8))
-        .inner_margin(egui::Margin::same(12))
+    render_statistics(ui, histories, state.range, now, p);
+    ui.add_space(16.0);
+    render_intervals(ui, histories, state, now, p);
+}
+
+fn value_label(value: f32, unit: &str) -> String {
+    if unit == "%" {
+        format_percent(Some(value))
+    } else {
+        format_rate(Some(value))
+    }
+}
+
+fn cell(
+    ui: &mut egui::Ui,
+    width: f32,
+    height: f32,
+    text: egui::RichText,
+    right: bool,
+) -> egui::Response {
+    let layout = if right {
+        egui::Layout::right_to_left(egui::Align::Center)
+    } else {
+        egui::Layout::left_to_right(egui::Align::Center)
+    };
+    ui.allocate_ui_with_layout(egui::vec2(width, height), layout, |ui| {
+        ui.set_min_size(egui::vec2(width, height));
+        ui.set_max_width(width);
+        ui.add_space(10.0);
+        ui.add(egui::Label::new(text).truncate())
+    })
+    .inner
+}
+
+fn table_header(ui: &mut egui::Ui, widths: &[f32], labels: &[&str], p: Palette) {
+    egui::Frame::NONE
+        .fill(p.surface_raised)
+        .corner_radius(6.0)
         .show(ui, |ui| {
-            ui.strong(format!("Aggregate Statistics ({})", state.range.label()));
-            ui.add_space(6.0);
-
-            egui::ScrollArea::horizontal().show(ui, |ui| {
-                egui::Grid::new("history_summary_grid")
-                    .striped(true)
-                    .min_col_width(80.0)
-                    .spacing([20.0, 8.0])
-                    .show(ui, |ui| {
-                        ui.strong("Resource");
-                        ui.strong("Average");
-                        ui.strong("Minimum");
-                        ui.strong("Maximum");
-                        ui.strong("Unit");
-                        ui.strong("Coverage");
-                        ui.end_row();
-
-                        let rows = [
-                            ("CPU Utilization", &histories.cpu, "%", p.cpu),
-                            ("Memory Used", &histories.memory_pct, "%", p.memory),
-                            ("Disk Read Rate", &histories.disk_read, "B/s", p.disk),
-                            ("Disk Write Rate", &histories.disk_write, "B/s", p.disk),
-                            ("Network Receive", &histories.net_rx, "B/s", p.network),
-                            ("Network Transmit", &histories.net_tx, "B/s", p.network),
-                        ];
-
-                        for (label, series, unit, color) in rows {
-                            ui.colored_label(color, label);
-                            if let Some(s) = series.observed_summary(now, state.range) {
-                                if unit == "%" {
-                                    ui.monospace(format!("{:.1}", s.average));
-                                    ui.monospace(format!("{:.1}", s.minimum));
-                                    ui.monospace(format!("{:.1}", s.maximum));
-                                } else {
-                                    ui.monospace(format_rate(Some(s.average)));
-                                    ui.monospace(format_rate(Some(s.minimum)));
-                                    ui.monospace(format_rate(Some(s.maximum)));
-                                }
-                                ui.label(unit);
-                                ui.label(format!(
-                                    "{}/{} s ({:.0}%)",
-                                    s.observed_seconds,
-                                    s.expected_seconds,
-                                    s.coverage_percent()
-                                ));
-                            } else {
-                                ui.label("—");
-                                ui.label("—");
-                                ui.label("—");
-                                ui.label(unit);
-                                ui.label("Collecting data");
-                            }
-                            ui.end_row();
-                        }
-                    });
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                for (index, (&width, label)) in widths.iter().zip(labels).enumerate() {
+                    cell(
+                        ui,
+                        width,
+                        32.0 * crate::appearance::text_scale(ui.ctx()),
+                        egui::RichText::new(*label)
+                            .small()
+                            .strong()
+                            .color(p.secondary),
+                        index != 0,
+                    );
+                }
             });
         });
+}
 
-    ui.add_space(14.0);
-
-    // 2. Timestamped Buckets Table
-    egui::Frame::group(ui.style())
-        .fill(p.surface)
-        .stroke(Stroke::new(1.0, p.border))
-        .corner_radius(CornerRadius::same(CORNER_RADIUS as u8))
-        .inner_margin(egui::Margin::same(12))
-        .show(ui, |ui| {
-            ui.strong("Timestamped Interval Buckets");
-            ui.label(
-                egui::RichText::new(
-                    "Most recent intervals first. A dash means no observation, never zero activity.",
-                )
-                .size(11.5)
-                .color(p.secondary),
-            );
-            ui.add_space(8.0);
-
-            // Compute bucket step size
-            let (num_buckets, step_secs) = match state.range {
-                HistoryRange::Sec30 => (30, 1),
-                HistoryRange::Sec60 => (60, 1),
-                HistoryRange::Min5 => (60, 5),
-                HistoryRange::Min15 => (60, 15),
-            };
-
-            let mut bucket_rows = Vec::with_capacity(num_buckets);
-            for i in 0..num_buckets {
-                let end_offset = i * step_secs;
-                let start_offset = (i + 1) * step_secs;
-                let b_end = now
-                    .checked_sub(std::time::Duration::from_secs(end_offset as u64))
-                    .unwrap_or(now);
-                let b_start = now
-                    .checked_sub(std::time::Duration::from_secs(start_offset as u64))
-                    .unwrap_or(now);
-
-                let label = interval_label(end_offset, start_offset);
-
-                bucket_rows.push(HistoryBucketRow {
-                    label,
-                    cpu: bucket_average(&histories.cpu, b_start, b_end),
-                    mem: bucket_average(&histories.memory_pct, b_start, b_end),
-                    disk_r: bucket_average(&histories.disk_read, b_start, b_end),
-                    disk_w: bucket_average(&histories.disk_write, b_start, b_end),
-                    net_rx: bucket_average(&histories.net_rx, b_start, b_end),
-                    net_tx: bucket_average(&histories.net_tx, b_start, b_end),
-                });
+fn observed_range(
+    ui: &mut egui::Ui,
+    width: f32,
+    height: f32,
+    summary: Option<crate::history::ObservedSummary>,
+    unit: &str,
+    color: egui::Color32,
+    p: Palette,
+) {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+    let track =
+        egui::Rect::from_center_size(rect.center(), egui::vec2((width - 28.0).max(1.0), 5.0));
+    ui.painter().rect_filled(track, 3.0, p.surface_raised);
+    if let Some(s) = summary {
+        let ceiling = if unit == "%" {
+            100.0
+        } else {
+            s.maximum.max(1.0)
+        };
+        let x = |value: f32| track.left() + value.clamp(0.0, ceiling) / ceiling * track.width();
+        ui.painter().line_segment(
+            [
+                egui::pos2(x(s.minimum), track.center().y),
+                egui::pos2(x(s.maximum), track.center().y),
+            ],
+            Stroke::new(5.0, color.gamma_multiply(0.6)),
+        );
+        ui.painter()
+            .circle_filled(egui::pos2(x(s.average), track.center().y), 4.0, color);
+        response.on_hover_text(format!(
+            "Low {} · Average {} · Peak {}. {}",
+            value_label(s.minimum, unit),
+            value_label(s.average, unit),
+            value_label(s.maximum, unit),
+            if unit == "%" {
+                "Scale: 0–100%."
+            } else {
+                "Scale: zero to this resource's peak; not comparable across rows."
             }
+        ));
+    } else {
+        response.on_hover_text("No observed samples in this range");
+    }
+}
 
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                egui::Grid::new("history_buckets_grid")
-                    .striped(true)
-                    .min_col_width(70.0)
-                    .spacing([20.0, 6.0])
-                    .show(ui, |ui| {
-                        ui.strong("Interval");
-                        ui.strong("CPU %");
-                        ui.strong("Memory %");
-                        ui.strong("Disk Read");
-                        ui.strong("Disk Write");
-                        ui.strong("Net Rx");
-                        ui.strong("Net Tx");
-                        ui.end_row();
+fn render_statistics(
+    ui: &mut egui::Ui,
+    histories: &ResourceHistories,
+    range: HistoryRange,
+    now: Instant,
+    p: Palette,
+) {
+    let panel_width = (ui.available_width() - 34.0).max(100.0);
+    egui::Frame::group(ui.style()).fill(p.surface).stroke(Stroke::new(1.0, p.border))
+        .corner_radius(CornerRadius::same(CORNER_RADIUS as u8)).inner_margin(16.0)
+        .show(ui, |ui| {
+            ui.set_width(panel_width);
+            ui.horizontal_wrapped(|ui| {
+                ui.heading("Resource statistics");
+                ui.label(egui::RichText::new(format!("LAST {}", range.label())).small().color(p.accent));
+            });
+            ui.label(egui::RichText::new("Observed values only. Range bars show low to peak; the dot marks the average.").small().color(p.secondary));
+            ui.add_space(12.0);
+            let table_width = ui.available_width().max(880.0 * crate::appearance::text_scale(ui.ctx()));
+            let widths = [0.20, 0.14, 0.13, 0.14, 0.19, 0.20].map(|fraction| fraction * table_width);
+            egui::ScrollArea::horizontal().id_salt("history_statistics_horizontal")
+                .auto_shrink([false, true]).show(ui, |ui| {
+                    table_header(ui, &widths, &["RESOURCE", "AVERAGE", "LOW", "PEAK", "OBSERVED RANGE", "COVERAGE"], p);
+                    let rows = [
+                        ("CPU utilization", &histories.cpu, "%", p.cpu),
+                        ("Memory used", &histories.memory_pct, "%", p.memory),
+                        ("Disk read", &histories.disk_read, "B/s", p.disk),
+                        ("Disk write", &histories.disk_write, "B/s", p.disk),
+                        ("Network receive", &histories.net_rx, "B/s", p.network),
+                        ("Network transmit", &histories.net_tx, "B/s", p.network),
+                    ];
+                    for (index, (name, series, unit, color)) in rows.into_iter().enumerate() {
+                        let summary = series.observed_summary(now, range);
+                        let height = 42.0 * crate::appearance::text_scale(ui.ctx());
+                        ui.push_id(("history_statistics", index), |ui| {
+                            egui::Frame::NONE.fill(if index % 2 == 0 { p.background } else { p.surface })
+                                .corner_radius(4.0).show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 0.0;
+                                        cell(ui, widths[0], height, egui::RichText::new(name).color(color), false);
+                                        for (column, value) in [summary.map(|s| s.average), summary.map(|s| s.minimum), summary.map(|s| s.maximum)].into_iter().enumerate() {
+                                            let text = value.map_or_else(|| "—".into(), |v| value_label(v, unit));
+                                            cell(ui, widths[column + 1], height, egui::RichText::new(text.clone()).monospace().color(p.text), true).on_hover_text(text);
+                                        }
+                                        observed_range(ui, widths[4], height, summary, unit, color, p);
+                                        ui.allocate_ui_with_layout(egui::vec2(widths[5], height), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                            ui.set_min_size(egui::vec2(widths[5], height));
+                                            ui.add_space(12.0);
+                                            if let Some(s) = summary {
+                                                let coverage = s.coverage_percent();
+                                                ui.add(egui::ProgressBar::new(coverage / 100.0)
+                                                    .desired_width(widths[5] - 24.0).fill(color.gamma_multiply(0.45))
+                                                    .text(format!("{coverage:.0}% observed")))
+                                                    .on_hover_text(format!("{} of {} seconds contain observations. Missing intervals are excluded from statistics.", s.observed_seconds, s.expected_seconds));
+                                            } else {
+                                                ui.label(egui::RichText::new("No observations").small().color(p.secondary));
+                                            }
+                                        });
+                                    });
+                                });
+                        });
+                    }
+                });
+        });
+}
 
-                        for row in bucket_rows {
-                            ui.monospace(&row.label);
-                            ui.monospace(bucket_percent(row.cpu));
-                            ui.monospace(bucket_percent(row.mem));
-                            ui.monospace(bucket_rate(row.disk_r));
-                            ui.monospace(bucket_rate(row.disk_w));
-                            ui.monospace(bucket_rate(row.net_rx));
-                            ui.monospace(bucket_rate(row.net_tx));
-                            ui.end_row();
+fn interval_rows(
+    histories: &ResourceHistories,
+    range: HistoryRange,
+    now: Instant,
+) -> Vec<HistoryBucketRow> {
+    let (count, seconds) = match range {
+        HistoryRange::Sec30 => (30, 1),
+        HistoryRange::Sec60 => (60, 1),
+        HistoryRange::Min5 => (60, 5),
+        HistoryRange::Min15 => (60, 15),
+    };
+    (0..count)
+        .map(|index| {
+            let end = now
+                .checked_sub(std::time::Duration::from_secs((index * seconds) as u64))
+                .unwrap_or(now);
+            let start = now
+                .checked_sub(std::time::Duration::from_secs(
+                    ((index + 1) * seconds) as u64,
+                ))
+                .unwrap_or(now);
+            HistoryBucketRow {
+                label: interval_label(index * seconds, (index + 1) * seconds),
+                cpu: bucket_average(&histories.cpu, start, end),
+                mem: bucket_average(&histories.memory_pct, start, end),
+                disk_r: bucket_average(&histories.disk_read, start, end),
+                disk_w: bucket_average(&histories.disk_write, start, end),
+                net_rx: bucket_average(&histories.net_rx, start, end),
+                net_tx: bucket_average(&histories.net_tx, start, end),
+            }
+        })
+        .collect()
+}
+
+impl HistoryBucketRow {
+    fn values(&self) -> [Option<f32>; 6] {
+        [
+            self.cpu,
+            self.mem,
+            self.disk_r,
+            self.disk_w,
+            self.net_rx,
+            self.net_tx,
+        ]
+    }
+    fn observed(&self) -> bool {
+        self.values().iter().any(Option::is_some)
+    }
+    fn text(&self) -> [String; 7] {
+        [
+            self.label.clone(),
+            bucket_percent(self.cpu),
+            bucket_percent(self.mem),
+            bucket_rate(self.disk_r),
+            bucket_rate(self.disk_w),
+            bucket_rate(self.net_rx),
+            bucket_rate(self.net_tx),
+        ]
+    }
+}
+
+fn render_intervals(
+    ui: &mut egui::Ui,
+    histories: &ResourceHistories,
+    state: &mut HistoryViewState,
+    now: Instant,
+    p: Palette,
+) {
+    let mut rows = interval_rows(histories, state.range, now);
+    let observed = rows.iter().filter(|row| row.observed()).count();
+    let panel_width = (ui.available_width() - 34.0).max(100.0);
+    egui::Frame::group(ui.style()).fill(p.surface).stroke(Stroke::new(1.0, p.border))
+        .corner_radius(8.0).inner_margin(16.0).show(ui, |ui| {
+            ui.set_width(panel_width);
+            ui.horizontal_wrapped(|ui| {
+                ui.heading("Interval detail");
+                ui.label(egui::RichText::new(format!("{observed} / {} intervals observed", rows.len())).small().color(p.secondary));
+            });
+            ui.horizontal_wrapped(|ui| {
+                ui.checkbox(&mut state.show_gaps, "Show missing intervals");
+                if !state.show_gaps { rows.retain(HistoryBucketRow::observed); }
+                if ui.button("Copy table").on_hover_text("Copy the visible interval table with units as tab-separated text").clicked() {
+                    let mut text = "Interval\tCPU (%)\tMemory (%)\tDisk read (bytes/s)\tDisk write (bytes/s)\tNetwork receive (bytes/s)\tNetwork transmit (bytes/s)\n".to_owned();
+                    for row in &rows {
+                        let values = row.values().map(|value| value.map_or_else(|| "Unavailable".into(), |v| v.to_string()));
+                        text.push_str(&format!("{}\t{}\n", row.label, values.join("\t")));
+                    }
+                    ui.copy_text(text);
+                }
+            });
+            ui.label(egui::RichText::new("Newest first · Each value is an interval average · — means no observation, not zero").small().color(p.secondary));
+            ui.add_space(12.0);
+            let table_width = ui.available_width().max(1000.0 * crate::appearance::text_scale(ui.ctx()));
+            if table_width > ui.available_width() {
+                ui.label(egui::RichText::new("Scroll horizontally to see every resource column.").small().color(p.secondary));
+            }
+            let widths = [0.16, 0.12, 0.12, 0.15, 0.15, 0.15, 0.15].map(|f| f * table_width);
+            let height = 36.0 * crate::appearance::text_scale(ui.ctx());
+            egui::ScrollArea::horizontal().id_salt("history_intervals_horizontal").auto_shrink([false, true]).show(ui, |ui| {
+                table_header(ui, &widths, &["INTERVAL", "CPU", "MEMORY", "DISK READ", "DISK WRITE", "RECEIVE", "TRANSMIT"], p);
+                if rows.is_empty() {
+                    ui.add_space(18.0);
+                    ui.label("No observed intervals in this range. Show missing intervals or wait for fresh samples.");
+                }
+                egui::ScrollArea::vertical().id_salt("history_intervals_rows")
+                    .min_scrolled_height(240.0).max_height(360.0).auto_shrink([false, true]).show_rows(ui, height, rows.len(), |ui, visible| {
+                        for index in visible {
+                            let row = &rows[index];
+                            egui::Frame::NONE.fill(if index % 2 == 0 { p.background } else { p.surface }).corner_radius(4.0).show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 0.0;
+                                    for (column, text) in row.text().into_iter().enumerate() {
+                                        let values = row.values();
+                                        let color = if column == 0 || values[column - 1].is_none() { p.secondary }
+                                            else { [p.cpu, p.memory, p.disk, p.disk, p.network, p.network][column - 1] };
+                                        let response = cell(ui, widths[column], height, egui::RichText::new(&text).monospace().color(color), column > 0);
+                                        if (1..=2).contains(&column) && let Some(value) = values[column - 1] {
+                                            let bar = egui::Rect::from_min_size(egui::pos2(response.rect.left(), response.rect.bottom() + 2.0), egui::vec2(response.rect.width() * value.clamp(0.0,100.0) / 100.0, 2.0));
+                                            ui.painter().rect_filled(bar, 1.0, color.gamma_multiply(0.6));
+                                        }
+                                        response.on_hover_text(text);
+                                    }
+                                });
+                            });
                         }
                     });
             });
@@ -358,6 +512,89 @@ pub fn render_history_view(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_tables_do_not_share_scroll_ids() {
+        for size in [
+            (1024.0, 640.0),
+            (1180.0, 790.0),
+            (1366.0, 768.0),
+            (1536.0, 864.0),
+            (1920.0, 1080.0),
+        ] {
+            for dark in [false, true] {
+                for scale in [1.0, 1.5, 2.0] {
+                    check_history_layout(size, dark, scale);
+                }
+            }
+        }
+    }
+
+    fn check_history_layout(size: (f32, f32), dark: bool, scale: f32) {
+        let ctx = egui::Context::default();
+        let palette = crate::theme::get_palette(dark);
+        crate::theme::configure_theme(&ctx, palette, crate::theme::Density::Normal, scale, false);
+        ctx.data_mut(|data| data.insert_temp(egui::Id::unique("system_text_scale"), scale));
+        let mut state = HistoryViewState {
+            show_graphs: false,
+            ..Default::default()
+        };
+        for _ in 0..3 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(size.0, size.1),
+                    )),
+                    ..Default::default()
+                },
+                |ui| {
+                    render_history_view(
+                        ui,
+                        &ResourceHistories::default(),
+                        &mut state,
+                        &mut PercentScale::Full,
+                        &AppState::Live,
+                        &mut DisplayPause::default(),
+                        100,
+                        Instant::now(),
+                        palette,
+                    );
+                    assert!(
+                        ui.min_rect().right() <= size.0 + 1.0,
+                        "History content overflows: {size:?}, text scale {scale}"
+                    );
+                },
+            );
+            let svg = crate::smoke_test::shapes_to_svg(
+                size.0,
+                size.1,
+                egui::Color32::BLACK,
+                &output.shapes,
+            );
+            output.textures_delta.clear();
+            assert!(
+                !svg.contains("use of ScrollArea ID") && !svg.contains("use of widget ID"),
+                "History tables have colliding scroll IDs"
+            );
+        }
+    }
+
+    #[test]
+    fn interval_rows_preserve_zero_and_missing_samples() {
+        let now = Instant::now();
+        let mut histories = ResourceHistories::default();
+        histories
+            .cpu
+            .push(now - std::time::Duration::from_millis(500), 1000, Some(0.0));
+        let rows = interval_rows(&histories, HistoryRange::Sec30, now);
+        assert_eq!(rows.len(), 30);
+        assert!(rows[0].observed());
+        assert_eq!(rows[0].cpu, Some(0.0));
+        assert_eq!(rows[0].mem, None);
+        assert!(!rows[1].observed());
+        assert_eq!(rows.iter().filter(|row| row.observed()).count(), 1);
+    }
 
     #[test]
     fn missing_history_is_not_a_zero_measurement() {

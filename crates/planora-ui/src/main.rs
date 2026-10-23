@@ -1778,6 +1778,7 @@ fn main() -> eframe::Result<()> {
             }
             if native_fixture && fixture_tables_only {
                 app.settings.resource_graphs = [false; 6];
+                app.history_state.show_graphs = false;
             }
             if (capture_mode || native_fixture)
                 && let Some(th) = initial_theme
