@@ -279,38 +279,41 @@ fn observed_range(
 ) {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
     let track =
-        egui::Rect::from_center_size(rect.center(), egui::vec2((width - 28.0).max(1.0), 5.0));
+        egui::Rect::from_center_size(rect.center(), egui::vec2((width - 28.0).max(1.0), 6.0));
     ui.painter().rect_filled(track, 3.0, p.surface_raised);
     if let Some(s) = summary {
-        let ceiling = if unit == "%" {
-            100.0
+        if let Some(fraction) = range_average_fraction(s.minimum, s.average, s.maximum) {
+            ui.painter()
+                .rect_filled(track, 3.0, color.gamma_multiply(0.48));
+            let marker_x = track.left() + fraction * track.width();
+            ui.painter().line_segment(
+                [
+                    egui::pos2(marker_x, track.top() - 6.0),
+                    egui::pos2(marker_x, track.bottom() + 6.0),
+                ],
+                Stroke::new(2.0, color),
+            );
+            ui.painter()
+                .circle_filled(egui::pos2(marker_x, track.center().y), 4.0, color);
         } else {
-            s.maximum.max(1.0)
-        };
-        let x = |value: f32| track.left() + value.clamp(0.0, ceiling) / ceiling * track.width();
-        ui.painter().line_segment(
-            [
-                egui::pos2(x(s.minimum), track.center().y),
-                egui::pos2(x(s.maximum), track.center().y),
-            ],
-            Stroke::new(5.0, color.gamma_multiply(0.6)),
-        );
-        ui.painter()
-            .circle_filled(egui::pos2(x(s.average), track.center().y), 4.0, color);
+            ui.painter().circle_filled(track.center(), 4.0, color);
+        }
         response.on_hover_text(format!(
             "Low {} · Average {} · Peak {}. {}",
             value_label(s.minimum, unit),
             value_label(s.average, unit),
             value_label(s.maximum, unit),
-            if unit == "%" {
-                "Scale: 0–100%."
-            } else {
-                "Scale: zero to this resource's peak; not comparable across rows."
-            }
+            "Each ruler runs from this row's low to peak; the marker shows the average. A dot means no observed variation."
         ));
     } else {
         response.on_hover_text("No observed samples in this range");
     }
+}
+
+fn range_average_fraction(low: f32, average: f32, peak: f32) -> Option<f32> {
+    let span = peak - low;
+    (low.is_finite() && average.is_finite() && peak.is_finite() && span > f32::EPSILON)
+        .then(|| ((average - low) / span).clamp(0.0, 1.0))
 }
 
 fn render_statistics(
@@ -329,13 +332,13 @@ fn render_statistics(
                 ui.heading("Resource statistics");
                 ui.label(egui::RichText::new(format!("LAST {}", range.label())).small().color(p.accent));
             });
-            ui.label(egui::RichText::new("Observed values only. Range bars show low to peak; the dot marks the average.").small().color(p.secondary));
+            ui.label(egui::RichText::new("Observed values only. Each ruler spans its row's low to peak; the marker shows the average. Compare values using the columns.").small().color(p.secondary));
             ui.add_space(12.0);
             let table_width = ui.available_width().max(880.0 * crate::appearance::text_scale(ui.ctx()));
             let widths = [0.20, 0.14, 0.13, 0.14, 0.19, 0.20].map(|fraction| fraction * table_width);
             egui::ScrollArea::horizontal().id_salt("history_statistics_horizontal")
                 .auto_shrink([false, true]).show(ui, |ui| {
-                    table_header(ui, &widths, &["RESOURCE", "AVERAGE", "LOW", "PEAK", "OBSERVED RANGE", "COVERAGE"], p);
+                    table_header(ui, &widths, &["RESOURCE", "AVERAGE", "LOW", "PEAK", "LOW → PEAK", "COVERAGE"], p);
                     let rows = [
                         ("CPU utilization", &histories.cpu, "%", p.cpu),
                         ("Memory used", &histories.memory_pct, "%", p.memory),
@@ -483,10 +486,10 @@ fn render_intervals(
                     ui.add_space(18.0);
                     ui.label("No observed intervals in this range. Show missing intervals or wait for fresh samples.");
                 }
-                egui::ScrollArea::vertical().id_salt("history_intervals_rows")
-                    .min_scrolled_height(240.0).max_height(360.0).auto_shrink([false, true]).show_rows(ui, height, rows.len(), |ui, visible| {
-                        for index in visible {
-                            let row = &rows[index];
+                // At most 60 rows are shown. The page owns vertical scrolling, so a
+                // second scroll viewport would leave clipped row fragments below
+                // the sticky header when the two scroll offsets disagree.
+                        for (index, row) in rows.iter().enumerate() {
                             egui::Frame::NONE.fill(if index % 2 == 0 { p.background } else { p.surface }).corner_radius(4.0).show(ui, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.spacing_mut().item_spacing.x = 0.0;
@@ -504,7 +507,6 @@ fn render_intervals(
                                 });
                             });
                         }
-                    });
             });
         });
 }
@@ -512,6 +514,14 @@ fn render_intervals(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn range_ruler_uses_each_rows_observed_bounds() {
+        assert!((range_average_fraction(70.3, 70.4, 70.8).unwrap() - 0.2).abs() < 0.001);
+        assert_eq!(range_average_fraction(0.0, 0.0, 0.0), None);
+        assert_eq!(range_average_fraction(2.0, 3.0, 4.0), Some(0.5));
+        assert_eq!(range_average_fraction(2.0, f32::NAN, 4.0), None);
+    }
 
     #[test]
     fn history_tables_do_not_share_scroll_ids() {

@@ -1152,15 +1152,32 @@ pub fn activity_bars(
 }
 
 pub fn sparkline(ui: &mut egui::Ui, series: &TimeSeries, now: Instant, color: Color32, p: Palette) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(68.0, 28.0), Sense::hover());
+    sparkline_sized(ui, series, now, color, p, Vec2::new(68.0, 28.0));
+}
+
+pub fn sparkline_sized(
+    ui: &mut egui::Ui,
+    series: &TimeSeries,
+    now: Instant,
+    color: Color32,
+    p: Palette,
+    size: Vec2,
+) {
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     ui.painter().rect_filled(rect, 3.0, p.surface_raised);
-    let segments = series.chart_segments(now, HistoryRange::Sec60, Duration::from_secs(3), 68);
+    let segments = series.chart_segments(
+        now,
+        HistoryRange::Sec60,
+        Duration::from_secs(3),
+        size.x.max(1.0) as usize,
+    );
     let observed_max = segments
         .iter()
         .flatten()
-        .fold(1.0f32, |acc, p| acc.max(p.mean));
-    let scale = axis_scale(observed_max, "%", ValueScale::Percent { full: false });
-    let ymax = scale.max.max(1.0);
+        .fold(0.0f32, |acc, point| acc.max(point.max));
+    // Sparklines have no shared axis. Scale each metric from zero using its
+    // actual observed peak, including byte rates far above 100 B/s.
+    let ymax = sparkline_ceiling(observed_max);
 
     for segment in segments {
         let points: Vec<Pos2> = segment
@@ -1187,6 +1204,10 @@ pub fn sparkline(ui: &mut egui::Ui, series: &TimeSeries, now: Instant, color: Co
             ui.painter().circle_filled(*point, 2.0, color);
         }
     }
+}
+
+fn sparkline_ceiling(observed_max: f32) -> f32 {
+    (observed_max * 1.08).max(1.0)
 }
 
 pub fn capacity_bar(
@@ -1223,6 +1244,12 @@ mod tests {
     use super::*;
     use crate::history::{HistoryRange, TimeSeries};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn sparkline_rate_scale_does_not_cap_at_percent_range() {
+        assert!(sparkline_ceiling(1_000_000.0) > 1_000_000.0);
+        assert_eq!(sparkline_ceiling(0.0), 1.0);
+    }
 
     #[test]
     fn monotone_path_never_overshoots_neighbouring_readings() {

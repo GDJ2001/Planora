@@ -1,7 +1,7 @@
 use crate::{
     components::{
         header::render_page_header,
-        plot::{capacity_bar, sparkline},
+        plot::{capacity_bar, sparkline_sized},
         table::{ProcessTableState, SortColumn, render_process_table, sort_processes},
     },
     formatting::format_rate,
@@ -175,25 +175,27 @@ fn summary_table(ui: &mut egui::Ui, rows: &[SummaryRow<'_>], range: HistoryRange
                                     "{} of {} seconds observed. Missing intervals are excluded from the statistics.",
                                     summary.observed_seconds, summary.expected_seconds
                                 );
-                                ui.add_space(14.0);
-                                summary_cell(
-                                    ui,
-                                    48.0,
-                                    32.0,
-                                    egui::RichText::new(format!(
-                                        "{:.0}%",
-                                        summary.coverage_percent()
-                                    ))
-                                    .monospace(),
-                                    Align::LEFT,
-                                )
-                                .on_hover_text(&coverage_detail);
-                                ui.add_sized(
-                                    [widths[5] - 70.0, 12.0],
-                                    egui::ProgressBar::new(summary.coverage_percent() / 100.0)
-                                        .fill(row.color),
-                                )
-                                .on_hover_text(coverage_detail);
+                                ui.allocate_ui_with_layout(
+                                    Vec2::new(widths[5], 32.0),
+                                    egui::Layout::left_to_right(Align::Center),
+                                    |ui| {
+                                        ui.set_min_width(widths[5]);
+                                        ui.add_space(14.0);
+                                        let bar_width = (widths[5] - 82.0).max(36.0);
+                                        ui.add_sized(
+                                            [bar_width, 10.0],
+                                            egui::ProgressBar::new(summary.coverage_percent() / 100.0)
+                                                .fill(row.color),
+                                        )
+                                        .on_hover_text(&coverage_detail);
+                                        ui.add_space(4.0);
+                                        ui.label(
+                                            egui::RichText::new(format!("{:.0}%", summary.coverage_percent()))
+                                                .monospace(),
+                                        )
+                                        .on_hover_text(coverage_detail);
+                                    },
+                                );
                             } else {
                                 ui.add_space(14.0);
                                 ui.add_sized(
@@ -291,8 +293,10 @@ fn resource_cards(
         None,
     ));
 
-    let columns = if ui.available_width() >= 960.0 {
+    let columns = if ui.available_width() >= 1280.0 {
         cards.len().min(4)
+    } else if ui.available_width() >= 900.0 {
+        cards.len().min(3)
     } else if ui.available_width() >= 480.0 {
         2
     } else {
@@ -302,22 +306,36 @@ fn resource_cards(
     for row in cards.chunks(columns) {
         ui.horizontal(|ui| {
             for (title, value, series, color, cap) in row {
-                ui.allocate_ui(Vec2::new(width, 118.0), |ui| {
-                    egui::Frame::group(ui.style())
-                        .fill(p.surface)
-                        .stroke(Stroke::new(1.0, p.border))
-                        .corner_radius(CornerRadius::same(8))
-                        .inner_margin(egui::Margin::same(12))
-                        .show(ui, |ui| {
-                            ui.set_width(width - 24.0);
-                            ui.colored_label(*color, *title);
-                            ui.label(egui::RichText::new(value).size(22.0).strong().color(p.text));
-                            sparkline(ui, series, now, *color, p);
-                            if let Some((used, total)) = cap {
-                                capacity_bar(ui, *used, *total, *color, p);
-                            }
-                        });
-                });
+                ui.allocate_ui_with_layout(
+                    Vec2::new(width, 160.0),
+                    egui::Layout::top_down(Align::Min),
+                    |ui| {
+                        egui::Frame::group(ui.style())
+                            .fill(p.surface)
+                            .stroke(Stroke::new(1.0, p.border))
+                            .corner_radius(CornerRadius::same(8))
+                            .inner_margin(egui::Margin::same(12))
+                            .show(ui, |ui| {
+                                ui.set_width(width - 24.0);
+                                ui.set_min_height(136.0);
+                                ui.colored_label(*color, *title);
+                                ui.label(
+                                    egui::RichText::new(value).size(22.0).strong().color(p.text),
+                                );
+                                sparkline_sized(
+                                    ui,
+                                    series,
+                                    now,
+                                    *color,
+                                    p,
+                                    Vec2::new((width - 24.0).max(68.0), 36.0),
+                                );
+                                if let Some((used, total)) = cap {
+                                    capacity_bar(ui, *used, *total, *color, p);
+                                }
+                            });
+                    },
+                );
             }
         });
         ui.add_space(10.0);
@@ -354,9 +372,9 @@ pub fn render_overview_view(
         .inner_margin(egui::Margin::same(14))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.heading("Resource summary");
-                ui.add_space(12.0);
+                ui.add_space(20.0);
                 for range in [
                     HistoryRange::Sec30,
                     HistoryRange::Sec60,

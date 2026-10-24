@@ -1094,11 +1094,6 @@ fn render_selected(
             }
         }
 
-        if item.category == 0 {
-            ui.separator();
-            ui.checkbox(&mut state.small_multiples, "Small-multiple core charts");
-        }
-
         ui.separator();
         ui.toggle_value(&mut state.show_provider_details, "Details");
 
@@ -1378,6 +1373,8 @@ fn render_selected(
 
         if item.category == 0 {
             ui.add_space(10.0);
+            ui.checkbox(&mut state.small_multiples, "Show logical processor trends")
+                .on_hover_text("Show a compact 60-second trend for each logical processor");
             if state.small_multiples {
                 ui.heading("Logical processor core charts");
                 ui.label(
