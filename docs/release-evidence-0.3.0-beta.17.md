@@ -30,4 +30,12 @@ Built from clean committed revision `d7fee05`. The packaging script verified bin
 
 The installed beta.16 rollback baseline also returned 20 distinct fresh protocol-v5 snapshots, including one Intel Iris Xe adapter with a measured utilization value. This is baseline evidence, not beta.17 installed acceptance.
 
-Beta.17 installation and live verification remain pending. Wider native accessibility, mixed-DPI, install/repair/uninstall, Windows 10/11, signing, and CI execution gates remain open. This is an unsigned internal build.
+## Installed verification — 2026-10-25
+
+The beta.17 Burn upgrade completed with apply result `0x0`, exit `0x0`, and no restart, recorded in `Planora_20261023225801.log`. The first immediate identity check ran while MSI was still applying and saw beta.16; it was not treated as success. After completion, the installed UI reports beta.17, revision `d7fee05`, protocol v5. Installed UI, helper, and sensor-broker hashes all match the package manifest. PlanoraHelper is running, authorization remains present, and the settings SHA-256 is unchanged from the baseline above.
+
+The installed helper returned 20 distinct fresh protocol-v5 snapshots (maximum CPU reading age 467 ms), one measured Intel Iris Xe adapter, and 46 available sensor records, including one CPU-package-power record and 11 CPU-temperature records. These are provider availability observations, not independent measurement-accuracy comparisons.
+
+A normal installed launch opened the full window without a visible terminal. The live [History review capture](screenshots/native/history-tables-beta17-installed-live.jpg) shows both panels filling the available width, aligned readable values, range/coverage indicators, and no red duplicate-ID overlays. Scrolling the interval rows keeps their headers visible. The missing-interval checkbox was toggled successfully. The accessibility tree exposes text, controls, and labeled coverage progress bars; this is not a Narrator acceptance result. The app was left open for review. The capture is from the installed binary, dark system theme, maximized window; the computer-use tool reports a 1536×864 logical capture and supplies a JPEG. It is live data, not a fixture.
+
+Wider native accessibility, mixed-DPI, clipboard output, install/repair/uninstall, Windows 10/11, signing, and CI execution gates remain open. This is an unsigned internal build.
