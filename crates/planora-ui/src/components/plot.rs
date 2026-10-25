@@ -574,6 +574,22 @@ fn draw_time_plot(
     );
 
     // Horizontal grid lines and tick labels
+    if style == PlotStyle::CpuUtilization && axis.max >= 99.0 {
+        let minor_stroke = Stroke::new(1.0, p.border.gamma_multiply(0.45));
+        for tens in 1..10 {
+            // Major ticks 25, 50, 75, 100 are drawn below
+            if tens == 2 || tens == 5 || tens == 7 || tens == 10 {
+                continue;
+            }
+            let fraction = (tens as f32 * 10.0) / 100.0;
+            let y = canvas.bottom() - fraction * canvas.height();
+            painter.line_segment(
+                [Pos2::new(canvas.left(), y), Pos2::new(canvas.right(), y)],
+                minor_stroke,
+            );
+        }
+    }
+
     for &tick in &axis.ticks {
         let fraction = (tick / (axis.max / axis.divisor).max(0.001)).clamp(0.0, 1.0);
         let y = canvas.bottom() - fraction * canvas.height();
@@ -676,16 +692,21 @@ fn draw_time_plot(
             };
 
             if !item.dashed {
+                let fill_top = if style == PlotStyle::CpuUtilization {
+                    if p.is_dark { 0.22 } else { 0.16 }
+                } else {
+                    0.18
+                };
+                let fill_bottom = if style == PlotStyle::CpuUtilization {
+                    0.04
+                } else {
+                    0.02
+                };
                 let fill = area_mesh(
                     &path,
                     canvas.bottom(),
-                    item.color
-                        .gamma_multiply(if style == PlotStyle::CpuUtilization {
-                            0.12
-                        } else {
-                            0.18
-                        }),
-                    item.color.gamma_multiply(0.02),
+                    item.color.gamma_multiply(fill_top),
+                    item.color.gamma_multiply(fill_bottom),
                 );
                 painter.add(fill);
                 painter.add(Shape::line(path, Stroke::new(1.75, item.color)));

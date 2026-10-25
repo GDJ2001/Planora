@@ -1280,6 +1280,7 @@ impl App {
                         .id_salt("overview_page_scroll")
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
+                            let previous_selected = self.resources_state.selected_resource.clone();
                             render_overview_view(
                                 ui,
                                 frame,
@@ -1289,10 +1290,21 @@ impl App {
                                 &mut self.display_pause,
                                 current_poll,
                                 &mut self.selected,
+                                &mut self.resources_state.selected_resource,
                                 &mut self.page,
                                 render_now,
                                 p,
                             );
+                            if self.resources_state.selected_resource != previous_selected {
+                                self.resources_state.reveal_selected_resource = true;
+                                self.settings.performance_resource =
+                                    self.resources_state.selected_resource.clone();
+                                self.settings_error = self
+                                    .settings
+                                    .save()
+                                    .err()
+                                    .map(|error| format!("Could not save preferences: {error}"));
+                            }
                         });
                 },
                 Page::Performance => {

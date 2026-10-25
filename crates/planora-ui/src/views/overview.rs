@@ -9,7 +9,7 @@ use crate::{
     state::{AppState, DisplayPause, Page},
     theme::Palette,
 };
-use eframe::egui::{self, Align, CornerRadius, Stroke, Vec2};
+use eframe::egui::{self, Align, Color32, CornerRadius, Stroke, Vec2};
 use planora_core::{Metric, ProcessIdentity, TelemetryFrame};
 use std::time::Instant;
 
@@ -212,11 +212,31 @@ fn summary_table(ui: &mut egui::Ui, rows: &[SummaryRow<'_>], range: HistoryRange
 
 type CardItem<'a> = (
     &'a str,
+    &'static str,
     String,
     &'a TimeSeries,
     egui::Color32,
     Option<(Option<u64>, Option<u64>)>,
 );
+
+fn overview_card_visuals(
+    hovered: bool,
+    pressed: bool,
+    has_focus: bool,
+    accent: Color32,
+    p: Palette,
+) -> (Color32, Stroke) {
+    if pressed {
+        let fill = crate::views::resources::blend_color(p.surface, accent, 0.10);
+        (fill, Stroke::new(1.0, accent))
+    } else if hovered || has_focus {
+        let fill = crate::views::resources::blend_color(p.surface, accent, 0.05);
+        let stroke = Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 160);
+        (fill, Stroke::new(1.0, stroke))
+    } else {
+        (p.surface, Stroke::new(1.0, p.border))
+    }
+}
 
 fn resource_card_columns(width: f32, card_count: usize) -> usize {
     let columns = if width >= 1148.0 {
@@ -235,6 +255,8 @@ fn resource_cards(
     ui: &mut egui::Ui,
     frame: &TelemetryFrame,
     histories: &ResourceHistories,
+    performance_request: &mut Option<String>,
+    active_page: &mut Page,
     now: Instant,
     p: Palette,
 ) {
@@ -248,6 +270,7 @@ fn resource_cards(
     let mut cards: Vec<CardItem> = vec![
         (
             "CPU",
+            "cpu",
             frame
                 .cpu_percent
                 .value
@@ -259,6 +282,7 @@ fn resource_cards(
         ),
         (
             "Memory",
+            "memory",
             memory_pct
                 .map(|v| format!("{v:.1}%"))
                 .unwrap_or_else(|| "Unavailable".into()),
@@ -278,6 +302,7 @@ fn resource_cards(
         let series = histories.detail(&gpu_series_key).unwrap_or(&empty_series);
         cards.push((
             "GPU · busiest",
+            "gpu",
             adapter
                 .busiest_engine_percent
                 .value
@@ -293,6 +318,7 @@ fn resource_cards(
     }
     cards.push((
         "Storage · read",
+        "disk",
         format_rate(frame.disk_read_bytes_per_sec.value.map(|v| v as f32)),
         &histories.disk_read,
         p.disk,
@@ -300,6 +326,7 @@ fn resource_cards(
     ));
     cards.push((
         "Network · rx",
+        "net",
         format_rate(frame.network_rx_bytes_per_sec.value.map(|v| v as f32)),
         &histories.net_rx,
         p.network,
@@ -315,37 +342,83 @@ fn resource_cards(
             ((available_width - 12.0 * (row.len() - 1) as f32) / row.len() as f32).max(160.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 12.0;
-            for (title, value, series, color, cap) in row {
-                ui.allocate_ui_with_layout(
-                    Vec2::new(width, 160.0),
-                    egui::Layout::top_down(Align::Min),
-                    |ui| {
-                        egui::Frame::group(ui.style())
-                            .fill(p.surface)
-                            .stroke(Stroke::new(1.0, p.border))
-                            .corner_radius(CornerRadius::same(8))
-                            .inner_margin(egui::Margin::same(12))
-                            .show(ui, |ui| {
-                                ui.set_width(width - 24.0);
-                                ui.set_min_height(136.0);
-                                ui.colored_label(*color, *title);
-                                ui.label(
-                                    egui::RichText::new(value).size(22.0).strong().color(p.text),
-                                );
-                                sparkline_sized(
-                                    ui,
-                                    series,
-                                    now,
-                                    *color,
-                                    p,
-                                    Vec2::new((width - 24.0).max(68.0), 36.0),
-                                );
-                                if let Some((used, total)) = cap {
-                                    capacity_bar(ui, *used, *total, *color, p);
-                                }
-                            });
-                    },
+            for (title, target_resource, value, series, color, cap) in row {
+                let card_w = width;
+                let mut prepared = egui::Frame::group(ui.style())
+                    .corner_radius(CornerRadius::same(8))
+                    .inner_margin(egui::Margin::same(12))
+                    .begin(ui);
+
+                {
+                    let ui = &mut prepared.content_ui;
+                    ui.set_width(card_w - 24.0);
+                    ui.set_min_height(136.0);
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(*title).color(*color).strong())
+                            .selectable(false),
+                    );
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(value).size(22.0).strong().color(p.text),
+                        )
+                        .selectable(false),
+                    );
+                    sparkline_sized(
+                        ui,
+                        series,
+                        now,
+                        *color,
+                        p,
+                        Vec2::new((card_w - 24.0).max(68.0), 36.0),
+                    );
+                    if let Some((used, total)) = cap {
+                        capacity_bar(ui, *used, *total, *color, p);
+                    }
+                }
+
+                let alloc_resp = prepared.allocate_space(ui);
+                let response = ui
+                    .interact(alloc_resp.rect, alloc_resp.id, egui::Sense::click())
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text(format!("Open {} in Performance", title));
+
+                response.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::accesskit::Role::Button,
+                        true,
+                        format!("{} - {}", title, value),
+                    )
+                });
+
+                let (fill, stroke) = overview_card_visuals(
+                    response.hovered(),
+                    response.is_pointer_button_down_on(),
+                    response.has_focus(),
+                    *color,
+                    p,
                 );
+                prepared.frame.fill = fill;
+                prepared.frame.stroke = stroke;
+                prepared.paint(ui);
+
+                if response.has_focus() {
+                    ui.painter().rect_stroke(
+                        alloc_resp.rect.expand(1.0),
+                        CornerRadius::same(9),
+                        Stroke::new(2.0, p.focus),
+                        egui::StrokeKind::Outside,
+                    );
+                }
+
+                let activated = response.clicked()
+                    || (response.has_focus()
+                        && ui.input(|i| {
+                            i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Space)
+                        }));
+                if activated {
+                    *performance_request = Some((*target_resource).to_string());
+                    *active_page = Page::Performance;
+                }
             }
         });
         ui.add_space(10.0);
@@ -361,6 +434,7 @@ pub fn render_overview_view(
     pause_state: &mut DisplayPause,
     poll_interval_ms: u64,
     selected_identity: &mut Option<ProcessIdentity>,
+    performance_request: &mut Option<String>,
     active_page: &mut Page,
     now: Instant,
     p: Palette,
@@ -374,7 +448,15 @@ pub fn render_overview_view(
         poll_interval_ms,
         p,
     );
-    resource_cards(ui, frame, histories, now, p);
+    resource_cards(
+        ui,
+        frame,
+        histories,
+        performance_request,
+        active_page,
+        now,
+        p,
+    );
     egui::Frame::group(ui.style())
         .fill(p.surface)
         .stroke(Stroke::new(1.0, p.border))
@@ -628,5 +710,96 @@ mod layout_tests {
         assert_eq!(resource_card_columns(970.0, 5), 3);
         assert_eq!(resource_card_columns(600.0, 5), 2);
         assert_eq!(resource_card_columns(420.0, 5), 1);
+    }
+
+    #[test]
+    fn overview_card_click_requests_performance_resource() {
+        let fixture = crate::smoke_test::create_native_fixture_app(
+            crate::theme::Theme::Dark,
+            crate::state::Page::Overview,
+        );
+        let frame = fixture.shared.lock().unwrap().frame.clone().unwrap();
+        let ctx = eframe::egui::Context::default();
+        let p = crate::theme::get_palette(true);
+
+        let mut overview_state = super::OverviewViewState::default();
+        let mut perf_req: Option<String> = None;
+        let mut active_page = crate::state::Page::Overview;
+
+        // Run frame 1 to lay out the overview cards
+        let mut output = ctx.run_ui(
+            eframe::egui::RawInput {
+                screen_rect: Some(eframe::egui::Rect::from_min_size(
+                    eframe::egui::Pos2::ZERO,
+                    eframe::egui::Vec2::new(1180.0, 790.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                super::render_overview_view(
+                    ui,
+                    &frame,
+                    &fixture.histories,
+                    &mut overview_state,
+                    &crate::state::AppState::Live,
+                    &mut crate::state::DisplayPause::default(),
+                    100,
+                    &mut None,
+                    &mut perf_req,
+                    &mut active_page,
+                    std::time::Instant::now(),
+                    p,
+                );
+            },
+        );
+        output.textures_delta.clear();
+        assert_eq!(active_page, crate::state::Page::Overview);
+        assert!(perf_req.is_none());
+
+        // Click within the first card's bounds (e.g. CPU card area around x=60, y=95)
+        let click_pos = eframe::egui::pos2(60.0, 95.0);
+        let mut output = ctx.run_ui(
+            eframe::egui::RawInput {
+                screen_rect: Some(eframe::egui::Rect::from_min_size(
+                    eframe::egui::Pos2::ZERO,
+                    eframe::egui::Vec2::new(1180.0, 790.0),
+                )),
+                events: vec![
+                    eframe::egui::Event::PointerMoved(click_pos),
+                    eframe::egui::Event::PointerButton {
+                        pos: click_pos,
+                        button: eframe::egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: Default::default(),
+                    },
+                    eframe::egui::Event::PointerButton {
+                        pos: click_pos,
+                        button: eframe::egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: Default::default(),
+                    },
+                ],
+                ..Default::default()
+            },
+            |ui| {
+                super::render_overview_view(
+                    ui,
+                    &frame,
+                    &fixture.histories,
+                    &mut overview_state,
+                    &crate::state::AppState::Live,
+                    &mut crate::state::DisplayPause::default(),
+                    100,
+                    &mut None,
+                    &mut perf_req,
+                    &mut active_page,
+                    std::time::Instant::now(),
+                    p,
+                );
+            },
+        );
+        output.textures_delta.clear();
+        assert_eq!(active_page, crate::state::Page::Performance);
+        assert_eq!(perf_req.as_deref(), Some("cpu"));
     }
 }

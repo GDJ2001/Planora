@@ -12,7 +12,7 @@ use crate::{
     state::{AppState, DisplayPause, PercentScale},
     theme::{CORNER_RADIUS, Palette},
 };
-use eframe::egui::{self, CornerRadius, Rect, Stroke, Vec2};
+use eframe::egui::{self, Color32, CornerRadius, Rect, Stroke, Vec2};
 use planora_core::{SensorReading, TelemetryFrame, Topology};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -88,6 +88,129 @@ mod workspace_tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn selector_card_click_anywhere_selects_resource() {
+        let fixture = crate::smoke_test::create_native_fixture_app(
+            crate::theme::Theme::Dark,
+            crate::state::Page::Performance,
+        );
+        let frame = fixture.shared.lock().unwrap().frame.clone().unwrap();
+        let ctx = egui::Context::default();
+        let p = crate::theme::get_palette(true);
+        let all_choices = choices(&frame, Some(&fixture.histories), &[], p);
+        let mem_choice = all_choices.iter().find(|c| c.id == "memory").unwrap();
+
+        // 1. Initial frame to lay out the card and capture its rect
+        let mut card_rect = Rect::NOTHING;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(1180.0, 790.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                let resp = resource_selector_card(
+                    ui,
+                    mem_choice,
+                    false,
+                    220.0,
+                    &fixture.histories,
+                    Instant::now(),
+                    p,
+                );
+                card_rect = resp.rect;
+            },
+        );
+        output.textures_delta.clear();
+        assert!(!card_rect.is_negative() && card_rect.width() > 50.0 && card_rect.height() > 40.0);
+
+        // 2. Click in the lower right (where the sparkline is)
+        let click_pos = egui::Pos2::new(card_rect.right() - 20.0, card_rect.bottom() - 15.0);
+        let mut clicked = false;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(1180.0, 790.0),
+                )),
+                events: vec![
+                    egui::Event::PointerMoved(click_pos),
+                    egui::Event::PointerButton {
+                        pos: click_pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: Default::default(),
+                    },
+                    egui::Event::PointerButton {
+                        pos: click_pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: Default::default(),
+                    },
+                ],
+                ..Default::default()
+            },
+            |ui| {
+                let resp = resource_selector_card(
+                    ui,
+                    mem_choice,
+                    false,
+                    220.0,
+                    &fixture.histories,
+                    Instant::now(),
+                    p,
+                );
+                if resp.clicked() {
+                    clicked = true;
+                }
+            },
+        );
+        output.textures_delta.clear();
+        assert!(
+            clicked,
+            "clicking the sparkline region of the card must activate it"
+        );
+    }
+
+    #[test]
+    fn selector_card_exposes_selected_accessibility_state() {
+        let fixture = crate::smoke_test::create_native_fixture_app(
+            crate::theme::Theme::Dark,
+            crate::state::Page::Performance,
+        );
+        let frame = fixture.shared.lock().unwrap().frame.clone().unwrap();
+        let ctx = egui::Context::default();
+        let p = crate::theme::get_palette(true);
+        let all_choices = choices(&frame, Some(&fixture.histories), &[], p);
+        let cpu_choice = all_choices.iter().find(|c| c.id == "cpu").unwrap();
+
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(1180.0, 790.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                let resp = resource_selector_card(
+                    ui,
+                    cpu_choice,
+                    true,
+                    220.0,
+                    &fixture.histories,
+                    Instant::now(),
+                    p,
+                );
+                assert!(resp.sense.senses_click(), "card must sense clicks");
+                assert!(!resp.rect.is_negative(), "card rect must be valid");
+            },
+        );
+        output.textures_delta.clear();
     }
 }
 
@@ -165,7 +288,7 @@ pub struct ResourcesViewState {
     pub selected_resource: Option<String>,
     /// Reveal the selected card once after startup or a compact picker change.
     /// Egui can restore an old list offset that hides the persisted selection.
-    reveal_selected_resource: bool,
+    pub reveal_selected_resource: bool,
     sensors_expanded: bool,
     pub range: HistoryRange,
     pub selected_cpu: Option<(u16, u16)>,
@@ -484,6 +607,131 @@ pub fn choices(
     rows
 }
 
+pub fn blend_color(base: Color32, tint: Color32, factor: f32) -> Color32 {
+    let factor = factor.clamp(0.0, 1.0);
+    let inv = 1.0 - factor;
+    Color32::from_rgba_premultiplied(
+        (base.r() as f32 * inv + tint.r() as f32 * factor).round() as u8,
+        (base.g() as f32 * inv + tint.g() as f32 * factor).round() as u8,
+        (base.b() as f32 * inv + tint.b() as f32 * factor).round() as u8,
+        (base.a() as f32 * inv + tint.a() as f32 * factor).round() as u8,
+    )
+}
+
+fn selector_card_visuals(
+    selected: bool,
+    hovered: bool,
+    pressed: bool,
+    has_focus: bool,
+    accent: Color32,
+    p: Palette,
+) -> (Color32, Stroke) {
+    if selected {
+        (p.selected, Stroke::new(1.5, accent))
+    } else if pressed {
+        let fill = blend_color(p.surface, accent, 0.12);
+        (fill, Stroke::new(1.0, accent))
+    } else if hovered || has_focus {
+        let fill = blend_color(p.surface, accent, 0.06);
+        let stroke = Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 160);
+        (fill, Stroke::new(1.0, stroke))
+    } else {
+        (p.surface, Stroke::new(1.0, p.border))
+    }
+}
+
+pub fn resource_selector_card(
+    ui: &mut egui::Ui,
+    item: &Choice,
+    selected: bool,
+    card_width: f32,
+    histories: &ResourceHistories,
+    now: Instant,
+    p: Palette,
+) -> egui::Response {
+    let mut prepared = egui::Frame::group(ui.style())
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(egui::Margin::same(10))
+        .begin(ui);
+
+    {
+        let ui = &mut prepared.content_ui;
+        ui.set_width(card_width);
+        ui.horizontal(|ui| {
+            ui.colored_label(item.color, "▌");
+            ui.add(
+                egui::Label::new(egui::RichText::new(&item.label).strong().color(p.text))
+                    .truncate()
+                    .selectable(false),
+            );
+        });
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(&item.value)
+                            .monospace()
+                            .size(15.0 * crate::appearance::text_scale(ui.ctx()))
+                            .strong()
+                            .color(item.color),
+                    )
+                    .selectable(false),
+                );
+                ui.horizontal(|ui| {
+                    ui.colored_label(item.status_color, item.status_symbol);
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&item.status_text)
+                                .size(11.0 * crate::appearance::text_scale(ui.ctx()))
+                                .color(p.secondary),
+                        )
+                        .selectable(false),
+                    );
+                });
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if let Some(series) = choice_series(item, histories) {
+                    sparkline(ui, series, now, item.color, p);
+                }
+            });
+        });
+    }
+
+    let alloc_resp = prepared.allocate_space(ui);
+    let response = ui
+        .interact(alloc_resp.rect, alloc_resp.id, egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(&item.label);
+
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::accesskit::Role::Button, true, selected, &item.label)
+    });
+
+    let (fill, stroke) = selector_card_visuals(
+        selected,
+        response.hovered(),
+        response.is_pointer_button_down_on(),
+        response.has_focus(),
+        item.color,
+        p,
+    );
+    prepared.frame.fill = fill;
+    prepared.frame.stroke = stroke;
+    prepared.paint(ui);
+
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            alloc_resp.rect.expand(1.0),
+            CornerRadius::same(9),
+            Stroke::new(2.0, p.focus),
+            egui::StrokeKind::Outside,
+        );
+    }
+
+    response
+}
+
 pub fn render_resources_view(
     ui: &mut egui::Ui,
     frame: &TelemetryFrame,
@@ -633,66 +881,23 @@ pub fn render_resources_view(
                         }
                         let selected = state.selected_resource.as_ref() == Some(&item.id);
                         let card_width = (ui.available_width() - 22.0).max(100.0);
-                        let card = egui::Frame::group(ui.style())
-                            .fill(if selected { p.selected } else { p.surface })
-                            .stroke(Stroke::new(
-                                if selected { 1.5 } else { 1.0 },
-                                if selected { item.color } else { p.border },
-                            ))
-                            .corner_radius(CornerRadius::same(8))
-                            .inner_margin(egui::Margin::same(10))
-                            .show(ui, |ui| {
-                                ui.set_width(card_width);
-                                ui.horizontal(|ui| {
-                                    ui.colored_label(item.color, "▌");
-                                    let resp = ui.add(
-                                        egui::Button::selectable(selected, &item.label).truncate(),
-                                    );
-                                    if resp.clicked() {
-                                        state.selected_resource = Some(item.id.clone());
-                                        if item.category == 5 {
-                                            state.sensors_expanded = true;
-                                        }
-                                    }
-                                    resp.on_hover_text(&item.label);
-                                });
-                                ui.add_space(4.0);
-                                ui.horizontal(|ui| {
-                                    ui.vertical(|ui| {
-                                        ui.label(
-                                            egui::RichText::new(&item.value)
-                                                .monospace()
-                                                .size(
-                                                    15.0 * crate::appearance::text_scale(ui.ctx()),
-                                                )
-                                                .strong()
-                                                .color(item.color),
-                                        );
-                                        ui.horizontal(|ui| {
-                                            ui.colored_label(item.status_color, item.status_symbol);
-                                            ui.label(
-                                                egui::RichText::new(&item.status_text)
-                                                    .size(
-                                                        11.0 * crate::appearance::text_scale(
-                                                            ui.ctx(),
-                                                        ),
-                                                    )
-                                                    .color(p.secondary),
-                                            );
-                                        });
-                                    });
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            if let Some(series) = choice_series(item, histories) {
-                                                sparkline(ui, series, now, item.color, p);
-                                            }
-                                        },
-                                    );
-                                });
-                            });
+                        let card_response = resource_selector_card(
+                            ui, item, selected, card_width, histories, now, p,
+                        );
+                        let activated = card_response.clicked()
+                            || (card_response.has_focus()
+                                && ui.input(|i| {
+                                    i.key_pressed(egui::Key::Enter)
+                                        || i.key_pressed(egui::Key::Space)
+                                }));
+                        if activated {
+                            state.selected_resource = Some(item.id.clone());
+                            if item.category == 5 {
+                                state.sensors_expanded = true;
+                            }
+                        }
                         if selected && state.reveal_selected_resource {
-                            card.response.scroll_to_me_animation(
+                            card_response.scroll_to_me_animation(
                                 Some(egui::Align::Center),
                                 egui::style::ScrollAnimation::none(),
                             );
