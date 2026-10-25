@@ -50,7 +50,7 @@ public class SampleResponse
     public string Status { get; set; } = "ok";
 
     [JsonPropertyName("version")]
-    public string Version { get; set; } = "0.3.0-beta.20";
+    public string Version { get; set; } = "0.3.0-beta.21";
 
     [JsonPropertyName("build_commit")]
     public string BuildCommit { get; set; } = Program.BuildCommit;
@@ -68,7 +68,7 @@ public class PingResponse
     public string Status { get; set; } = "ok";
 
     [JsonPropertyName("version")]
-    public string Version { get; set; } = "0.3.0-beta.20";
+    public string Version { get; set; } = "0.3.0-beta.21";
 
     [JsonPropertyName("build_commit")]
     public string BuildCommit { get; set; } = Program.BuildCommit;

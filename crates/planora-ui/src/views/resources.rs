@@ -2,7 +2,8 @@ use crate::{
     components::{
         header::render_page_header,
         plot::{
-            PlotSeries, PlotState, ValueScale, activity_bars, capacity_bar, sparkline, time_plot,
+            PlotSeries, PlotState, ValueScale, capacity_bar, cpu_utilization_plot, sparkline,
+            time_plot,
         },
     },
     export::ExportManager,
@@ -1374,7 +1375,7 @@ fn render_selected(
         if legends[item.category] {
             ui.horizontal(|ui| {
                 if item.category == 0 {
-                    ui.colored_label(item.color, "▮ Average load  ━ Short peak");
+                    ui.colored_label(item.color, "━ CPU utilization · 1 s averages");
                 } else {
                     for plotted in &plot_series {
                         ui.colored_label(
@@ -1392,16 +1393,15 @@ fn render_selected(
         let plot = state.plots.entry(item.id.clone()).or_default();
         let chart_h = (state.detail_height * 0.40).clamp(240.0, 420.0);
         if item.category == 0 {
-            activity_bars(
+            cpu_utilization_plot(
                 ui,
                 &item.id,
-                primary,
+                &plot_series,
                 state.range,
                 now,
                 val_scale,
                 chart_h,
                 plot,
-                item.color,
                 p,
             );
         } else {

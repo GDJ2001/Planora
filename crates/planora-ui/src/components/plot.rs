@@ -1,6 +1,6 @@
 //! Native charts use the same observed samples as the table alternatives.
 use crate::formatting::{format_bytes, format_rate};
-use crate::history::{ChartPoint, HistoryRange, Sample, TimeSeries};
+use crate::history::{ChartPoint, HistoryRange, TimeSeries};
 use crate::theme::Palette;
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Shape, Stroke, Vec2};
 use std::time::{Duration, Instant};
@@ -378,9 +378,6 @@ pub struct PlotState {
     cache_key: Option<PlotCacheKey>,
     cache_now: Option<Instant>,
     cached_segments: Vec<Vec<Vec<ChartPoint>>>,
-    bar_cache_key: Option<PlotCacheKey>,
-    bar_cache_now: Option<Instant>,
-    cached_bars: Vec<Option<ActivityBucket>>,
 }
 
 #[derive(PartialEq)]
@@ -389,6 +386,23 @@ struct PlotCacheKey {
     width: u32,
     scale_bits: u32,
     series: Vec<(usize, u64)>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PlotStyle {
+    SmoothArea,
+    CpuUtilization,
+}
+
+impl PlotStyle {
+    fn gap_threshold(self) -> Duration {
+        match self {
+            Self::SmoothArea => Duration::from_secs(3),
+            // CPU history is aggregated into one-second observations. A
+            // missing second must remain visible instead of bridging it.
+            Self::CpuUtilization => Duration::from_millis(1750),
+        }
+    }
 }
 
 /// Paint a bounded, gap-aware plot with smooth curves, min..max bands, and seamless fills.
@@ -403,6 +417,63 @@ pub fn time_plot(
     height: f32,
     state: &mut PlotState,
     p: Palette,
+) {
+    draw_time_plot(
+        ui,
+        id,
+        series,
+        range,
+        now,
+        unit,
+        scale,
+        height,
+        state,
+        p,
+        PlotStyle::SmoothArea,
+    );
+}
+
+/// Show observed CPU utilization as a conventional time-series line. Missing
+/// intervals remain blank, and the line is not smoothed into extra extrema.
+pub fn cpu_utilization_plot(
+    ui: &mut egui::Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    series: &[PlotSeries<'_>],
+    range: HistoryRange,
+    now: Instant,
+    scale: ValueScale,
+    height: f32,
+    state: &mut PlotState,
+    p: Palette,
+) {
+    draw_time_plot(
+        ui,
+        id,
+        series,
+        range,
+        now,
+        "%",
+        scale,
+        height,
+        state,
+        p,
+        PlotStyle::CpuUtilization,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_time_plot(
+    ui: &mut egui::Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    series: &[PlotSeries<'_>],
+    range: HistoryRange,
+    now: Instant,
+    unit: &str,
+    scale: ValueScale,
+    height: f32,
+    state: &mut PlotState,
+    p: Palette,
+    style: PlotStyle,
 ) {
     let chart_id = ui.make_persistent_id(id);
     let width = ui.available_width().max(140.0);
@@ -434,7 +505,7 @@ pub fn time_plot(
         now < cached_at || now.saturating_duration_since(cached_at) >= Duration::from_secs(1)
     });
     if state.cache_key.as_ref() != Some(&key) || expired {
-        let gap = Duration::from_secs(3);
+        let gap = style.gap_threshold();
         state.cached_segments = series
             .iter()
             .map(|item| {
@@ -579,8 +650,10 @@ pub fn time_plot(
                 continue;
             }
 
-            // 1. Min..Max faint range band behind the curve
-            let has_variation = segment.iter().any(|p| (p.max - p.min).abs() > 0.005 * ymax);
+            // The CPU line shows one-second averages directly. The summary and
+            // cursor retain within-interval extrema without waveform-like marks.
+            let has_variation = style == PlotStyle::SmoothArea
+                && segment.iter().any(|p| (p.max - p.min).abs() > 0.005 * ymax);
             if has_variation {
                 let upper_pts: Vec<Pos2> = segment.iter().map(|p| to_point(p.x, p.max)).collect();
                 let lower_pts: Vec<Pos2> = segment.iter().map(|p| to_point(p.x, p.min)).collect();
@@ -594,22 +667,31 @@ pub fn time_plot(
                 painter.add(band);
             }
 
-            // 2. Mean trend line & smooth area fill
+            // Mean trend line and restrained area fill.
             let mean_pts: Vec<Pos2> = segment.iter().map(|p| to_point(p.x, p.mean)).collect();
-            let smooth_mean = monotone_path(&mean_pts, 3.0);
+            let path = if style == PlotStyle::CpuUtilization {
+                mean_pts
+            } else {
+                monotone_path(&mean_pts, 3.0)
+            };
 
             if !item.dashed {
                 let fill = area_mesh(
-                    &smooth_mean,
+                    &path,
                     canvas.bottom(),
-                    item.color.gamma_multiply(0.18),
+                    item.color
+                        .gamma_multiply(if style == PlotStyle::CpuUtilization {
+                            0.12
+                        } else {
+                            0.18
+                        }),
                     item.color.gamma_multiply(0.02),
                 );
                 painter.add(fill);
-                painter.add(Shape::line(smooth_mean, Stroke::new(1.75, item.color)));
+                painter.add(Shape::line(path, Stroke::new(1.75, item.color)));
             } else {
                 let dashed_shapes =
-                    dashed_path_shapes(&smooth_mean, Stroke::new(1.75, item.color), 6.0, 4.0);
+                    dashed_path_shapes(&path, Stroke::new(1.75, item.color), 6.0, 4.0);
                 for shape in dashed_shapes {
                     painter.add(shape);
                 }
@@ -805,352 +887,6 @@ fn format_plot_value(value: f32, unit: &str) -> String {
     }
 }
 
-#[derive(Clone)]
-struct ActivityBucket {
-    sum: f64,
-    count: u32,
-    minimum: f32,
-    maximum: f32,
-    source: String,
-    source_changed: bool,
-    last_time: Instant,
-}
-
-impl ActivityBucket {
-    fn new(sample: &Sample, value: f32) -> Self {
-        Self {
-            sum: sample.sum,
-            count: sample.count.max(1),
-            minimum: sample.minimum.unwrap_or(value),
-            maximum: sample.maximum.unwrap_or(value),
-            source: sample.source.clone(),
-            source_changed: false,
-            last_time: sample.time,
-        }
-    }
-
-    fn include(&mut self, sample: &Sample, value: f32) {
-        self.sum += sample.sum;
-        self.count = self.count.saturating_add(sample.count.max(1));
-        self.minimum = self.minimum.min(sample.minimum.unwrap_or(value));
-        self.maximum = self.maximum.max(sample.maximum.unwrap_or(value));
-        self.source_changed |= self.source != sample.source;
-        self.last_time = self.last_time.max(sample.time);
-    }
-
-    fn mean(&self) -> f32 {
-        (self.sum / self.count.max(1) as f64) as f32
-    }
-}
-
-fn activity_bucket_span(range: HistoryRange) -> usize {
-    match range {
-        HistoryRange::Sec30 | HistoryRange::Sec60 => 1,
-        HistoryRange::Min5 => 3,
-        HistoryRange::Min15 => 9,
-    }
-}
-
-fn activity_buckets(
-    series: &TimeSeries,
-    now: Instant,
-    range: HistoryRange,
-) -> Vec<Option<ActivityBucket>> {
-    let span = activity_bucket_span(range);
-    let len = range.duration().as_secs() as usize / span;
-    let cutoff = now.checked_sub(range.duration()).unwrap_or(now);
-    let mut buckets = vec![None::<ActivityBucket>; len];
-    for sample in &series.samples {
-        if sample.time < cutoff || sample.time > now {
-            continue;
-        }
-        let Some(value) = sample.value.filter(|v| v.is_finite()) else {
-            continue;
-        };
-        let index = (sample.time.duration_since(cutoff).as_secs() as usize / span).min(len - 1);
-        match &mut buckets[index] {
-            Some(bucket) => bucket.include(sample, value),
-            slot @ None => *slot = Some(ActivityBucket::new(sample, value)),
-        }
-    }
-    buckets
-}
-
-/// A time-aligned CPU activity column chart. Empty columns are unobserved
-/// intervals; short spikes are retained as a thin maximum marker over the
-/// observed mean, rather than connected into a sawtooth line.
-pub fn activity_bars(
-    ui: &mut egui::Ui,
-    id: impl std::hash::Hash + std::fmt::Debug,
-    series: &TimeSeries,
-    range: HistoryRange,
-    now: Instant,
-    scale: ValueScale,
-    height: f32,
-    state: &mut PlotState,
-    color: Color32,
-    p: Palette,
-) {
-    let chart_id = ui.make_persistent_id(id);
-    let width = ui.available_width().max(140.0);
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height.max(190.0)), Sense::hover());
-    let response = ui.interact(rect, chart_id, Sense::click_and_drag());
-    let text_scale = crate::appearance::text_scale(ui.ctx());
-
-    let observed = series.observed_summary(now, range);
-    let observed_max = observed.map_or(10.0, |s| s.maximum);
-    let axis = axis_scale(observed_max, "%", scale);
-
-    let max_tick_label_width = axis
-        .ticks
-        .iter()
-        .map(|&tick| {
-            let s = format!("{:.prec$}%", tick, prec = axis.decimals);
-            ui.painter()
-                .layout_no_wrap(
-                    s,
-                    egui::FontId::proportional(11.0 * text_scale),
-                    p.secondary,
-                )
-                .size()
-                .x
-        })
-        .fold(24.0f32, f32::max);
-    let left_gutter = (max_tick_label_width + 12.0).max(36.0 * text_scale);
-
-    let canvas = Rect::from_min_max(
-        Pos2::new(rect.left() + left_gutter, rect.top() + 28.0),
-        Pos2::new(rect.right() - 12.0, rect.bottom() - 30.0),
-    );
-    let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 8.0, p.surface);
-    painter.rect_stroke(
-        rect,
-        8.0,
-        Stroke::new(1.0, p.border),
-        egui::StrokeKind::Inside,
-    );
-
-    let key = PlotCacheKey {
-        range,
-        width: canvas.width().round() as u32,
-        scale_bits: ui.ctx().pixels_per_point().to_bits(),
-        series: vec![(
-            series.samples.len(),
-            series
-                .samples
-                .back()
-                .map_or(0, |sample| sample.timestamp_ms),
-        )],
-    };
-    let expired = state.bar_cache_now.is_none_or(|cached_at| {
-        now < cached_at || now.saturating_duration_since(cached_at) >= Duration::from_secs(1)
-    });
-    if state.bar_cache_key.as_ref() != Some(&key) || expired {
-        state.cached_bars = activity_buckets(series, now, range);
-        state.bar_cache_key = Some(key);
-        state.bar_cache_now = Some(now);
-    }
-    let buckets = &state.cached_bars;
-    let bucket_width = canvas.width() / buckets.len().max(1) as f32;
-    let span = activity_bucket_span(range);
-
-    for &tick in &axis.ticks {
-        let fraction = (tick / axis.max.max(1.0)).clamp(0.0, 1.0);
-        let y = canvas.bottom() - fraction * canvas.height();
-        painter.line_segment(
-            [Pos2::new(canvas.left(), y), Pos2::new(canvas.right(), y)],
-            Stroke::new(1.0, p.border),
-        );
-        painter.text(
-            Pos2::new(canvas.left() - 7.0, y),
-            egui::Align2::RIGHT_CENTER,
-            format!("{:.prec$}%", tick, prec = axis.decimals),
-            egui::FontId::proportional(11.0 * text_scale),
-            p.secondary,
-        );
-    }
-    for fraction in [0.25, 0.5, 0.75] {
-        let x = canvas.left() + canvas.width() * fraction;
-        painter.line_segment(
-            [Pos2::new(x, canvas.top()), Pos2::new(x, canvas.bottom())],
-            Stroke::new(1.0, p.border.gamma_multiply(0.6)),
-        );
-    }
-    let bar_width = (bucket_width - 2.0).max(1.0);
-    for (index, bucket) in buckets.iter().enumerate() {
-        let Some(bucket) = bucket else { continue };
-        let x = canvas.left() + index as f32 * bucket_width + (bucket_width - bar_width) * 0.5;
-        let bar_height =
-            (bucket.mean().clamp(0.0, axis.max) / axis.max.max(1.0) * canvas.height()).max(2.0);
-        painter.rect_filled(
-            Rect::from_min_size(
-                Pos2::new(x, canvas.bottom() - bar_height),
-                Vec2::new(bar_width, bar_height),
-            ),
-            2.0,
-            color.gamma_multiply(0.78),
-        );
-        if bucket.maximum > bucket.mean() + 0.5 {
-            let peak_y = canvas.bottom()
-                - bucket.maximum.clamp(0.0, axis.max) / axis.max.max(1.0) * canvas.height();
-            painter.line_segment(
-                [Pos2::new(x, peak_y), Pos2::new(x + bar_width, peak_y)],
-                Stroke::new(2.0, color),
-            );
-        }
-    }
-
-    painter.text(
-        Pos2::new(canvas.left() + 4.0, rect.top() + 9.0),
-        egui::Align2::LEFT_CENTER,
-        "CPU activity · average per interval",
-        egui::FontId::proportional(12.0 * text_scale),
-        p.text,
-    );
-    painter.text(
-        Pos2::new(canvas.right(), rect.top() + 9.0),
-        egui::Align2::RIGHT_CENTER,
-        format!(
-            "{}s bars · {}/{}s observed",
-            span,
-            observed.map_or(0, |s| s.observed_seconds),
-            range.duration().as_secs()
-        ),
-        egui::FontId::proportional(11.0 * text_scale),
-        p.secondary,
-    );
-    painter.text(
-        Pos2::new(canvas.left(), rect.bottom() - 14.0),
-        egui::Align2::LEFT_CENTER,
-        format!("{} ago", range.label()),
-        egui::FontId::proportional(11.0 * text_scale),
-        p.secondary,
-    );
-    painter.text(
-        Pos2::new(canvas.right(), rect.bottom() - 14.0),
-        egui::Align2::RIGHT_CENTER,
-        "Now",
-        egui::FontId::proportional(11.0 * text_scale),
-        p.secondary,
-    );
-    if observed
-        .is_none_or(|summary| summary.observed_seconds < range.duration().as_secs() as usize / 3)
-    {
-        painter.text(
-            canvas.center() - Vec2::new(0.0, 10.0),
-            egui::Align2::CENTER_CENTER,
-            "Building history",
-            egui::FontId::proportional(17.0 * text_scale),
-            p.secondary,
-        );
-        painter.text(
-            canvas.center() + Vec2::new(0.0, 12.0),
-            egui::Align2::CENTER_CENTER,
-            "New columns appear as measurements arrive",
-            egui::FontId::proportional(11.0 * text_scale),
-            p.secondary,
-        );
-    }
-
-    let hovered_index = response
-        .hover_pos()
-        .and_then(|pos| {
-            canvas
-                .contains(pos)
-                .then(|| ((pos.x - canvas.left()) / bucket_width).floor() as usize)
-        })
-        .filter(|index| *index < buckets.len());
-    if response.clicked() {
-        response.request_focus();
-        state.pinned = !state.pinned && hovered_index.is_some_and(|index| buckets[index].is_some());
-        state.cursor = if state.pinned {
-            hovered_index.map(|index| (index as f32 + 0.5) / buckets.len() as f32)
-        } else {
-            None
-        };
-    } else if !state.pinned {
-        state.cursor = hovered_index.map(|index| (index as f32 + 0.5) / buckets.len() as f32);
-    }
-    if response.has_focus() {
-        let observed_indices: Vec<usize> = buckets
-            .iter()
-            .enumerate()
-            .filter_map(|(index, bucket)| bucket.as_ref().map(|_| index))
-            .collect();
-        let cursor_index = state
-            .cursor
-            .map(|x| (x * buckets.len() as f32).floor() as usize);
-        let next = ui.input(|input| {
-            if input.key_pressed(egui::Key::Escape) {
-                state.pinned = false;
-                state.cursor = None;
-                return None;
-            }
-            if input.key_pressed(egui::Key::Home) {
-                return observed_indices.first().copied();
-            }
-            if input.key_pressed(egui::Key::End) {
-                return observed_indices.last().copied();
-            }
-            if input.key_pressed(egui::Key::ArrowLeft) {
-                return observed_indices
-                    .iter()
-                    .rev()
-                    .find(|&&index| cursor_index.is_none_or(|current| index < current))
-                    .copied();
-            }
-            if input.key_pressed(egui::Key::ArrowRight) {
-                return observed_indices
-                    .iter()
-                    .find(|&&index| cursor_index.is_none_or(|current| index > current))
-                    .copied();
-            }
-            None
-        });
-        if let Some(index) = next {
-            state.pinned = true;
-            state.cursor = Some((index as f32 + 0.5) / buckets.len() as f32);
-        }
-    }
-    if let Some(index) = state
-        .cursor
-        .map(|x| (x * buckets.len() as f32).floor() as usize)
-        .filter(|index| *index < buckets.len())
-        && let Some(bucket) = &buckets[index]
-    {
-        let x = canvas.left() + (index as f32 + 0.5) * bucket_width;
-        painter.line_segment(
-            [Pos2::new(x, canvas.top()), Pos2::new(x, canvas.bottom())],
-            Stroke::new(1.0, p.focus),
-        );
-        let age = now.saturating_duration_since(bucket.last_time);
-        response.on_hover_ui_at_pointer(|ui| {
-            ui.set_min_width(205.0);
-            ui.strong(format!("CPU · {} ago", format_age(age)));
-            ui.heading(format_plot_value(bucket.mean(), "%"));
-            ui.separator();
-            egui::Grid::new("cpu_activity_bucket_tooltip")
-                .num_columns(2)
-                .show(ui, |ui| {
-                    ui.label("Observed range");
-                    ui.label(format!("{:.1}–{:.1}%", bucket.minimum, bucket.maximum));
-                    ui.end_row();
-                    ui.label("Readings");
-                    ui.label(bucket.count.to_string());
-                    ui.end_row();
-                    ui.label("Source");
-                    ui.label(if bucket.source_changed {
-                        "Multiple providers"
-                    } else {
-                        &bucket.source
-                    });
-                    ui.end_row();
-                });
-        });
-    }
-}
-
 pub fn sparkline(ui: &mut egui::Ui, series: &TimeSeries, now: Instant, color: Color32, p: Palette) {
     sparkline_sized(ui, series, now, color, p, Vec2::new(68.0, 28.0));
 }
@@ -1242,8 +978,28 @@ pub fn capacity_bar(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::history::{HistoryRange, TimeSeries};
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
+
+    #[test]
+    fn cpu_plot_breaks_a_missing_one_second_observation() {
+        let now = Instant::now();
+        let mut series = TimeSeries::new();
+        series.push(now - Duration::from_secs(4), 1_000, Some(21.0));
+        series.push(now - Duration::from_secs(3), 2_000, Some(33.0));
+        series.push(now - Duration::from_secs(1), 3_000, Some(44.0));
+        let segments = series.chart_segments(
+            now,
+            HistoryRange::Sec60,
+            PlotStyle::CpuUtilization.gap_threshold(),
+            0,
+        );
+        assert_eq!(
+            segments.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![2, 1]
+        );
+        assert_eq!(segments[0][0].mean, 21.0);
+        assert_eq!(segments[1][0].mean, 44.0);
+    }
 
     #[test]
     fn sparkline_rate_scale_does_not_cap_at_percent_range() {
@@ -1322,31 +1078,6 @@ mod tests {
         let b_scale = axis_scale(500.0, "B/s", ValueScale::Auto);
         assert_eq!(b_scale.unit_label, "B/s");
         assert!(b_scale.ticks.last().unwrap() >= &500.0);
-    }
-
-    #[test]
-    fn activity_chart_keeps_unobserved_time_blank_and_preserves_zero_and_peak() {
-        let now = Instant::now();
-        let mut series = TimeSeries::new();
-        series.push(now - Duration::from_secs(2), 1_000, Some(0.0));
-        series.push(now - Duration::from_secs(1), 2_000, Some(10.0));
-        series.push(now - Duration::from_millis(500), 3_000, Some(70.0));
-        let buckets = activity_buckets(&series, now, HistoryRange::Sec60);
-        assert_eq!(buckets.len(), 60);
-        assert!(buckets[..58].iter().all(Option::is_none));
-        assert_eq!(buckets[58].as_ref().unwrap().mean(), 0.0);
-        assert_eq!(buckets[59].as_ref().unwrap().mean(), 40.0);
-        assert_eq!(buckets[59].as_ref().unwrap().maximum, 70.0);
-    }
-
-    #[test]
-    fn long_ranges_group_columns_without_filling_missing_intervals() {
-        let now = Instant::now();
-        let mut series = TimeSeries::new();
-        series.push(now - Duration::from_secs(6), 1_000, Some(25.0));
-        let buckets = activity_buckets(&series, now, HistoryRange::Min5);
-        assert_eq!(buckets.len(), 100);
-        assert_eq!(buckets.iter().flatten().count(), 1);
     }
 
     #[test]
