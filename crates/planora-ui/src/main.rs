@@ -1277,6 +1277,7 @@ impl App {
                     // Overview has multiple stacked charts and a process table;
                     // always make the whole page scroll at the minimum window size.
                     egui::ScrollArea::vertical()
+                        .id_salt("overview_page_scroll")
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             render_overview_view(
@@ -1360,6 +1361,7 @@ impl App {
                 Page::History => {
                     let previous_scale = self.settings.percent_scale;
                     egui::ScrollArea::vertical()
+                        .id_salt("history_page_scroll")
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             render_history_view(
@@ -1380,6 +1382,7 @@ impl App {
                 },
                 Page::Hardware => {
                     egui::ScrollArea::vertical()
+                        .id_salt("hardware_page_scroll")
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             render_hardware_view(
@@ -1396,6 +1399,7 @@ impl App {
                 }
                 Page::Benchmarks => {
                     egui::ScrollArea::vertical()
+                        .id_salt("benchmarks_page_scroll")
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             render_benchmarks_view(
@@ -1429,7 +1433,7 @@ impl App {
                     p,
                 ),
                 Page::Settings => {
-                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    egui::ScrollArea::vertical().id_salt("settings_outer_page_scroll").auto_shrink([false, false]).show(ui, |ui| {
                         render_settings_view(
                             ui, &mut self.settings, &mut self.settings_error, &mut self.settings_state, &self.poll_ms,
                             shared_copy.sampling_effective_ms, &shared_copy.diagnostic_logs,

@@ -218,6 +218,19 @@ type CardItem<'a> = (
     Option<(Option<u64>, Option<u64>)>,
 );
 
+fn resource_card_columns(width: f32, card_count: usize) -> usize {
+    let columns = if width >= 1148.0 {
+        5
+    } else if width >= 744.0 {
+        3
+    } else if width >= 492.0 {
+        2
+    } else {
+        1
+    };
+    columns.min(card_count).max(1)
+}
+
 fn resource_cards(
     ui: &mut egui::Ui,
     frame: &TelemetryFrame,
@@ -293,18 +306,15 @@ fn resource_cards(
         None,
     ));
 
-    let columns = if ui.available_width() >= 1280.0 {
-        cards.len().min(4)
-    } else if ui.available_width() >= 900.0 {
-        cards.len().min(3)
-    } else if ui.available_width() >= 480.0 {
-        2
-    } else {
-        1
-    };
-    let width = ((ui.available_width() - 12.0 * (columns - 1) as f32) / columns as f32).max(160.0);
+    let available_width = ui.available_width();
+    let columns = resource_card_columns(available_width, cards.len());
     for row in cards.chunks(columns) {
+        // A partial final row fills the available width instead of leaving an
+        // isolated card beside a large empty area.
+        let width =
+            ((available_width - 12.0 * (row.len() - 1) as f32) / row.len() as f32).max(160.0);
         ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
             for (title, value, series, color, cap) in row {
                 ui.allocate_ui_with_layout(
                     Vec2::new(width, 160.0),
@@ -606,4 +616,17 @@ pub fn render_overview_view(
                 p,
             );
         });
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::resource_card_columns;
+
+    #[test]
+    fn five_resource_cards_use_the_wide_row_and_reflow_on_smaller_windows() {
+        assert_eq!(resource_card_columns(1310.0, 5), 5);
+        assert_eq!(resource_card_columns(970.0, 5), 3);
+        assert_eq!(resource_card_columns(600.0, 5), 2);
+        assert_eq!(resource_card_columns(420.0, 5), 1);
+    }
 }
