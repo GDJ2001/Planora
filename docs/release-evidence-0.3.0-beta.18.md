@@ -21,4 +21,22 @@ Reviewed captures: [History dark 1180](screenshots/native/ui-polish-beta18-histo
 
 ## Package and installed verification
 
-Pending packaging from a clean committed revision. Native fixture review is separate from installed live acceptance. Beta.18 remains an unsigned internal build until package hashes, upgrade, helper health, fresh telemetry, and normal launch are checked.
+Built from clean committed revision `50c92c3`. The packaging script verified matching release UI/helper protocol-v5 identities, Windows GUI subsystem, the pinned signed PawnIO dependency, MSI version `0.2.1018`, and WiX MSI validation. Independent SHA-256 checks matched every entry in the generated manifest:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Setup EXE | `E3A4512BD1676D67F8B636E849DE9C54318F9D02426F76274BF4BED976878013` |
+| MSI | `5C82486D7EC64ABB676BEFD3692E07C709B9777D65048D45176A0CD7F1C8A06A` |
+| planora.exe | `2BD8724E19B4EE366A6968F0BA7A1CDF3A316A9DD12C899D3B65A462ECE356D6` |
+| planora-helper.exe | `4A94581C31BB3ABC044345FEE4D2084C1FBC7B20BD955A99D601F5F27D8F6EEC` |
+| planora-sensor-broker.exe | `22CDF1A819C27DB7163E23CDF1443C85637A7CB9A46C70BF72BCC371C7E99685` |
+
+Before upgrade, the installed beta.17 UI reported revision `d7fee05` and protocol v5; PlanoraHelper was running and authorization was present. The current user's settings SHA-256 was `DAC6D1CCE00B596273145C55E59A5D40E17DD89F948F916E3706D361D412E6A1`. The installed Planora window closed through its normal shutdown before Setup was launched. The authorization value was never read or recorded.
+
+## Installed verification — 2026-10-25
+
+The Burn Setup displayed “Planora is installed.” The installed UI, helper, and broker SHA-256 values match the package manifest. All three report beta.18 revision `50c92c3`; UI and helper report protocol v5. PlanoraHelper is running, authorization remains present, and the user settings hash matches the pre-upgrade value above.
+
+The installed helper returned 20 distinct fresh protocol-v5 snapshots, with a maximum CPU reading age of 1028 ms. The final snapshot included one Intel Iris Xe adapter with measured engine utilization and 46 available advanced-sensor records, including CPU package power and 11 CPU-temperature records. These are availability observations, not independent sensor-accuracy comparisons.
+
+A normal installed launch opened a full-size window without a terminal and showed live telemetry. A fresh relaunch exposed one additional usability issue: the saved resource-selector scroll offset can hide the selected CPU card among many sensor cards. That is tracked in beta.19 rather than changing the already-built beta.18 artifact. Native fixture review remains separate from installed live acceptance. Beta.18 is an unsigned internal rollback build.

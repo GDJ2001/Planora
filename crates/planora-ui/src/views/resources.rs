@@ -162,6 +162,10 @@ pub struct ResourcesViewState {
     pub engine_search: String,
     detail_height: f32,
     pub selected_resource: Option<String>,
+    /// Reveal the selected card once after startup or a compact picker change.
+    /// Egui can restore an old list offset that hides the persisted selection.
+    reveal_selected_resource: bool,
+    sensors_expanded: bool,
     pub range: HistoryRange,
     pub selected_cpu: Option<(u16, u16)>,
     pub selected_engines: BTreeSet<String>,
@@ -180,6 +184,8 @@ impl Default for ResourcesViewState {
             engine_search: String::new(),
             detail_height: 790.0,
             selected_resource: None,
+            reveal_selected_resource: true,
+            sensors_expanded: false,
             range: HistoryRange::Sec60,
             selected_cpu: None,
             selected_engines: BTreeSet::new(),
@@ -548,6 +554,15 @@ pub fn render_resources_view(
             .and_then(|prefix| all.iter().find(|item| item.id.starts_with(prefix)))
             .or_else(|| all.first())
             .map(|item| item.id.clone());
+        state.reveal_selected_resource = true;
+    }
+    if state.reveal_selected_resource
+        && state
+            .selected_resource
+            .as_deref()
+            .is_some_and(|id| id.starts_with("sensor:"))
+    {
+        state.sensors_expanded = true;
     }
 
     // Dismiss export message after 5 seconds
@@ -588,17 +603,36 @@ pub fn render_resources_view(
                 .max_height(ui.available_height())
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
+                    let query = state.search_query.to_lowercase();
+                    let sensor_count = all.iter().filter(|item| item.category == 5).count();
+                    let mut sensor_heading_shown = false;
                     for item in &all {
-                        if !item
-                            .label
-                            .to_lowercase()
-                            .contains(&state.search_query.to_lowercase())
-                        {
+                        if !item.label.to_lowercase().contains(&query) {
+                            continue;
+                        }
+                        if item.category == 5 && !sensor_heading_shown {
+                            sensor_heading_shown = true;
+                            ui.add_space(6.0);
+                            let arrow = if state.sensors_expanded || !query.is_empty() {
+                                "▾"
+                            } else {
+                                "▸"
+                            };
+                            if ui
+                                .button(format!("{arrow} Sensors ({sensor_count})"))
+                                .on_hover_text("Expand or collapse individual sensor readings")
+                                .clicked()
+                            {
+                                state.sensors_expanded = !state.sensors_expanded;
+                            }
+                            ui.add_space(4.0);
+                        }
+                        if item.category == 5 && !state.sensors_expanded && query.is_empty() {
                             continue;
                         }
                         let selected = state.selected_resource.as_ref() == Some(&item.id);
                         let card_width = (ui.available_width() - 22.0).max(100.0);
-                        egui::Frame::group(ui.style())
+                        let card = egui::Frame::group(ui.style())
                             .fill(if selected { p.selected } else { p.surface })
                             .stroke(Stroke::new(
                                 if selected { 1.5 } else { 1.0 },
@@ -615,6 +649,9 @@ pub fn render_resources_view(
                                     );
                                     if resp.clicked() {
                                         state.selected_resource = Some(item.id.clone());
+                                        if item.category == 5 {
+                                            state.sensors_expanded = true;
+                                        }
                                     }
                                     resp.on_hover_text(&item.label);
                                 });
@@ -653,6 +690,13 @@ pub fn render_resources_view(
                                     );
                                 });
                             });
+                        if selected && state.reveal_selected_resource {
+                            card.response.scroll_to_me_animation(
+                                Some(egui::Align::Center),
+                                egui::style::ScrollAnimation::none(),
+                            );
+                            state.reveal_selected_resource = false;
+                        }
                         ui.add_space(6.0);
                     }
                 });
@@ -719,6 +763,10 @@ pub fn render_resources_view(
                             .clicked()
                         {
                             state.selected_resource = Some(item.id.clone());
+                            state.reveal_selected_resource = true;
+                            if item.category == 5 {
+                                state.sensors_expanded = true;
+                            }
                         }
                     }
                 });
