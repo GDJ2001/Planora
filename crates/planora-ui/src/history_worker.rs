@@ -1,10 +1,11 @@
 use crate::history::ResourceHistories;
 use planora_core::{ProcessIdentity, SensorReading, TelemetryFrame};
 use std::{
+    collections::BTreeSet,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
-        mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
+        mpsc::{self, SyncSender, TrySendError},
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -14,14 +15,17 @@ pub struct HistoryInput {
     pub frame: Arc<TelemetryFrame>,
     pub sensors: Arc<Vec<SensorReading>>,
     pub selected: Option<ProcessIdentity>,
+    pub priority_details: BTreeSet<String>,
     pub received_at: Instant,
     pub wall_clock_at_receipt_ms: u64,
     pub epoch: u64,
 }
 
+type PublishedHistory = Arc<Mutex<Option<(u64, Arc<ResourceHistories>)>>>;
+
 pub struct HistoryWorker {
     input: Option<SyncSender<HistoryInput>>,
-    output: Receiver<(u64, Arc<ResourceHistories>)>,
+    output: PublishedHistory,
     thread: Option<JoinHandle<()>>,
     dropped: Arc<AtomicU64>,
 }
@@ -29,7 +33,10 @@ pub struct HistoryWorker {
 impl HistoryWorker {
     pub fn start() -> Self {
         let (input_tx, input_rx) = mpsc::sync_channel::<HistoryInput>(2);
-        let (output_tx, output_rx) = mpsc::sync_channel::<(u64, Arc<ResourceHistories>)>(1);
+        // The UI only needs the latest complete snapshot. Replacing an unread
+        // snapshot avoids a full clone on every poll when rendering is busy.
+        let output = Arc::new(Mutex::new(None));
+        let worker_output = Arc::clone(&output);
         let dropped = Arc::new(AtomicU64::new(0));
         let thread = thread::Builder::new()
             .name("planora-history".into())
@@ -44,6 +51,7 @@ impl HistoryWorker {
                         last_publish = Instant::now() - Duration::from_secs(1);
                     }
                     let selected_changed = histories.selected_identity != input.selected;
+                    histories.set_priority_details(input.priority_details);
                     histories.ingest_frame(
                         &input.frame,
                         &input.sensors,
@@ -53,19 +61,16 @@ impl HistoryWorker {
                     );
                     if selected_changed || last_publish.elapsed() >= Duration::from_secs(1) {
                         histories.enforce_budget();
-                        if output_tx
-                            .try_send((epoch, Arc::new(histories.clone())))
-                            .is_ok()
-                        {
-                            last_publish = Instant::now();
-                        }
+                        let snapshot = Arc::new(histories.clone());
+                        *worker_output.lock().unwrap() = Some((epoch, snapshot));
+                        last_publish = Instant::now();
                     }
                 }
             })
             .expect("history worker thread");
         Self {
             input: Some(input_tx),
-            output: output_rx,
+            output,
             thread: Some(thread),
             dropped,
         }
@@ -84,17 +89,11 @@ impl HistoryWorker {
     }
 
     pub fn latest(&self, epoch: u64) -> Option<Arc<ResourceHistories>> {
-        let mut latest = None;
-        loop {
-            match self.output.try_recv() {
-                Ok((snapshot_epoch, snapshot)) if snapshot_epoch == epoch => {
-                    latest = Some(snapshot)
-                }
-                Ok(_) => {}
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
-            }
-        }
-        latest
+        self.output
+            .lock()
+            .unwrap()
+            .take()
+            .and_then(|(snapshot_epoch, snapshot)| (snapshot_epoch == epoch).then_some(snapshot))
     }
 
     pub fn dropped(&self) -> u64 {

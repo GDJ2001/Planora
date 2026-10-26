@@ -916,6 +916,7 @@ impl App {
                 let sensors = Arc::new(frame.sensors.clone());
                 self.history_worker.submit(HistoryInput {
                     frame: frame.clone(),
+                    priority_details: self.resources_state.priority_history_keys(sensors.as_ref()),
                     sensors,
                     selected: self.selected.clone(),
                     received_at: visual_now,

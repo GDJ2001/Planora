@@ -486,6 +486,7 @@ pub struct ResourceHistories {
     /// Scoped histories use stable hardware IDs rather than display labels.
     pub details: BTreeMap<String, TimeSeries>,
     pub not_retained: BTreeSet<String>,
+    pub(crate) priority_details: BTreeSet<String>,
 
     // Selected process history (only recorded while observed)
     pub selected_identity: Option<ProcessIdentity>,
@@ -732,6 +733,15 @@ impl ResourceHistories {
         self.details.get(key)
     }
 
+    /// Keep the visible resource and explicitly selected engine histories ahead
+    /// of background detail series when the bounded history store fills up.
+    pub fn set_priority_details(&mut self, keys: BTreeSet<String>) {
+        for key in &keys {
+            self.not_retained.remove(key);
+        }
+        self.priority_details = keys;
+    }
+
     pub fn enforce_budget(&mut self) -> usize {
         // Conservative cap leaves room for two immutable snapshots plus the
         // mutable worker copy under the 64 MiB history budget.
@@ -753,6 +763,8 @@ impl ResourceHistories {
             .map(|(key, series)| {
                 (
                     key.clone(),
+                    u8::from(self.priority_details.contains(key)) * 2
+                        + u8::from(!key.starts_with("gpu-engine:")),
                     series
                         .samples
                         .back()
@@ -760,9 +772,9 @@ impl ResourceHistories {
                 )
             })
             .collect();
-        oldest.sort_by_key(|(_, timestamp)| *timestamp);
+        oldest.sort_by_key(|(_, priority, timestamp)| (*priority, *timestamp));
         let mut removed = 0;
-        for (key, _) in oldest {
+        for (key, _, _) in oldest {
             if points <= max_detail_points {
                 break;
             }
@@ -786,6 +798,26 @@ impl ResourceHistories {
         source: &str,
         unavailable_reason: Option<&AvailabilityReason>,
     ) {
+        // A series evicted for budget pressure must not be recreated at the
+        // next poll only to be evicted again on the next publication. Selecting
+        // it explicitly restarts collection from the next actual observation.
+        if self.not_retained.contains(&key) && !self.priority_details.contains(&key) {
+            return;
+        }
+        if self.details.len() >= 1024
+            && !self.details.contains_key(&key)
+            && self.priority_details.contains(&key)
+        {
+            let victim = self
+                .details
+                .keys()
+                .find(|candidate| !self.priority_details.contains(*candidate))
+                .cloned();
+            if let Some(victim) = victim {
+                self.details.remove(&victim);
+                self.not_retained.insert(victim);
+            }
+        }
         if self.details.len() >= 1024 && !self.details.contains_key(&key) {
             if self.not_retained.len() < 1024 {
                 self.not_retained.insert(key);
@@ -1137,6 +1169,58 @@ mod tests {
         assert_eq!(histories.enforce_budget_with_limit(5), 5);
         assert_eq!(histories.details.len(), 5);
         assert_eq!(histories.not_retained.len(), 5);
+    }
+
+    #[test]
+    fn selected_sensor_survives_engine_pressure_without_eviction_churn() {
+        let now = Instant::now();
+        let mut histories = ResourceHistories::default();
+        let sensor = "sensor:cpu-temperature".to_owned();
+        histories.set_priority_details(BTreeSet::from([sensor.clone()]));
+        for second in 1..=20 {
+            let time = now + Duration::from_secs(second);
+            histories.push_detail(
+                sensor.clone(),
+                time,
+                second * 1_000,
+                Some(42.0),
+                "sensor",
+                None,
+            );
+            for engine in 0..10 {
+                histories.push_detail(
+                    format!("gpu-engine:{engine}"),
+                    time,
+                    second * 1_000,
+                    Some(engine as f32),
+                    "pdh",
+                    None,
+                );
+            }
+            histories.enforce_budget_with_limit(30);
+        }
+        assert_eq!(histories.detail(&sensor).unwrap().samples.len(), 20);
+        assert!(histories.not_retained.contains("gpu-engine:0"));
+        assert!(histories.detail("gpu-engine:0").is_none());
+        assert!(
+            histories
+                .details
+                .values()
+                .map(|s| s.samples.len())
+                .sum::<usize>()
+                <= 30
+        );
+
+        histories.set_priority_details(BTreeSet::from(["gpu-engine:0".to_owned()]));
+        histories.push_detail(
+            "gpu-engine:0".into(),
+            now + Duration::from_secs(21),
+            21_000,
+            Some(5.0),
+            "pdh",
+            None,
+        );
+        assert!(histories.detail("gpu-engine:0").is_some());
     }
 
     #[test]

@@ -214,6 +214,34 @@ mod workspace_tests {
     }
 }
 
+#[cfg(test)]
+mod history_selection_tests {
+    use super::*;
+    use planora_core::{Metric, SensorType};
+
+    #[test]
+    fn selected_temperature_sensor_retains_matching_group_and_tracks_selection() {
+        let sensor = SensorReading {
+            id: "cpu/core-1/tjmax".into(),
+            device_id: "cpu:0".into(),
+            device_name: "CPU".into(),
+            name: "Core #1 Distance to TjMax".into(),
+            sensor_type: SensorType::CpuTemperatureCelsius,
+            scope: "Core #1".into(),
+            provider: "Advanced sensors".into(),
+            value: Metric::available(42.0, "°C", "Advanced sensors", 1_000),
+        };
+        let key = crate::history::sensor_series_key(&sensor);
+        let mut state = ResourcesViewState {
+            selected_resource: Some(key.clone()),
+            ..Default::default()
+        };
+        state.sync_sensor_trend_with_selection(std::slice::from_ref(&sensor));
+        assert_eq!(state.selected_sensor_trend, SensorTrendKind::Temperature);
+        assert!(state.priority_history_keys(&[sensor]).contains(&key));
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum SensorTrendKind {
     #[default]
@@ -297,6 +325,7 @@ pub struct ResourcesViewState {
     pub show_provider_details: bool,
     pub export_message: Option<(Instant, String)>,
     pub selected_sensor_trend: SensorTrendKind,
+    last_sensor_selection: Option<String>,
     plots: BTreeMap<String, PlotState>,
 }
 
@@ -317,7 +346,62 @@ impl Default for ResourcesViewState {
             show_provider_details: false,
             export_message: None,
             selected_sensor_trend: SensorTrendKind::default(),
+            last_sensor_selection: None,
             plots: BTreeMap::new(),
+        }
+    }
+}
+
+impl ResourcesViewState {
+    pub fn priority_history_keys(&self, sensors: &[SensorReading]) -> BTreeSet<String> {
+        let mut keys = BTreeSet::new();
+        if let Some(resource) = self.selected_resource.as_deref() {
+            if resource.starts_with("sensor:") {
+                keys.insert(resource.to_owned());
+                keys.extend(
+                    sensors
+                        .iter()
+                        .filter(|sensor| self.selected_sensor_trend.matches_sensor(sensor))
+                        .map(crate::history::sensor_series_key),
+                );
+            } else if resource.starts_with("gpu:") {
+                keys.insert(format!("{resource}:busiest"));
+                keys.extend(self.selected_engines.iter().take(4).cloned());
+            } else if resource.starts_with("disk:") {
+                for suffix in ["read", "write", "latency", "queue"] {
+                    keys.insert(format!("{resource}:{suffix}"));
+                }
+            } else if resource.starts_with("net:") {
+                for suffix in ["rx", "tx"] {
+                    keys.insert(format!("{resource}:{suffix}"));
+                }
+            }
+        }
+        keys
+    }
+
+    fn sync_sensor_trend_with_selection(&mut self, sensors: &[SensorReading]) {
+        let selected = self.selected_resource.as_deref();
+        if selected == self.last_sensor_selection.as_deref() {
+            return;
+        }
+        self.last_sensor_selection = self.selected_resource.clone();
+        let Some(sensor) = sensors.iter().find(|sensor| {
+            selected.is_some_and(|id| id == crate::history::sensor_series_key(sensor))
+        }) else {
+            return;
+        };
+        if let Some(kind) = [
+            SensorTrendKind::Power,
+            SensorTrendKind::Temperature,
+            SensorTrendKind::Clock,
+            SensorTrendKind::Fan,
+            SensorTrendKind::Load,
+        ]
+        .into_iter()
+        .find(|kind| kind.matches_sensor(sensor))
+        {
+            self.selected_sensor_trend = kind;
         }
     }
 }
@@ -824,6 +908,7 @@ pub fn render_resources_view(
             .map(|item| item.id.clone());
         state.reveal_selected_resource = true;
     }
+    state.sync_sensor_trend_with_selection(sensors);
     if state.reveal_selected_resource
         && state
             .selected_resource

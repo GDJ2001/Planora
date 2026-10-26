@@ -614,6 +614,40 @@ mod tests {
     }
 
     #[test]
+    fn fifteen_minute_table_and_chart_keep_older_observations_after_range_switch() {
+        let now = Instant::now();
+        let mut histories = ResourceHistories::default();
+        for age in (0..900u64).rev() {
+            histories.cpu.push(
+                now - std::time::Duration::from_secs(age),
+                (900 - age) * 1_000,
+                Some(25.0),
+            );
+        }
+        for range in [
+            HistoryRange::Sec60,
+            HistoryRange::Min5,
+            HistoryRange::Min15,
+            HistoryRange::Sec30,
+        ] {
+            assert!(histories.cpu.observed_summary(now, range).is_some());
+            assert!(
+                !histories
+                    .cpu
+                    .chart_segments(now, range, std::time::Duration::from_secs(2), 600)
+                    .is_empty()
+            );
+        }
+        let rows = interval_rows(&histories, HistoryRange::Min15, now);
+        assert_eq!(rows.len(), 60);
+        assert!(rows[0].observed());
+        assert!(
+            rows[59].observed(),
+            "The oldest 15-second bucket must remain visible"
+        );
+    }
+
+    #[test]
     fn missing_history_is_not_a_zero_measurement() {
         assert_eq!(interval_label(0, 1), "0–1 s ago");
         assert_eq!(interval_label(15, 30), "15–30 s ago");
