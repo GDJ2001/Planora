@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Planora's WiX 5 standard-bootstrapper theme. Control names and page actions follow
-     the WiX 5.0.2 WixStdBA theme contract; layout and copy are Planora-specific. -->
+<!-- Planora's WiX 5 standard-bootstrapper theme. Keep page names within the
+     WixStdBA page set: custom pages can remain visible when Burn changes state. -->
 <Theme xmlns="http://wixtoolset.org/schemas/v4/thmutil">
   <!-- ThmUtil encodes custom font colors as BGR, not RGB. -->
   <Font Id="0" Height="-14" Weight="400" Foreground="3d2114" Background="window">Segoe UI</Font>
@@ -8,109 +8,103 @@
   <Font Id="2" Height="-21" Weight="600" Foreground="3d2114">Segoe UI</Font>
   <Font Id="3" Height="-14" Weight="600" Foreground="5d2505">Segoe UI</Font>
   <Font Id="4" Height="-13" Weight="400" Foreground="7a6252">Segoe UI</Font>
+  <Font Id="5" Height="-13" Weight="600" Foreground="eb6325">Segoe UI</Font>
 
-  <Window Width="570" Height="430" HexStyle="100a0000" FontId="0" IconFile="planora.ico" Caption="Planora Setup">
-    <ImageControl X="20" Y="18" Width="64" Height="64" ImageFile="logo.png" Visible="yes" />
-    <Label X="96" Y="20" Width="450" Height="37" FontId="1" DisablePrefix="yes">Planora</Label>
-    <Label X="97" Y="58" Width="450" Height="22" FontId="4" DisablePrefix="yes">Version [PlanoraDisplayVersion]  |  Windows x64 internal beta</Label>
+  <Window Width="620" Height="464" HexStyle="100a0000" FontId="0" IconFile="planora.ico" Caption="Planora Setup">
+    <ImageControl X="26" Y="20" Width="64" Height="64" ImageFile="logo.png" Visible="yes" />
+    <Label X="104" Y="22" Width="490" Height="36" FontId="1" DisablePrefix="yes">Planora</Label>
+    <Label X="105" Y="59" Width="490" Height="22" FontId="4" DisablePrefix="yes">Version [PlanoraDisplayVersion]  |  Windows x64 internal beta</Label>
 
     <Page Name="Loading">
-      <Label X="22" Y="112" Width="525" Height="26" FontId="2" DisablePrefix="yes">Preparing Planora Setup</Label>
-      <Label X="22" Y="147" Width="525" Height="40" FontId="0" DisablePrefix="yes" Name="CheckingForUpdatesLabel" Visible="no" />
+      <Label X="28" Y="119" Width="564" Height="26" FontId="2" DisablePrefix="yes">Preparing setup</Label>
+      <Label X="28" Y="160" Width="564" Height="40" FontId="0" DisablePrefix="yes" Name="CheckingForUpdatesLabel" Visible="no" />
     </Page>
 
     <Page Name="Help">
-      <Label X="22" Y="112" Width="525" Height="28" FontId="2" DisablePrefix="yes">Setup help</Label>
-      <Label X="22" Y="150" Width="525" Height="100" FontId="0" DisablePrefix="yes">Planora installs a desktop app and a local telemetry helper. Installation needs administrator approval. Open Planora from the Start menu after setup, then authorize monitoring for your Windows account.</Label>
-      <Button Name="HelpCloseButton" X="-20" Y="-18" Width="96" Height="30" TabStop="yes" FontId="0">
+      <Label X="28" Y="115" Width="564" Height="20" FontId="5" DisablePrefix="yes">SETUP GUIDE</Label>
+      <Label X="28" Y="144" Width="564" Height="30" FontId="2" DisablePrefix="yes">Install and authorize</Label>
+      <Label X="28" Y="192" Width="564" Height="112" FontId="0" DisablePrefix="yes">Setup installs Planora and its local telemetry helper for this PC. Windows will ask for administrator approval. After installation, open Planora from Start and authorize monitoring for your account.</Label>
+      <Button Name="HelpCloseButton" X="-28" Y="-22" Width="108" Height="32" TabStop="yes" FontId="0">
         <Text>Close</Text><CloseWindowAction />
       </Button>
     </Page>
 
     <Page Name="Install">
-      <Label X="22" Y="107" Width="525" Height="30" FontId="2" DisablePrefix="yes">Install Planora</Label>
-      <Label X="22" Y="144" Width="525" Height="40" FontId="0" DisablePrefix="yes">See how processes use your computer's resources. Setup installs the desktop app, a local telemetry helper, and Start menu shortcuts.</Label>
-      <Label X="22" Y="205" Width="525" Height="20" FontId="3" DisablePrefix="yes">INSTALL LOCATION</Label>
-      <Label X="22" Y="230" Width="525" Height="25" FontId="0" DisablePrefix="yes">[PlanoraInstallLocation]</Label>
-      <Checkbox Name="PlanoraAdvancedSensors" X="22" Y="267" Width="525" Height="22" TabStop="yes" FontId="0">Advanced sensors (installs the signed PawnIO driver)</Checkbox>
-      <Label X="22" Y="293" Width="525" Height="32" FontId="4" DisablePrefix="yes">Optional. Core monitoring works without it. PawnIO is retained on uninstall because other apps may use it.</Label>
-      <Hypertext Name="EulaHyperlink" X="22" Y="326" Width="525" Height="24" TabStop="yes" FontId="0" HideWhenDisabled="yes">#(loc.InstallLicenseLinkText)</Hypertext>
-      <Checkbox Name="EulaAcceptCheckbox" X="22" Y="354" Width="525" Height="22" TabStop="yes" FontId="0" HideWhenDisabled="yes">#(loc.InstallAcceptCheckbox)</Checkbox>
-      <Button Name="InstallUpdateButton" X="22" Y="-18" Width="215" Height="30" TabStop="yes" FontId="0" EnableCondition="WixStdBAUpdateAvailable" HideWhenDisabled="yes">#(loc.UpdateButton)</Button>
-      <Button Name="InstallButton" X="-121" Y="-18" Width="96" Height="30" TabStop="yes" FontId="0" ElevationShieldCondition="WixBundleAuthoredScope = 1 AND NOT WixBundleElevated">Install</Button>
-      <Button Name="InstallCancelButton" X="-20" Y="-18" Width="96" Height="30" TabStop="yes" FontId="0">
+      <Label X="28" Y="104" Width="564" Height="20" FontId="5" DisablePrefix="yes">READY TO INSTALL</Label>
+      <Label X="28" Y="130" Width="564" Height="30" FontId="2" DisablePrefix="yes">Planora for Windows</Label>
+      <Label X="28" Y="170" Width="564" Height="39" FontId="0" DisablePrefix="yes">The desktop app, local telemetry helper, and Start menu shortcuts will be installed for this PC.</Label>
+      <Label X="28" Y="218" Width="564" Height="20" FontId="3" DisablePrefix="yes">INSTALL LOCATION</Label>
+      <Label X="28" Y="242" Width="564" Height="24" FontId="0" DisablePrefix="yes">[PlanoraInstallLocation]</Label>
+      <Checkbox Name="PlanoraAdvancedSensors" X="28" Y="280" Width="564" Height="24" TabStop="yes" FontId="0">Advanced sensors (signed PawnIO driver)</Checkbox>
+      <Label X="28" Y="306" Width="564" Height="35" FontId="4" DisablePrefix="yes">Optional. Core monitoring works without it. Shared PawnIO remains installed after Planora is removed.</Label>
+      <Hypertext Name="EulaHyperlink" X="28" Y="343" Width="564" Height="21" TabStop="yes" FontId="0" HideWhenDisabled="yes">#(loc.InstallLicenseLinkText)</Hypertext>
+      <Checkbox Name="EulaAcceptCheckbox" X="28" Y="365" Width="564" Height="22" TabStop="yes" FontId="0" HideWhenDisabled="yes">#(loc.InstallAcceptCheckbox)</Checkbox>
+      <Button Name="InstallUpdateButton" X="28" Y="-22" Width="215" Height="32" TabStop="yes" FontId="0" EnableCondition="WixStdBAUpdateAvailable" HideWhenDisabled="yes">#(loc.UpdateButton)</Button>
+      <Button Name="InstallButton" X="-146" Y="-22" Width="108" Height="32" TabStop="yes" FontId="0" ElevationShieldCondition="WixBundleAuthoredScope = 1 AND NOT WixBundleElevated">Install</Button>
+      <Button Name="InstallCancelButton" X="-28" Y="-22" Width="108" Height="32" TabStop="yes" FontId="0">
         <Text>Cancel</Text><CloseWindowAction />
       </Button>
     </Page>
 
     <Page Name="Progress">
-      <Label X="22" Y="112" Width="525" Height="28" FontId="2" DisablePrefix="yes">Installing Planora</Label>
-      <Label X="22" Y="153" Width="525" Height="40" FontId="0" DisablePrefix="yes">Setup is updating the desktop app and local helper. This may take a moment.</Label>
-      <Label X="22" Y="218" Width="74" Height="20" FontId="3" DisablePrefix="yes">PROGRESS</Label>
-      <Label Name="OverallProgressPackageText" X="106" Y="218" Width="440" Height="20" FontId="0" DisablePrefix="yes">#(loc.OverallProgressPackageText)</Label>
-      <Progressbar Name="OverallCalculatedProgressbar" X="22" Y="246" Width="525" Height="18" />
-      <Button Name="ProgressCancelButton" X="-20" Y="-18" Width="96" Height="30" TabStop="yes" FontId="0">Cancel</Button>
+      <Label X="28" Y="115" Width="564" Height="20" FontId="5" DisablePrefix="yes">WORKING</Label>
+      <Label X="28" Y="144" Width="564" Height="30" FontId="2" DisablePrefix="yes">Updating Planora</Label>
+      <Label X="28" Y="189" Width="564" Height="44" FontId="0" DisablePrefix="yes">Setup is applying the requested change. Keep this window open until it finishes.</Label>
+      <Label Name="OverallProgressPackageText" X="28" Y="255" Width="564" Height="24" FontId="0" DisablePrefix="yes">#(loc.OverallProgressPackageText)</Label>
+      <Progressbar Name="OverallCalculatedProgressbar" X="28" Y="290" Width="564" Height="18" />
+      <Button Name="ProgressCancelButton" X="-28" Y="-22" Width="108" Height="32" TabStop="yes" FontId="0">Cancel</Button>
     </Page>
 
     <Page Name="Modify">
-      <Label X="22" Y="112" Width="525" Height="28" FontId="2" DisablePrefix="yes">Manage Planora</Label>
-      <Label X="22" Y="153" Width="525" Height="44" FontId="0" DisablePrefix="yes">Repair the installed files or uninstall the desktop app and local helper. Uninstall keeps your personal settings and recordings.</Label>
-      <Label X="22" Y="212" Width="525" Height="20" FontId="3" DisablePrefix="yes">INSTALL LOCATION</Label>
-      <Label X="22" Y="236" Width="525" Height="25" FontId="0" DisablePrefix="yes">[PlanoraInstallLocation]</Label>
-      <Button Name="ModifyUpdateButton" X="22" Y="-18" Width="215" Height="30" TabStop="yes" FontId="0" EnableCondition="WixStdBAUpdateAvailable" HideWhenDisabled="yes">#(loc.UpdateButton)</Button>
-      <Button Name="RepairButton" X="-222" Y="-18" Width="96" Height="30" TabStop="yes" FontId="0" HideWhenDisabled="yes">Repair</Button>
-      <Button Name="ReviewUninstallButton" X="-121" Y="-18" Width="96" Height="30" TabStop="yes" FontId="0">
-        <Text>Uninstall…</Text><ChangePageAction Page="ConfirmUninstall" />
-      </Button>
-      <Button Name="ModifyCancelButton" X="-20" Y="-18" Width="96" Height="30" TabStop="yes" FontId="0">
-        <Text>Close</Text><CloseWindowAction />
-      </Button>
-    </Page>
-
-    <Page Name="ConfirmUninstall">
-      <Label X="22" Y="112" Width="525" Height="30" FontId="2" DisablePrefix="yes">Uninstall Planora?</Label>
-      <Label X="22" Y="153" Width="525" Height="72" FontId="0" DisablePrefix="yes">This removes the desktop app, local helper service, shortcuts, and system authorization. Your personal settings and recordings remain on this PC.</Label>
-      <Label X="22" Y="253" Width="525" Height="45" FontId="4" DisablePrefix="yes">You can install Planora again later. Monitoring will require new authorization.</Label>
-      <Button Name="BackFromUninstallButton" X="-222" Y="-18" Width="96" Height="30" TabStop="yes" FontId="0">
-        <Text>Back</Text><ChangePageAction Page="Modify" Cancel="yes" />
-      </Button>
-      <Button Name="UninstallButton" X="-121" Y="-18" Width="96" Height="30" TabStop="yes" FontId="0">Uninstall</Button>
-      <Button Name="CancelUninstallButton" X="-20" Y="-18" Width="96" Height="30" TabStop="yes" FontId="0">
+      <Label X="28" Y="104" Width="564" Height="20" FontId="5" DisablePrefix="yes">MAINTENANCE</Label>
+      <Label X="28" Y="130" Width="564" Height="30" FontId="2" DisablePrefix="yes">Manage Planora</Label>
+      <Label X="28" Y="177" Width="564" Height="20" FontId="3" DisablePrefix="yes">REPAIR INSTALLATION</Label>
+      <Label X="28" Y="203" Width="564" Height="40" FontId="0" DisablePrefix="yes">Restore the installed app and helper while keeping your settings and recordings.</Label>
+      <Label X="28" Y="251" Width="564" Height="20" FontId="3" DisablePrefix="yes">REMOVE FROM THIS PC</Label>
+      <Label X="28" Y="277" Width="564" Height="53" FontId="0" DisablePrefix="yes">Uninstall removes the app, helper service, shortcuts, and system authorization. Personal settings and recordings stay on this PC.</Label>
+      <Label X="28" Y="347" Width="564" Height="25" FontId="4" DisablePrefix="yes">Installed at [PlanoraInstallLocation]</Label>
+      <Button Name="ModifyUpdateButton" X="28" Y="-22" Width="180" Height="32" TabStop="yes" FontId="0" EnableCondition="WixStdBAUpdateAvailable" HideWhenDisabled="yes">#(loc.UpdateButton)</Button>
+      <Button Name="RepairButton" X="-264" Y="-22" Width="108" Height="32" TabStop="yes" FontId="0" HideWhenDisabled="yes">Repair</Button>
+      <Button Name="UninstallButton" X="-146" Y="-22" Width="108" Height="32" TabStop="yes" FontId="0">Uninstall</Button>
+      <Button Name="ModifyCancelButton" X="-28" Y="-22" Width="108" Height="32" TabStop="yes" FontId="0">
         <Text>Close</Text><CloseWindowAction />
       </Button>
     </Page>
 
     <Page Name="Success">
-      <Label X="22" Y="112" Width="525" Height="30" FontId="2" DisablePrefix="yes">
+      <Label X="28" Y="115" Width="564" Height="20" FontId="5" DisablePrefix="yes">COMPLETED</Label>
+      <Label X="28" Y="144" Width="564" Height="32" FontId="2" DisablePrefix="yes">
         <Text>Setup complete</Text>
         <Text Condition="WixBundleAction = 4">Planora uninstalled</Text>
         <Text Condition="WixBundleAction = 6">Planora is installed</Text>
         <Text Condition="WixBundleAction = 8">Planora repaired</Text>
       </Label>
-      <Label X="22" Y="158" Width="525" Height="65" FontId="0" DisablePrefix="yes">
+      <Label X="28" Y="192" Width="564" Height="84" FontId="0" DisablePrefix="yes">
         <Text>Open Planora from the Start menu. The first launch guides you through authorization for live monitoring.</Text>
         <Text Condition="WixBundleAction = 4">The application and helper were removed. Personal settings and recordings remain available for a future install.</Text>
+        <Text Condition="WixBundleAction = 8">The app and helper files were restored. Your settings, recordings, and authorization were kept.</Text>
       </Label>
-      <Label X="22" Y="253" Width="525" Height="45" FontId="4" DisablePrefix="yes" VisibleCondition="WixStdBARestartRequired">Windows requires a restart to finish this change.</Label>
-      <Button Name="LaunchButton" X="-121" Y="-18" Width="96" Height="30" TabStop="yes" FontId="0" VisibleCondition="WixBundleAction = 6 AND NOT WixBundleElevated AND NOT WixStdBARestartRequired" HideWhenDisabled="yes">Launch</Button>
-      <Button Name="SuccessRestartButton" X="-121" Y="-18" Width="96" Height="30" TabStop="yes" FontId="0" HideWhenDisabled="yes">Restart</Button>
-      <Button Name="SuccessCloseButton" X="-20" Y="-18" Width="96" Height="30" TabStop="yes" FontId="0">
+      <Label X="28" Y="313" Width="564" Height="40" FontId="4" DisablePrefix="yes" VisibleCondition="WixStdBARestartRequired">Windows requires a restart to finish this change.</Label>
+      <Button Name="LaunchButton" X="-146" Y="-22" Width="108" Height="32" TabStop="yes" FontId="0" VisibleCondition="WixBundleAction = 6 AND NOT WixBundleElevated AND NOT WixStdBARestartRequired" HideWhenDisabled="yes">Launch</Button>
+      <Button Name="SuccessRestartButton" X="-146" Y="-22" Width="108" Height="32" TabStop="yes" FontId="0" HideWhenDisabled="yes">Restart</Button>
+      <Button Name="SuccessCloseButton" X="-28" Y="-22" Width="108" Height="32" TabStop="yes" FontId="0">
         <Text>Close</Text><CloseWindowAction />
       </Button>
     </Page>
 
     <Page Name="Failure">
-      <Label X="22" Y="112" Width="525" Height="30" FontId="2" DisablePrefix="yes">
+      <Label X="28" Y="115" Width="564" Height="20" FontId="5" DisablePrefix="yes">ACTION REQUIRED</Label>
+      <Label X="28" Y="144" Width="564" Height="32" FontId="2" DisablePrefix="yes">
         <Text>Setup could not finish</Text>
         <Text Condition="WixBundleAction = 4">Uninstall could not finish</Text>
         <Text Condition="WixBundleAction = 8">Repair could not finish</Text>
       </Label>
-      <Label X="22" Y="151" Width="525" Height="38" FontId="0" DisablePrefix="yes">Review the error below. The setup log can help identify the failed step.</Label>
-      <Hypertext Name="FailureLogFileLink" X="22" Y="201" Width="525" Height="40" FontId="0" TabStop="yes" HideWhenDisabled="yes">#(loc.FailureHyperlinkLogText)</Hypertext>
-      <Hypertext Name="FailureMessageText" X="22" Y="246" Width="525" Height="64" FontId="0" TabStop="yes" HideWhenDisabled="yes" />
-      <Label X="22" Y="328" Width="525" Height="38" FontId="4" DisablePrefix="yes" VisibleCondition="WixStdBARestartRequired">Windows requires a restart to finish rolling back this change.</Label>
-      <Button Name="FailureRestartButton" X="-121" Y="-18" Width="96" Height="30" TabStop="yes" FontId="0" HideWhenDisabled="yes">Restart</Button>
-      <Button Name="FailureCloseButton" X="-20" Y="-18" Width="96" Height="30" TabStop="yes" FontId="0">
+      <Label X="28" Y="190" Width="564" Height="38" FontId="0" DisablePrefix="yes">Review the error below. The setup log can help identify the failed step.</Label>
+      <Hypertext Name="FailureLogFileLink" X="28" Y="235" Width="564" Height="34" FontId="0" TabStop="yes" HideWhenDisabled="yes">#(loc.FailureHyperlinkLogText)</Hypertext>
+      <Hypertext Name="FailureMessageText" X="28" Y="280" Width="564" Height="56" FontId="0" TabStop="yes" HideWhenDisabled="yes" />
+      <Label X="28" Y="350" Width="564" Height="30" FontId="4" DisablePrefix="yes" VisibleCondition="WixStdBARestartRequired">Windows requires a restart to finish rolling back this change.</Label>
+      <Button Name="FailureRestartButton" X="-146" Y="-22" Width="108" Height="32" TabStop="yes" FontId="0" HideWhenDisabled="yes">Restart</Button>
+      <Button Name="FailureCloseButton" X="-28" Y="-22" Width="108" Height="32" TabStop="yes" FontId="0">
         <Text>Close</Text><CloseWindowAction />
       </Button>
     </Page>

@@ -4,6 +4,7 @@ $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
 Push-Location $root
 try {
+    & (Join-Path $PSScriptRoot 'Test-Theme.ps1')
     if (git status --porcelain) {
         throw 'Commit source changes before building a release MSI.'
     }

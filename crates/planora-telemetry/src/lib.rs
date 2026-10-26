@@ -1592,10 +1592,19 @@ mod tests {
     fn cpu_waits_for_the_platform_minimum_interval() {
         let mut sampler = Sampler::new();
         let first = sampler.sample();
+        let first_cpu_time = sampler.last_cpu.expect("first sample sets CPU baseline");
         let immediate = sampler.sample();
         assert!(first.cpu_percent.value.is_none());
-        if sysinfo::MINIMUM_CPU_UPDATE_INTERVAL > Duration::from_millis(5) {
-            assert!(immediate.cpu_percent.value.is_none());
+        if immediate.cpu_percent.value.is_some() {
+            // A full process scan can take longer than the minimum interval,
+            // so the next call may already be due for a real CPU refresh.
+            assert!(
+                sampler
+                    .last_cpu
+                    .expect("refreshed CPU has a timestamp")
+                    .duration_since(first_cpu_time)
+                    >= sysinfo::MINIMUM_CPU_UPDATE_INTERVAL
+            );
         }
         std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL + Duration::from_millis(20));
         let later = sampler.sample();
