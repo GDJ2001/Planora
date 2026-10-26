@@ -1,6 +1,6 @@
 Name: planora
 Version: %{planora_version}
-Release: 1%{?dist}
+Release: %{planora_release}%{?dist}
 Summary: Native hardware visualizer and resource monitor
 License: MIT OR Apache-2.0
 BuildArch: x86_64
@@ -17,6 +17,9 @@ install -Dm644 %{planora_root}/packaging/linux/planora-helper.service %{buildroo
 install -Dm644 %{planora_root}/packaging/linux/planora.sysusers %{buildroot}/usr/lib/sysusers.d/planora.conf
 install -Dm644 %{planora_root}/packaging/linux/org.planora.authorize.policy %{buildroot}/usr/share/polkit-1/actions/org.planora.authorize.policy
 install -Dm644 %{planora_root}/packaging/linux/planora.desktop %{buildroot}/usr/share/applications/planora.desktop
+for license_file in LICENSE-MIT LICENSE-APACHE NOTICE; do
+  install -Dm644 %{planora_root}/$license_file %{buildroot}/usr/share/licenses/planora/$license_file
+done
 for size in 16 24 32 48 64 128 256 512; do
   install -Dm644 %{planora_root}/assets/brand/platforms/linux/planora-$size.png %{buildroot}/usr/share/icons/hicolor/${size}x${size}/apps/planora.png
 done
@@ -47,3 +50,6 @@ fi
 /usr/share/applications/planora.desktop
 /usr/share/icons/hicolor/*/apps/planora.png
 /usr/share/icons/hicolor/scalable/apps/planora.svg
+%license /usr/share/licenses/planora/LICENSE-MIT
+%license /usr/share/licenses/planora/LICENSE-APACHE
+%license /usr/share/licenses/planora/NOTICE

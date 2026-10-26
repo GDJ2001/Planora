@@ -326,7 +326,7 @@ pub fn render_secondary_resource_panel(ui: &mut egui::Ui, frame: &TelemetryFrame
                     let (rect, _) =
                         ui.allocate_exact_size(Vec2::new(16.0, 16.0), egui::Sense::hover());
                     icons::draw_gpu(ui.painter(), rect, p.gpu);
-                    ui.strong("GPU:");
+                    ui.strong("GPU Total:");
                     match &frame.gpu_percent.value {
                         Some(val) => {
                             ui.label(

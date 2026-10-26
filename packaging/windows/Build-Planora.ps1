@@ -12,6 +12,10 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'cargo metadata failed' }
     $version = ($metadata.packages | Where-Object { $_.name -eq 'planora-ui' } | Select-Object -First 1).version
     if (-not $version) { throw 'Could not determine Planora version' }
+    # Windows Installer ProductVersion accepts three numeric fields; keep the
+    # prerelease label in the file name and manifest while MSI upgrades use 0.2.0.
+    $productVersionExpected = ($version -split '-', 2)[0]
+    if ($productVersionExpected -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid MSI numeric version: $productVersionExpected" }
     $commit = (git rev-parse --short HEAD).Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Could not determine source commit' }
 
@@ -36,7 +40,7 @@ try {
     New-Item -ItemType Directory -Force -Path (Join-Path $root 'dist') | Out-Null
     $msi = Join-Path $root "dist\Planora-$version-x64.msi"
     wix build 'packaging/windows/Planora.wxs' -arch x64 `
-        -d "PlanoraVersion=$version" -d "ProjectDir=$root" -d "SourceDir=$sourceDir" -o $msi
+        -d "PlanoraVersion=$productVersionExpected" -d "ProjectDir=$root" -d "SourceDir=$sourceDir" -o $msi
     if ($LASTEXITCODE -ne 0) { throw 'WiX build failed' }
     wix msi validate $msi
     if ($LASTEXITCODE -ne 0) { throw 'WiX validation failed' }
@@ -48,8 +52,8 @@ try {
     $record = $view.Fetch()
     $productVersion = $record.StringData(1)
     $view.Close()
-    if ($productVersion -ne $version) {
-        throw "MSI ProductVersion $productVersion differs from Cargo version $version"
+    if ($productVersion -ne $productVersionExpected) {
+        throw "MSI ProductVersion $productVersion differs from expected $productVersionExpected"
     }
 
     $manifest = [pscustomobject]@{

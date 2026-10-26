@@ -15,7 +15,9 @@ use std::sync::{
 pub fn render_settings_view(
     ui: &mut egui::Ui,
     settings: &mut UserSettings,
+    settings_error: &mut Option<String>,
     poll_ms: &Arc<AtomicU64>,
+    effective_ms: Option<u64>,
     diagnostic_logs: &[DiagnosticEntry],
     app_state: &AppState,
     pause_state: &mut DisplayPause,
@@ -34,6 +36,10 @@ pub fn render_settings_view(
         current_poll,
         p,
     );
+
+    if let Some(error) = settings_error.as_deref() {
+        ui.colored_label(p.error, error);
+    }
 
     egui::ScrollArea::vertical().show(ui, |ui| {
         // Group 1: Appearance & Display
@@ -76,7 +82,7 @@ pub fn render_settings_view(
 
                         if resp.clicked() {
                             settings.theme = t;
-                            settings.save();
+                            persist(settings, settings_error);
                         }
                     }
                 });
@@ -92,7 +98,7 @@ pub fn render_settings_view(
                     changed |= ui.selectable_value(&mut settings.density, Density::Normal, "Normal").changed();
                     changed |= ui.selectable_value(&mut settings.density, Density::Spacious, "Spacious").changed();
                     if changed {
-                        settings.save();
+                        persist(settings, settings_error);
                     }
                 });
 
@@ -101,7 +107,7 @@ pub fn render_settings_view(
                 // Reduced Motion Toggle
                 ui.horizontal(|ui| {
                     if ui.checkbox(&mut settings.reduced_motion, "Reduced Motion (Disable continuous animations and transitions)").changed() {
-                        settings.save();
+                        persist(settings, settings_error);
                     }
                 });
             });
@@ -121,15 +127,20 @@ pub fn render_settings_view(
                 ui.horizontal(|ui| {
                     ui.label("Sampling Poll Interval:");
                     ui.add_space(8.0);
-                    for ms in [50, 100, 200, 500, 1000] {
+                    for ms in [100, 250, 500, 1_000, 2_000] {
                         let is_sel = current_poll == ms;
                         if ui.selectable_label(is_sel, format!("{ms} ms")).clicked() {
                             poll_ms.store(ms, Ordering::Relaxed);
                             settings.poll_interval_ms = ms;
-                            settings.save();
+                            persist(settings, settings_error);
                         }
                     }
                 });
+
+                ui.label(format!(
+                    "Requested: {current_poll} ms · Effective: {}",
+                    effective_ms.map_or_else(|| "Waiting for helper".to_string(), |ms| format!("{ms} ms"))
+                ));
 
                 ui.add_space(10.0);
 
@@ -140,8 +151,9 @@ pub fn render_settings_view(
                     changed |= ui.selectable_value(&mut settings.default_history_range, HistoryRange::Sec30, "30 seconds").changed();
                     changed |= ui.selectable_value(&mut settings.default_history_range, HistoryRange::Sec60, "60 seconds (default)").changed();
                     changed |= ui.selectable_value(&mut settings.default_history_range, HistoryRange::Min5, "5 minutes").changed();
+                    changed |= ui.selectable_value(&mut settings.default_history_range, HistoryRange::Min15, "15 minutes").changed();
                     if changed {
-                        settings.save();
+                        persist(settings, settings_error);
                     }
                 });
             });
@@ -236,4 +248,11 @@ pub fn render_settings_view(
 
         ui.add_space(20.0);
     });
+}
+
+fn persist(settings: &UserSettings, error: &mut Option<String>) {
+    *error = settings
+        .save()
+        .err()
+        .map(|e| format!("Could not save preferences: {e}"));
 }

@@ -615,6 +615,102 @@ pub fn transact(command: &Command) -> io::Result<Response> {
     Ok(resp_env.response)
 }
 
+#[cfg(windows)]
+fn registry_string(name: &str) -> io::Result<String> {
+    use windows_sys::Win32::System::Registry::{
+        HKEY_LOCAL_MACHINE, RRF_RT_REG_MULTI_SZ, RRF_RT_REG_SZ, RegGetValueW,
+    };
+    let key: Vec<u16> = "SOFTWARE\\Planora"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let value: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    let value_kind = if name == "AuthorizedEnvironment" {
+        RRF_RT_REG_MULTI_SZ
+    } else {
+        RRF_RT_REG_SZ
+    };
+    let mut bytes = 0u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            key.as_ptr(),
+            value.as_ptr(),
+            value_kind,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut bytes,
+        )
+    };
+    if status != 0 {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    if bytes == 0 || bytes > 8_192 || !bytes.is_multiple_of(2) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid authorization registry value size",
+        ));
+    }
+    let mut data = vec![0u16; bytes as usize / 2];
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            key.as_ptr(),
+            value.as_ptr(),
+            value_kind,
+            std::ptr::null_mut(),
+            data.as_mut_ptr().cast(),
+            &mut bytes,
+        )
+    };
+    if status != 0 {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    let length = data.iter().position(|&c| c == 0).unwrap_or(data.len());
+    String::from_utf16(&data[..length]).map_err(io::Error::other)
+}
+
+#[cfg(windows)]
+fn parse_authorized_sid(value: &str) -> Option<String> {
+    let candidate = value
+        .split_once("PLANORA_ALLOWED_SID=")
+        .map_or(value, |(_, after)| after);
+    let sid: String = candidate
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == 'S' || *c == '-')
+        .collect();
+    let parts: Vec<_> = sid.split('-').collect();
+    if parts.len() >= 4
+        && parts[0] == "S"
+        && parts[1] == "1"
+        && parts[2..]
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|c| c.is_ascii_digit()))
+    {
+        Some(sid)
+    } else {
+        None
+    }
+}
+
+#[cfg(windows)]
+fn authorized_sid() -> io::Result<String> {
+    registry_string("AuthorizedSid")
+        .ok()
+        .and_then(|value| parse_authorized_sid(&value))
+        .or_else(|| {
+            registry_string("AuthorizedEnvironment")
+                .ok()
+                .and_then(|value| parse_authorized_sid(&value))
+        })
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Planora helper is not authorized for a local user",
+            )
+        })
+}
+
 pub fn listener() -> io::Result<interprocess::local_socket::Listener> {
     let options = ListenerOptions::new().name(name()?);
     #[cfg(unix)]
@@ -662,22 +758,7 @@ pub fn listener() -> io::Result<interprocess::local_socket::Listener> {
         use interprocess::os::windows::{
             local_socket::ListenerOptionsExt, security_descriptor::SecurityDescriptor,
         };
-        let sid = std::env::var("PLANORA_ALLOWED_SID").map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "service installer must configure PLANORA_ALLOWED_SID",
-            )
-        })?;
-        if !sid.starts_with("S-1-")
-            || !sid
-                .chars()
-                .all(|c| c.is_ascii_digit() || c == 'S' || c == '-')
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "invalid authorized user SID",
-            ));
-        }
+        let sid = authorized_sid()?;
         let sddl = widestring::U16CString::from_str(format!("D:P(A;;GA;;;SY)(A;;GRGW;;;{sid})"))
             .map_err(io::Error::other)?;
         let descriptor = SecurityDescriptor::deserialize(&sddl)?;
@@ -789,5 +870,43 @@ mod tests {
             }
             _ => panic!("unexpected response variant"),
         }
+    }
+
+    #[test]
+    fn malformed_framed_requests_are_rejected_without_panics() {
+        let mut seed = 0x7357_a12c_4135_d817u64;
+        for length in 0..512usize {
+            let mut framed = Vec::with_capacity(length + 4);
+            framed.extend_from_slice(&(length as u32).to_le_bytes());
+            for _ in 0..length {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                framed.push(seed as u8);
+            }
+            let _ = receive_request(&mut framed.as_slice());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn sid_parser_accepts_migrated_multistring_and_rejects_invalid_values() {
+        assert_eq!(
+            parse_authorized_sid("S-1-5-21-123"),
+            Some("S-1-5-21-123".into())
+        );
+        assert_eq!(
+            parse_authorized_sid("[~]PLANORA_ALLOWED_SID=S-1-5-21-123[~]"),
+            Some("S-1-5-21-123".into())
+        );
+        assert_eq!(parse_authorized_sid("S-1-"), None);
+        assert_eq!(parse_authorized_sid(""), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires an installed Planora authorization registry value"]
+    fn installed_authorization_registry_value_is_readable() {
+        assert!(authorized_sid().is_ok());
     }
 }

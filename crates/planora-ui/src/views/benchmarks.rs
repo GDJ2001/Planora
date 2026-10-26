@@ -51,7 +51,7 @@ pub fn render_benchmarks_view(
         .inner_margin(egui::Margin::same(12))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.strong("🛡 Execution Guardrails & Memory Budget:");
+                ui.strong("Execution limits and memory budget");
             });
             ui.add_space(4.0);
             ui.label("• Working Set Ceiling: 64 MiB (strict total process memory allocation limit 72 MiB)");
@@ -63,7 +63,10 @@ pub fn render_benchmarks_view(
     ui.add_space(12.0);
 
     let bm_state = benchmark_state.unwrap_or(&BenchmarkState::Idle);
-    let is_running = matches!(bm_state, BenchmarkState::Running { .. });
+    let is_running = matches!(
+        bm_state,
+        BenchmarkState::Running { .. } | BenchmarkState::Cancelling { .. }
+    );
     let is_live = *app_state == AppState::Live;
 
     let disabled_reason = if !is_live {
@@ -77,7 +80,7 @@ pub fn render_benchmarks_view(
     if !is_live {
         ui.colored_label(
             p.warning,
-            "⚠️ Probes disabled: An active, live helper connection is required to run micro-architectural probes.",
+            "Probes disabled: An active, live helper connection is required to run micro-architectural probes.",
         );
         ui.add_space(4.0);
     }
@@ -160,6 +163,16 @@ pub fn render_benchmarks_view(
             });
             ui.add_space(8.0);
         }
+        BenchmarkState::Cancelling { job_id } => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.colored_label(
+                    p.warning,
+                    format!("Cancelling probe #{job_id}; waiting for its worker to finish..."),
+                );
+            });
+            ui.add_space(8.0);
+        }
         BenchmarkState::Failed { message, .. } => {
             ui.colored_label(p.error, format!("Benchmark Error: {message}"));
             ui.add_space(8.0);
@@ -191,7 +204,7 @@ fn render_benchmark_result(
     ui.horizontal(|ui| {
         ui.strong(format!("Methodology: {}", result.methodology));
         if result.is_partial {
-            ui.colored_label(p.warning, "⚠️ Partial Execution");
+            ui.colored_label(p.warning, "Partial execution");
         }
     });
 

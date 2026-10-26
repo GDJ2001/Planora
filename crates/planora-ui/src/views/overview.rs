@@ -5,6 +5,7 @@ use crate::{
         header::render_page_header,
         table::{ProcessTableState, SortColumn, render_process_table, sort_processes},
     },
+    formatting::format_rate,
     history::ResourceHistories,
     state::{AppState, DisplayPause, Page},
     theme::Palette,
@@ -54,6 +55,82 @@ pub fn render_overview_view(
 
     // 3. Secondary panel: GPU & Package Power
     render_secondary_resource_panel(ui, frame, p);
+    if !frame.gpu_engines.is_empty() {
+        ui.add_space(8.0);
+        egui::CollapsingHeader::new(format!("GPU engine activity ({} instances)", frame.gpu_engines.len()))
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.label(egui::RichText::new("Each row is a Windows counter instance. Values are not summed into a GPU total.").color(p.secondary).size(12.0));
+                let mut engines: Vec<_> = frame.gpu_engines.iter().collect();
+                engines.sort_by(|a, b| b.utilization_percent.value.unwrap_or(0.0).total_cmp(&a.utilization_percent.value.unwrap_or(0.0)));
+                egui::Grid::new("gpu_engines").striped(true).num_columns(2).show(ui, |ui| {
+                    ui.strong("Engine"); ui.strong("Utilization"); ui.end_row();
+                    for engine in engines.into_iter().take(12) {
+                        ui.label(&engine.engine_type).on_hover_text(&engine.instance);
+                        ui.label(format!("{:.1}%", engine.utilization_percent.value.unwrap_or(0.0)));
+                        ui.end_row();
+                    }
+                });
+            });
+    }
+    if frame.gpu_engines.is_empty()
+        && let Some(reason) = &frame.gpu_engine_unavailable_reason
+    {
+        ui.label(
+            egui::RichText::new(format!("GPU engine counters: Unavailable ({reason})"))
+                .color(p.secondary),
+        );
+    }
+    for (title, devices, read_label, write_label) in [
+        ("Disk devices", &frame.disks, "Read", "Write"),
+        (
+            "Network interfaces",
+            &frame.network_interfaces,
+            "Receive",
+            "Transmit",
+        ),
+    ] {
+        if devices.is_empty() {
+            continue;
+        }
+        egui::CollapsingHeader::new(format!("{title} ({})", devices.len())).show(ui, |ui| {
+            egui::Grid::new(title)
+                .striped(true)
+                .num_columns(3)
+                .show(ui, |ui| {
+                    ui.strong("Device");
+                    ui.strong(read_label);
+                    ui.strong(write_label);
+                    ui.end_row();
+                    for device in devices.iter().take(64) {
+                        ui.label(&device.label).on_hover_text(&device.id);
+                        let read = format_rate(device.read_bytes_per_sec.value.map(|v| v as f32));
+                        let write = format_rate(device.write_bytes_per_sec.value.map(|v| v as f32));
+                        ui.label(read).on_hover_text(
+                            device
+                                .read_bytes_per_sec
+                                .unavailable_reason
+                                .as_ref()
+                                .map_or(
+                                    "Measured bytes per second".to_owned(),
+                                    ToString::to_string,
+                                ),
+                        );
+                        ui.label(write).on_hover_text(
+                            device
+                                .write_bytes_per_sec
+                                .unavailable_reason
+                                .as_ref()
+                                .map_or(
+                                    "Measured bytes per second".to_owned(),
+                                    ToString::to_string,
+                                ),
+                        );
+                        ui.end_row();
+                    }
+                });
+        });
+    }
     ui.add_space(18.0);
 
     // 4. 4 Chart Panels in 2-column responsive grid (collapsing to 1-column if < 780px)

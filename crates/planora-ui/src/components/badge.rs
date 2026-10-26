@@ -8,7 +8,7 @@ pub fn render_status_badge(ui: &mut egui::Ui, state: &AppState, is_paused: bool,
             p.surface_raised,
             p.warning,
             p.warning,
-            "⏸ Display Paused".to_string(),
+            "Display paused".to_string(),
             "Telemetry ingestion paused by user. Space bar toggles live display.",
         )
     } else {
@@ -19,6 +19,13 @@ pub fn render_status_badge(ui: &mut egui::Ui, state: &AppState, is_paused: bool,
                 p.success,
                 "Live Telemetry".to_string(),
                 "Active bidirectional helper connection. Real-time telemetry streaming.",
+            ),
+            AppState::Replay => (
+                p.surface_raised,
+                p.text,
+                p.primary,
+                "Recording Replay".to_string(),
+                "Showing local recorded telemetry; live process actions are disabled.",
             ),
             AppState::Stale(dur) => (
                 p.surface_raised,
@@ -115,12 +122,15 @@ pub fn render_compact_sidebar_status(
     p: Palette,
 ) {
     if is_paused {
-        ui.colored_label(p.warning, "⏸ Display Paused");
+        ui.colored_label(p.warning, "Display paused");
         return;
     }
     match state {
         AppState::Live => {
             ui.colored_label(p.success, "● Live Telemetry");
+        }
+        AppState::Replay => {
+            ui.colored_label(p.primary, "● Recording Replay");
         }
         AppState::Stale(elapsed) => {
             ui.colored_label(

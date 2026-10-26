@@ -62,28 +62,52 @@ pub fn render_chart_panel(
             ui.set_max_width((panel_w - 26.0).max(100.0));
             ui.set_width((panel_w - 26.0).max(100.0));
 
-            // Header: Title, Range buttons, and Tabular View toggle
-            ui.horizontal(|ui| {
+            // Keep the title clear of the range controls when two chart panels
+            // share a compact window. At wider sizes the controls stay inline.
+            if panel_w < 430.0 {
                 ui.strong(title);
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Tabular alternative button
-                    let tbl_text = if state.show_table { "Chart" } else { "Table" };
-                    if ui.small_button(tbl_text).clicked() {
-                        state.show_table = !state.show_table;
-                    }
-
-                    ui.add_space(8.0);
-
-                    // Range selection: 30s | 60s | 5m
-                    for r in [HistoryRange::Min5, HistoryRange::Sec60, HistoryRange::Sec30] {
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    for r in [
+                        HistoryRange::Sec30,
+                        HistoryRange::Sec60,
+                        HistoryRange::Min5,
+                        HistoryRange::Min15,
+                    ] {
                         let is_active = state.range == r;
                         if ui.selectable_label(is_active, r.label()).clicked() {
                             state.range = r;
                         }
                     }
+                    ui.add_space(8.0);
+                    let tbl_text = if state.show_table { "Chart" } else { "Table" };
+                    if ui.small_button(tbl_text).clicked() {
+                        state.show_table = !state.show_table;
+                    }
                 });
-            });
+            } else {
+                ui.horizontal(|ui| {
+                    ui.strong(title);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let tbl_text = if state.show_table { "Chart" } else { "Table" };
+                        if ui.small_button(tbl_text).clicked() {
+                            state.show_table = !state.show_table;
+                        }
+                        ui.add_space(8.0);
+                        for r in [
+                            HistoryRange::Min15,
+                            HistoryRange::Min5,
+                            HistoryRange::Sec60,
+                            HistoryRange::Sec30,
+                        ] {
+                            let is_active = state.range == r;
+                            if ui.selectable_label(is_active, r.label()).clicked() {
+                                state.range = r;
+                            }
+                        }
+                    });
+                });
+            }
 
             ui.add_space(8.0);
 
@@ -251,6 +275,7 @@ pub fn render_chart_panel(
                         HistoryRange::Sec30 => ["-30s", "-20s", "-10s", "0s"],
                         HistoryRange::Sec60 => ["-60s", "-40s", "-20s", "0s"],
                         HistoryRange::Min5 => ["-5m", "-3m", "-1m", "0s"],
+                        HistoryRange::Min15 => ["-15m", "-10m", "-5m", "0s"],
                     };
                     for (i, t_lbl) in time_labels.iter().enumerate() {
                         let x = canvas_rect.min.x

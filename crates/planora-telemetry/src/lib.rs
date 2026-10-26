@@ -7,6 +7,11 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sysinfo::{Disks, Networks, ProcessRefreshKind, ProcessesToUpdate, System};
 
+#[cfg(windows)]
+mod windows_gpu;
+#[cfg(windows)]
+pub use windows_gpu::counter_available as windows_gpu_counter_available;
+
 pub const MIN_SAMPLE_INTERVAL: Duration = Duration::from_millis(50);
 pub const DEFAULT_SAMPLE_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -315,6 +320,8 @@ pub struct Sampler {
     prev_networks: HashMap<String, (u64, u64)>,
     #[cfg(target_os = "linux")]
     rapl: HashMap<String, RaplSample>,
+    #[cfg(windows)]
+    windows_gpu: Option<windows_gpu::WindowsGpu>,
     sequence: u64,
     session_id: u64,
     topology_generation: u64,
@@ -344,6 +351,8 @@ impl Sampler {
             prev_networks: HashMap::new(),
             #[cfg(target_os = "linux")]
             rapl: HashMap::new(),
+            #[cfg(windows)]
+            windows_gpu: windows_gpu::WindowsGpu::new().ok(),
             sequence: 0,
             session_id,
             topology_generation,
@@ -438,7 +447,56 @@ impl Sampler {
                 )
             };
             #[cfg(windows)]
-            let _ = io;
+            let (io_read, io_write) = if first {
+                (
+                    Metric::unavailable(
+                        "bytes/s",
+                        "sysinfo process I/O",
+                        stamp,
+                        AvailabilityReason::WarmingUp,
+                    ),
+                    Metric::unavailable(
+                        "bytes/s",
+                        "sysinfo process I/O",
+                        stamp,
+                        AvailabilityReason::WarmingUp,
+                    ),
+                )
+            } else {
+                (
+                    Metric::available(
+                        rate(io.read_bytes, delta),
+                        "bytes/s",
+                        "Windows process I/O delta",
+                        stamp,
+                    ),
+                    Metric::available(
+                        rate(io.written_bytes, delta),
+                        "bytes/s",
+                        "Windows process I/O delta",
+                        stamp,
+                    ),
+                )
+            };
+            #[cfg(not(windows))]
+            let (io_read, io_write) = (
+                Metric::unavailable(
+                    "bytes/s",
+                    "OS process I/O provider",
+                    stamp,
+                    AvailabilityReason::Unsupported(
+                        "separate process I/O counter unavailable".into(),
+                    ),
+                ),
+                Metric::unavailable(
+                    "bytes/s",
+                    "OS process I/O provider",
+                    stamp,
+                    AvailabilityReason::Unsupported(
+                        "separate process I/O counter unavailable".into(),
+                    ),
+                ),
+            );
 
             #[cfg(target_os = "linux")]
             let (started, source) = if let Ok(ticks) = linux_start_ticks(pid.as_u32()) {
@@ -517,6 +575,8 @@ impl Sampler {
                 ),
                 disk_read_bytes_per_sec: read,
                 disk_write_bytes_per_sec: write,
+                io_read_bytes_per_sec: io_read,
+                io_write_bytes_per_sec: io_write,
                 gpu_percent: Metric::unavailable(
                     "%",
                     "OS GPU provider",
@@ -546,6 +606,7 @@ impl Sampler {
         let mut disk_read_delta = 0u64;
         let mut disk_write_delta = 0u64;
         let mut seen_disks = HashSet::new();
+        let mut disk_devices = Vec::new();
         for disk in self.disks.list() {
             let name = disk.name().to_string_lossy().into_owned();
             if !seen_disks.insert(name.clone()) {
@@ -555,6 +616,7 @@ impl Sampler {
             let curr_read = usage.read_bytes;
             let curr_write = usage.written_bytes;
 
+            let mut device_delta = None;
             if let Some(&(prev_read, prev_write)) = self.prev_disks.get(&name) {
                 let r_delta = if curr_read >= prev_read {
                     curr_read - prev_read
@@ -572,21 +634,40 @@ impl Sampler {
                 };
                 disk_read_delta = disk_read_delta.saturating_add(r_delta);
                 disk_write_delta = disk_write_delta.saturating_add(w_delta);
+                device_delta = Some((r_delta, w_delta));
             }
+            let source = "sysinfo disk device delta";
+            let metric = |value: Option<u64>| match value {
+                Some(value) => Metric::available(rate(value, delta), "bytes/s", source, stamp),
+                None => {
+                    Metric::unavailable("bytes/s", source, stamp, AvailabilityReason::WarmingUp)
+                }
+            };
+            disk_devices.push(planora_core::ResourceDeviceSample {
+                id: name.clone(),
+                label: name.clone(),
+                read_bytes_per_sec: metric(device_delta.map(|d| d.0)),
+                write_bytes_per_sec: metric(device_delta.map(|d| d.1)),
+            });
             self.prev_disks.insert(name, (curr_read, curr_write));
         }
+        self.prev_disks.retain(|name, _| seen_disks.contains(name));
 
         // Deduplicate network interfaces and ignore loopback interfaces
         let mut net_rx_delta = 0u64;
         let mut net_tx_delta = 0u64;
+        let mut network_interfaces = Vec::new();
+        let mut seen_interfaces = HashSet::new();
         for (name, net) in self.networks.iter() {
             let name_lower = name.to_lowercase();
             if name_lower.contains("loopback") || name == "lo" {
                 continue;
             }
+            seen_interfaces.insert(name.clone());
             let curr_rx = net.total_received();
             let curr_tx = net.total_transmitted();
 
+            let mut device_delta = None;
             if let Some(&(prev_rx, prev_tx)) = self.prev_networks.get(name) {
                 let rx_d = if curr_rx >= prev_rx {
                     curr_rx - prev_rx
@@ -604,9 +685,25 @@ impl Sampler {
                 };
                 net_rx_delta = net_rx_delta.saturating_add(rx_d);
                 net_tx_delta = net_tx_delta.saturating_add(tx_d);
+                device_delta = Some((rx_d, tx_d));
             }
+            let source = "sysinfo interface delta";
+            let metric = |value: Option<u64>| match value {
+                Some(value) => Metric::available(rate(value, delta), "bytes/s", source, stamp),
+                None => {
+                    Metric::unavailable("bytes/s", source, stamp, AvailabilityReason::WarmingUp)
+                }
+            };
+            network_interfaces.push(planora_core::ResourceDeviceSample {
+                id: name.clone(),
+                label: name.clone(),
+                read_bytes_per_sec: metric(device_delta.map(|d| d.0)),
+                write_bytes_per_sec: metric(device_delta.map(|d| d.1)),
+            });
             self.prev_networks.insert(name.clone(), (curr_rx, curr_tx));
         }
+        self.prev_networks
+            .retain(|name, _| seen_interfaces.contains(name));
 
         let measured = |value: u64, source: &str| {
             if first {
@@ -648,12 +745,42 @@ impl Sampler {
                 AvailabilityReason::Unsupported(reason),
             ),
         };
+        #[cfg(windows)]
+        let (gpu_engines, gpu_engine_unavailable_reason) = match self.windows_gpu.as_mut() {
+            Some(provider) => match provider.sample(stamp) {
+                Ok(engines) if !engines.is_empty() => (engines, None),
+                Ok(_) => (
+                    Vec::new(),
+                    Some(AvailabilityReason::Unsupported(
+                        "no valid GPU Engine counter instances were reported".into(),
+                    )),
+                ),
+                Err(error) => (
+                    Vec::new(),
+                    Some(AvailabilityReason::TemporarilyFailed(error.to_string())),
+                ),
+            },
+            None => (
+                Vec::new(),
+                Some(AvailabilityReason::Unsupported(
+                    "GPU Engine performance counter unavailable".into(),
+                )),
+            ),
+        };
+        #[cfg(not(windows))]
+        let gpu_engines = Vec::new();
+        #[cfg(not(windows))]
+        let gpu_engine_unavailable_reason = Some(AvailabilityReason::Unsupported(
+            "GPU Engine counter unavailable on this platform".into(),
+        ));
         #[cfg(not(target_os = "linux"))]
         let gpu = Metric::unavailable(
             "%",
             "OS GPU provider",
             stamp,
-            AvailabilityReason::Unsupported("GPU counter unavailable on this platform".into()),
+            AvailabilityReason::Unsupported(
+                "no unambiguous system GPU total; inspect individual engines when available".into(),
+            ),
         );
 
         #[cfg(target_os = "linux")]
@@ -693,6 +820,10 @@ impl Sampler {
             network_rx_bytes_per_sec: measured(net_rx_delta, "sysinfo interface delta"),
             network_tx_bytes_per_sec: measured(net_tx_delta, "sysinfo interface delta"),
             gpu_percent: gpu,
+            gpu_engines,
+            gpu_engine_unavailable_reason,
+            disks: disk_devices,
+            network_interfaces,
             package_power_watts: package_power,
             processes,
         };

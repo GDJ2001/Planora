@@ -1,6 +1,15 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package Name="Planora" Manufacturer="Planora" Version="$(var.PlanoraVersion)" UpgradeCode="D8D1E733-9195-4B0D-9B9C-23E1B455D8D8" Scope="perMachine">
     <MajorUpgrade DowngradeErrorMessage="A newer Planora version is already installed." />
+    <Property Id="PLANORA_PREVIOUS_SID">
+      <RegistrySearch Id="FindPlanoraAuthorizedSid" Root="HKLM" Key="SOFTWARE\Planora" Name="AuthorizedSid" Type="raw" Bitness="always64" />
+    </Property>
+    <Property Id="PLANORA_PREVIOUS_ENV">
+      <RegistrySearch Id="FindPlanoraLegacyEnvironment" Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\PlanoraHelper" Name="Environment" Type="raw" Bitness="always64" />
+    </Property>
+    <Property Id="PLANORA_PERSISTENT_ENV">
+      <RegistrySearch Id="FindPlanoraPersistedEnvironment" Root="HKLM" Key="SOFTWARE\Planora" Name="AuthorizedEnvironment" Type="raw" Bitness="always64" />
+    </Property>
     <MediaTemplate EmbedCab="yes" />
     <Icon Id="PlanoraIcon.ico" SourceFile="$(var.ProjectDir)\assets\brand\platforms\windows\planora.ico" />
     <Property Id="ARPPRODUCTICON" Value="PlanoraIcon.ico" />
@@ -21,6 +30,24 @@
         <Component Id="AuthorizationScript" Guid="*" Bitness="always64">
           <File Id="AuthorizationFile" Source="$(var.ProjectDir)\packaging\windows\Authorize-Planora.ps1" KeyPath="yes" />
         </Component>
+        <Component Id="RevocationScript" Guid="*" Bitness="always64">
+          <File Id="RevocationFile" Source="$(var.ProjectDir)\packaging\windows\Revoke-Planora.ps1" />
+        </Component>
+        <Component Id="LicenseMitFile" Guid="*" Bitness="always64">
+          <File Id="LicenseMit" Source="$(var.ProjectDir)\LICENSE-MIT" KeyPath="yes" />
+        </Component>
+        <Component Id="LicenseApacheFile" Guid="*" Bitness="always64">
+          <File Id="LicenseApache" Source="$(var.ProjectDir)\LICENSE-APACHE" />
+        </Component>
+        <Component Id="NoticeFile" Guid="*" Bitness="always64">
+          <File Id="Notice" Source="$(var.ProjectDir)\NOTICE" />
+        </Component>
+        <Component Id="PersistedAuthorization" Guid="*" Bitness="always64">
+          <RegistryValue Root="HKLM" Key="SOFTWARE\Planora" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
+          <RegistryValue Root="HKLM" Key="SOFTWARE\Planora" Name="AuthorizedSid" Type="string" Value="[PLANORA_PREVIOUS_SID]" />
+          <RegistryValue Root="HKLM" Key="SOFTWARE\Planora" Name="AuthorizedEnvironment" Type="string" Value="[PLANORA_PREVIOUS_ENV][PLANORA_PERSISTENT_ENV]" />
+          <RemoveRegistryKey Root="HKLM" Key="SOFTWARE\Planora" Action="removeOnUninstall" />
+        </Component>
       </Directory>
     </StandardDirectory>
     <Feature Id="Main" Title="Planora" Level="1">
@@ -28,6 +55,11 @@
       <ComponentRef Id="PlanoraShortcut" />
       <ComponentRef Id="PlanoraHelper" />
       <ComponentRef Id="AuthorizationScript" />
+      <ComponentRef Id="RevocationScript" />
+      <ComponentRef Id="LicenseMitFile" />
+      <ComponentRef Id="LicenseApacheFile" />
+      <ComponentRef Id="NoticeFile" />
+      <ComponentRef Id="PersistedAuthorization" />
     </Feature>
   </Package>
 </Wix>

@@ -101,6 +101,13 @@ pub fn draw_benchmarks(p: &Painter, r: Rect, c: Color32) {
     p.circle_filled(center, 2.0, c);
 }
 
+pub fn draw_recordings(p: &Painter, r: Rect, c: Color32) {
+    let center = r.center();
+    let radius = r.width().min(r.height()) * 0.36;
+    p.circle_stroke(center, radius, Stroke::new(1.5, c));
+    p.circle_filled(center, radius * 0.35, c);
+}
+
 pub fn draw_capabilities(p: &Painter, r: Rect, c: Color32) {
     let s = Stroke::new(1.5, c);
     // Shield shape

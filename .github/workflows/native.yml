@@ -4,13 +4,15 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * 1'
 
 jobs:
   windows:
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # pinned 2026-10-20
         with:
           toolchain: '1.95.0'
           components: clippy, rustfmt
@@ -21,20 +23,24 @@ jobs:
         run: |
           dotnet tool install --global wix --version 5.0.2
           ./packaging/windows/Build-Planora.ps1 -SkipBuild
-      - uses: actions/upload-artifact@v4
+      - run: python scripts/release_inventory.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: planora-windows-x64
           path: |
             dist/*.msi
             dist/*.manifest.json
+            dist/dependency-inventory.json
+            dist/SHA256SUMS.txt
+            dist/provenance.json
 
   ubuntu:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Native libraries
         run: sudo apt-get update && sudo apt-get install -y libx11-dev libxkbcommon-dev libwayland-dev libpolkit-gobject-1-dev
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # pinned 2026-10-20
         with:
           toolchain: '1.95.0'
           components: clippy, rustfmt
@@ -42,34 +48,45 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo build --release --bins --locked
       - run: bash packaging/linux/build-deb.sh
+      - run: python3 scripts/release_inventory.py
       - run: dpkg-deb --contents dist/*.deb | head -80
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: planora-ubuntu24-amd64
-          path: dist/*.deb
+          path: |
+            dist/*.deb
+            dist/dependency-inventory.json
+            dist/SHA256SUMS.txt
+            dist/provenance.json
 
   fedora:
     runs-on: ubuntu-24.04
     container: fedora:43
     steps:
-      - uses: actions/checkout@v4
-      - run: dnf install -y gcc clang cmake pkgconf-pkg-config libX11-devel libxkbcommon-devel wayland-devel rpm-build curl tar gzip
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - run: dnf install -y gcc clang cmake pkgconf-pkg-config libX11-devel libxkbcommon-devel wayland-devel rpm-build curl tar gzip python3
       - run: curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain 1.95.0
       - run: |
           . "$HOME/.cargo/env"
           cargo test --workspace --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
           cargo build --release --bins --locked
           bash packaging/linux/build-rpm.sh
-      - uses: actions/upload-artifact@v4
+          python3 scripts/release_inventory.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: planora-fedora43-x86_64
-          path: dist/*.rpm
+          path: |
+            dist/*.rpm
+            dist/dependency-inventory.json
+            dist/SHA256SUMS.txt
+            dist/provenance.json
 
   macos:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # pinned 2026-10-20
         with:
           toolchain: '1.95.0'
           targets: aarch64-apple-darwin
@@ -77,10 +94,38 @@ jobs:
       - run: cargo test --workspace --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: bash packaging/macos/build-package.sh
+      - run: python3 scripts/release_inventory.py
       - run: pkgutil --payload-files dist/*.pkg | head -80
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: planora-macos-arm64
           path: |
             dist/*.pkg
             dist/*-app.zip
+            dist/dependency-inventory.json
+            dist/SHA256SUMS.txt
+            dist/provenance.json
+
+  advisory:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # pinned 2026-10-20
+        with:
+          toolchain: '1.95.0'
+      - run: cargo install cargo-audit --version 0.22.2 --locked
+      - run: cargo audit
+
+  parser-fuzz:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - run: rustup toolchain install nightly --component rust-src
+      - run: cargo +nightly install cargo-fuzz --version 0.13.2 --locked
+      - run: cargo +nightly fuzz run ipc_frames -- -max_total_time=90 -max_len=65540
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: planora-parser-fuzz-artifacts
+          path: fuzz/artifacts
