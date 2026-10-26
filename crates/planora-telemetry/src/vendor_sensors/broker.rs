@@ -581,6 +581,13 @@ mod tests {
     #[test]
     fn broker_cached_readings_expire_to_stale_during_restart_backoff() {
         let mut sup = SensorBrokerSupervisor::new();
+        if let Some(mut child) = sup.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        sup.stdin = None;
+        sup.rx = None;
+        sup.reader = None;
         sup.next_restart_at = Some(Instant::now() + Duration::from_secs(60));
         sup.last_poll = Some(Instant::now() - Duration::from_secs(6));
         sup.last_readings = vec![SensorReading {

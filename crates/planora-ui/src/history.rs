@@ -2,6 +2,7 @@ use planora_core::{AvailabilityReason, ProcessIdentity, SensorReading, Telemetry
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -66,7 +67,7 @@ pub struct Sample {
     pub last: Option<f32>,
     pub sum: f64,
     pub count: u32,
-    pub source: String,
+    pub source: Arc<str>,
     pub unavailable_reason: Option<AvailabilityReason>,
 }
 
@@ -200,7 +201,7 @@ impl TimeSeries {
         if let (Some(value), Some(last)) = (value, self.samples.back_mut())
             && last.timestamp_ms / 1000 == timestamp_ms / 1000
             && time.saturating_duration_since(last.time) < Duration::from_secs(1)
-            && last.source == source
+            && last.source.as_ref() == source
             && last.value.is_some()
         {
             last.sum += value as f64;
@@ -213,6 +214,13 @@ impl TimeSeries {
             last.timestamp_ms = timestamp_ms;
             return;
         }
+        let source_arc: Arc<str> = if let Some(last) = self.samples.back()
+            && last.source.as_ref() == source
+        {
+            Arc::clone(&last.source)
+        } else {
+            Arc::from(source)
+        };
         self.samples.push_back(Sample {
             time,
             timestamp_ms,
@@ -224,7 +232,7 @@ impl TimeSeries {
             last: value,
             sum: value.unwrap_or(0.0) as f64,
             count: u32::from(value.is_some()),
-            source: source.to_owned(),
+            source: source_arc,
             unavailable_reason: unavailable_reason.cloned(),
         });
         self.prune_before(
@@ -303,11 +311,13 @@ impl TimeSeries {
             {
                 segments.push(std::mem::take(&mut current_segment));
             }
-            if prev_source.is_some_and(|source| source != s.source) && !current_segment.is_empty() {
+            if prev_source.is_some_and(|source| source != s.source.as_ref())
+                && !current_segment.is_empty()
+            {
                 segments.push(std::mem::take(&mut current_segment));
             }
             prev_time = Some(mid);
-            prev_source = Some(&s.source);
+            prev_source = Some(s.source.as_ref());
 
             if let Some(val) = s.value {
                 let elapsed = mid.saturating_duration_since(cutoff).as_secs_f32();

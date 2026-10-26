@@ -132,6 +132,26 @@ pub enum LifecycleState {
 #[cfg(windows)]
 static STARTUP_AUTH_ERROR: OnceLock<String> = OnceLock::new();
 
+fn show_page_scroll<R>(
+    ui: &mut egui::Ui,
+    id_salt: &'static str,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::scroll_area::ScrollAreaOutput<R> {
+    let available_w = ui.available_width().max(1.0);
+    egui::ScrollArea::vertical()
+        .id_salt(id_salt)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            let max_w = ui.available_width().min(available_w);
+            ui.set_width(max_w);
+            ui.set_max_width(max_w);
+            let clip_x = Rect::from_x_y_ranges(ui.max_rect().x_range(), ui.clip_rect().y_range())
+                .intersect(ui.clip_rect());
+            ui.set_clip_rect(clip_x);
+            add_contents(ui)
+        })
+}
+
 impl App {
     fn reset_history(&mut self) {
         self.history_epoch = self.history_epoch.wrapping_add(1);
@@ -222,10 +242,19 @@ impl App {
 
         let client_stop = Arc::new(AtomicBool::new(false));
         let worker_stop = client_stop.clone();
+        let history_worker = HistoryWorker::start();
+        let history_sender = history_worker.sender();
         let client_worker = thread::Builder::new()
             .name("planora-client".into())
             .spawn(move || {
-                background_worker(worker_shared, rx, worker_poll, context, worker_stop);
+                background_worker(
+                    worker_shared,
+                    rx,
+                    worker_poll,
+                    context,
+                    worker_stop,
+                    history_sender,
+                );
             })
             .expect("failed to spawn client worker thread");
 
@@ -313,7 +342,7 @@ impl App {
             display_pause: DisplayPause::default(),
             logo_cache: LogoCache::new(),
             histories: Arc::new(ResourceHistories::default()),
-            history_worker: HistoryWorker::start(),
+            history_worker,
             history_epoch: 0,
             history_last_enqueued: None,
             overview_state: OverviewViewState::default(),
@@ -840,6 +869,10 @@ impl App {
                 diagnostic_logs: shared.diagnostic_logs.clone(),
                 affinity: shared.affinity.clone(),
                 action_error: shared.action_error.clone(),
+                live_history_enabled: shared.live_history_enabled,
+                history_epoch: shared.history_epoch,
+                selected_identity: shared.selected_identity.clone(),
+                priority_details: shared.priority_details.clone(),
             };
             (state, frame, topo, caps, shared_copy)
         };
@@ -927,28 +960,42 @@ impl App {
         } else {
             now
         };
-        if let Some(frame) = &frame_opt {
-            let key = (frame.session_id, frame.sequence, self.selected.clone());
-            if self.history_last_enqueued.as_ref() != Some(&key) {
-                #[cfg(windows)]
-                let sensors = live_sensors.clone();
-                #[cfg(not(windows))]
-                let sensors = Arc::new(frame.sensors.clone());
-                self.history_worker.submit(HistoryInput {
-                    frame: frame.clone(),
-                    priority_details: self.resources_state.priority_history_keys(sensors.as_ref()),
-                    sensors,
-                    selected: self.selected.clone(),
-                    received_at: visual_now,
-                    wall_clock_at_receipt_ms: if app_state == AppState::Replay {
-                        frame.sampled_at_ms
-                    } else {
-                        planora_telemetry::unix_ms()
-                    },
-                    epoch: self.history_epoch,
-                });
-                self.history_last_enqueued = Some(key);
+        let is_replay_or_fixture = app_state == AppState::Replay || self.fixture_mode;
+        if is_replay_or_fixture {
+            if let Some(frame) = &frame_opt {
+                let key = (frame.session_id, frame.sequence, self.selected.clone());
+                if self.history_last_enqueued.as_ref() != Some(&key) {
+                    #[cfg(windows)]
+                    let sensors = live_sensors.clone();
+                    #[cfg(not(windows))]
+                    let sensors = Arc::new(frame.sensors.clone());
+                    self.history_worker.submit(HistoryInput {
+                        frame: frame.clone(),
+                        priority_details: self
+                            .resources_state
+                            .priority_history_keys(sensors.as_ref()),
+                        sensors,
+                        selected: self.selected.clone(),
+                        received_at: visual_now,
+                        wall_clock_at_receipt_ms: if app_state == AppState::Replay {
+                            frame.sampled_at_ms
+                        } else {
+                            planora_telemetry::unix_ms()
+                        },
+                        epoch: self.history_epoch,
+                    });
+                    self.history_last_enqueued = Some(key);
+                }
             }
+        } else {
+            let priority = self
+                .resources_state
+                .priority_history_keys(live_sensors.as_ref());
+            let mut shared = self.shared.lock().unwrap();
+            shared.live_history_enabled = true;
+            shared.history_epoch = self.history_epoch;
+            shared.selected_identity = self.selected.clone();
+            shared.priority_details = priority;
         }
         if let Some(snapshot) = self.history_worker.latest(self.history_epoch) {
             self.histories = snapshot;
@@ -1133,8 +1180,16 @@ impl App {
                 ui.colored_label(p.warning, "Fixture preview · simulated sample data");
             }
             if self.page == Page::Recordings {
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    self.render_recordings_page(ui, frame_opt.clone(), topo_opt.as_ref(), shared_copy.benchmark_state.as_ref(), &shared_copy.diagnostic_logs, &app_state, p);
+                show_page_scroll(ui, "recordings_page_scroll", |ui| {
+                    self.render_recordings_page(
+                        ui,
+                        frame_opt.clone(),
+                        topo_opt.as_ref(),
+                        shared_copy.benchmark_state.as_ref(),
+                        &shared_copy.diagnostic_logs,
+                        &app_state,
+                        p,
+                    );
                 });
                 return;
             }
@@ -1302,36 +1357,33 @@ impl App {
                 Page::Overview => {
                     // Overview has multiple stacked charts and a process table;
                     // always make the whole page scroll at the minimum window size.
-                    egui::ScrollArea::vertical()
-                        .id_salt("overview_page_scroll")
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            let previous_selected = self.resources_state.selected_resource.clone();
-                            render_overview_view(
-                                ui,
-                                frame,
-                                render_histories,
-                                &mut self.overview_state,
-                                &app_state,
-                                &mut self.display_pause,
-                                current_poll,
-                                &mut self.selected,
-                                &mut self.resources_state.selected_resource,
-                                &mut self.page,
-                                render_now,
-                                p,
-                            );
-                            if self.resources_state.selected_resource != previous_selected {
-                                self.resources_state.reveal_selected_resource = true;
-                                self.settings.performance_resource =
-                                    self.resources_state.selected_resource.clone();
-                                self.settings_error = self
-                                    .settings
-                                    .save()
-                                    .err()
-                                    .map(|error| format!("Could not save preferences: {error}"));
-                            }
-                        });
+                    show_page_scroll(ui, "overview_page_scroll", |ui| {
+                        let previous_selected = self.resources_state.selected_resource.clone();
+                        render_overview_view(
+                            ui,
+                            frame,
+                            render_histories,
+                            &mut self.overview_state,
+                            &app_state,
+                            &mut self.display_pause,
+                            current_poll,
+                            &mut self.selected,
+                            &mut self.resources_state.selected_resource,
+                            &mut self.page,
+                            render_now,
+                            p,
+                        );
+                        if self.resources_state.selected_resource != previous_selected {
+                            self.resources_state.reveal_selected_resource = true;
+                            self.settings.performance_resource =
+                                self.resources_state.selected_resource.clone();
+                            self.settings_error = self
+                                .settings
+                                .save()
+                                .err()
+                                .map(|error| format!("Could not save preferences: {error}"));
+                        }
+                    });
                 },
                 Page::Performance => {
                     let previous_graph_modes = self.settings.resource_graphs;
@@ -1398,61 +1450,52 @@ impl App {
                 },
                 Page::History => {
                     let previous_scale = self.settings.percent_scale;
-                    egui::ScrollArea::vertical()
-                        .id_salt("history_page_scroll")
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            render_history_view(
-                                ui,
-                                render_histories,
-                                &mut self.history_state,
-                                &mut self.settings.percent_scale,
-                                &app_state,
-                                &mut self.display_pause,
-                                current_poll,
-                                render_now,
-                                p,
-                            );
-                        });
+                    show_page_scroll(ui, "history_page_scroll", |ui| {
+                        render_history_view(
+                            ui,
+                            render_histories,
+                            &mut self.history_state,
+                            &mut self.settings.percent_scale,
+                            &app_state,
+                            &mut self.display_pause,
+                            current_poll,
+                            render_now,
+                            p,
+                        );
+                    });
                     if self.settings.percent_scale != previous_scale {
                         self.settings_error = self.settings.save().err().map(|e| format!("Could not save preferences: {e}"));
                     }
                 },
                 Page::Hardware => {
-                    egui::ScrollArea::vertical()
-                        .id_salt("hardware_page_scroll")
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            render_hardware_view(
-                                ui,
-                                topo_opt.as_ref(),
-                                render_frame.as_deref(),
-                                &mut self.hardware_state,
-                                &app_state,
-                                &mut self.display_pause,
-                                current_poll,
-                                p,
-                            );
-                        });
+                    show_page_scroll(ui, "hardware_page_scroll", |ui| {
+                        render_hardware_view(
+                            ui,
+                            topo_opt.as_ref(),
+                            render_frame.as_deref(),
+                            &mut self.hardware_state,
+                            &app_state,
+                            &mut self.display_pause,
+                            current_poll,
+                            p,
+                        );
+                    });
                 }
                 Page::Benchmarks => {
-                    egui::ScrollArea::vertical()
-                        .id_salt("benchmarks_page_scroll")
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            render_benchmarks_view(
-                                ui,
-                                shared_copy.benchmark_state.as_ref(),
-                                shared_copy.profile_state.as_ref(),
-                                self.selected.as_ref(),
-                                &mut self.benchmarks_state,
-                                &app_state,
-                                &mut self.display_pause,
-                                current_poll,
-                                &self.tx,
-                                p,
-                            );
-                        });
+                    show_page_scroll(ui, "benchmarks_page_scroll", |ui| {
+                        render_benchmarks_view(
+                            ui,
+                            shared_copy.benchmark_state.as_ref(),
+                            shared_copy.profile_state.as_ref(),
+                            self.selected.as_ref(),
+                            &mut self.benchmarks_state,
+                            &app_state,
+                            &mut self.display_pause,
+                            current_poll,
+                            &self.tx,
+                            p,
+                        );
+                    });
                 },
                 Page::Capabilities => render_capabilities_view(
                     ui,
@@ -1471,7 +1514,7 @@ impl App {
                     p,
                 ),
                 Page::Settings => {
-                    egui::ScrollArea::vertical().id_salt("settings_outer_page_scroll").auto_shrink([false, false]).show(ui, |ui| {
+                    show_page_scroll(ui, "settings_outer_page_scroll", |ui| {
                         render_settings_view(
                             ui, &mut self.settings, &mut self.settings_error, &mut self.settings_state, &self.poll_ms,
                             shared_copy.sampling_effective_ms, &shared_copy.diagnostic_logs,

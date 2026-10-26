@@ -254,7 +254,7 @@ impl ProfileManager {
 
 struct State {
     session_id: u64,
-    latest_frame: Arc<RwLock<TelemetryFrame>>,
+    latest_frame: Arc<RwLock<Arc<TelemetryFrame>>>,
     benchmarks: Arc<BenchmarkManager>,
     profiling: Arc<ProfileManager>,
     diagnostics: Arc<DiagnosticLogger>,
@@ -697,11 +697,11 @@ fn dispatch(command: Command, req_id: u64, connection_id: u64, state: &State) ->
             }
         }
         Command::Snapshot => {
-            let frame = state.latest_frame.read().unwrap().clone();
-            Response::Snapshot(Box::new(frame))
+            let frame = Arc::clone(&*state.latest_frame.read().unwrap());
+            Response::Snapshot(Box::new((*frame).clone()))
         }
         Command::Capabilities | Command::RefreshCapabilities => {
-            let frame = state.latest_frame.read().unwrap();
+            let frame = Arc::clone(&*state.latest_frame.read().unwrap());
             Response::Capabilities(capabilities(&frame))
         }
         Command::RunCacheProbe { job_id, page_mode } => {
@@ -1162,7 +1162,7 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
     initial_frame.sanitize_provider_anomalies();
     initial_frame.validate().map_err(io::Error::other)?;
 
-    let latest_frame = Arc::new(RwLock::new(initial_frame));
+    let latest_frame = Arc::new(RwLock::new(Arc::new(initial_frame)));
     let diagnostics = Arc::new(DiagnosticLogger::new());
     let sampling = Arc::new(SamplingCoordinator::default());
     diagnostics.log(
@@ -1199,6 +1199,13 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
     #[cfg(windows)]
     let sensor_source = sensor_data.clone();
     let sampling_worker = thread::spawn(move || {
+        #[cfg(windows)]
+        unsafe {
+            use windows_sys::Win32::System::Threading::{
+                GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
+            };
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+        }
         let mut sampler = initial_sampler;
         let mut current_interval = Duration::from_secs(1);
         let mut next_due = Instant::now() + current_interval;
@@ -1235,7 +1242,7 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
                     format!("telemetry frame rejected: {err}"),
                 );
             } else {
-                *frame_sink.write().unwrap() = frame;
+                *frame_sink.write().unwrap() = Arc::new(frame);
             }
             next_due += interval;
             if next_due <= Instant::now() {
@@ -1535,7 +1542,7 @@ mod lifecycle_tests {
     fn invalid_profile_never_starts_worker_or_fabricates_result() {
         let state = State {
             session_id: 1,
-            latest_frame: Arc::new(RwLock::new(Sampler::new().sample())),
+            latest_frame: Arc::new(RwLock::new(Arc::new(Sampler::new().sample()))),
             benchmarks: Arc::new(BenchmarkManager::new()),
             profiling: Arc::new(ProfileManager::new()),
             diagnostics: Arc::new(DiagnosticLogger::new()),

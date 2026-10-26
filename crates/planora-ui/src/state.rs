@@ -280,6 +280,10 @@ pub struct Shared {
     pub diagnostic_logs: Vec<DiagnosticEntry>,
     pub affinity: Option<(planora_core::ProcessIdentity, Vec<u16>)>,
     pub action_error: Option<String>,
+    pub live_history_enabled: bool,
+    pub history_epoch: u64,
+    pub selected_identity: Option<planora_core::ProcessIdentity>,
+    pub priority_details: std::collections::BTreeSet<String>,
 }
 
 pub fn is_data_stale(last_received: Option<Instant>, poll_interval_ms: u64) -> Option<Duration> {
@@ -293,7 +297,11 @@ pub fn is_data_stale(last_received: Option<Instant>, poll_interval_ms: u64) -> O
     }
 }
 
-fn handle_response(response: Response, state: &Arc<Mutex<Shared>>) -> bool {
+fn handle_response(
+    response: Response,
+    state: &Arc<Mutex<Shared>>,
+    history_sender: Option<&crate::history_worker::HistorySender>,
+) -> bool {
     let mut shared = state.lock().unwrap();
     match response {
         Response::Snapshot(frame) => {
@@ -306,8 +314,29 @@ fn handle_response(response: Response, state: &Arc<Mutex<Shared>>) -> bool {
             });
             shared.state = Some(AppState::Live);
             if is_new {
-                shared.last_frame_received = Some(Instant::now());
-                shared.frame = Some(Arc::from(frame));
+                let receipt_now = Instant::now();
+                let wall_clock_ms = planora_telemetry::unix_ms();
+                shared.last_frame_received = Some(receipt_now);
+                let frame_arc: Arc<TelemetryFrame> = Arc::from(frame);
+                shared.frame = Some(Arc::clone(&frame_arc));
+                if shared.live_history_enabled
+                    && let Some(history) = history_sender
+                {
+                    #[cfg(windows)]
+                    let sensors = Arc::clone(&shared.sensor_readings);
+                    #[cfg(not(windows))]
+                    let sensors = Arc::new(frame_arc.sensors.clone());
+                    let input = crate::history_worker::HistoryInput {
+                        frame: frame_arc,
+                        sensors,
+                        selected: shared.selected_identity.clone(),
+                        priority_details: shared.priority_details.clone(),
+                        received_at: receipt_now,
+                        wall_clock_at_receipt_ms: wall_clock_ms,
+                        epoch: shared.history_epoch,
+                    };
+                    history.submit(input);
+                }
             }
         }
         Response::BenchmarkStatus(bms) => {
@@ -409,6 +438,7 @@ pub fn background_worker(
     poll_ms: Arc<AtomicU64>,
     context: eframe::egui::Context,
     stop: Arc<AtomicBool>,
+    history_sender: Option<crate::history_worker::HistorySender>,
 ) {
     let mut next_request_id = 1u64;
     let mut _current_session_id: Option<u64> = None;
@@ -627,7 +657,7 @@ pub fn background_worker(
                 response: Response::Snapshot(frame),
                 ..
             }) => {
-                if !handle_response(Response::Snapshot(frame), &state) {
+                if !handle_response(Response::Snapshot(frame), &state, history_sender.as_ref()) {
                     state.lock().unwrap().state = Some(AppState::Reconnecting);
                     context.request_repaint();
                     continue;
@@ -703,7 +733,7 @@ pub fn background_worker(
                     planora_helper::REQUEST_TIMEOUT,
                 ) {
                     Ok(env) => {
-                        if !handle_response(env.response, &state) {
+                        if !handle_response(env.response, &state, history_sender.as_ref()) {
                             connection_healthy = false;
                             break;
                         }
@@ -753,7 +783,9 @@ pub fn background_worker(
                         &request,
                         planora_helper::REQUEST_TIMEOUT,
                     ) {
-                        Ok(response) => handle_response(response.response, &state),
+                        Ok(response) => {
+                            handle_response(response.response, &state, history_sender.as_ref())
+                        }
                         Err(_) => false,
                     };
                     if status_ok {
@@ -798,7 +830,7 @@ pub fn background_worker(
                             planora_helper::REQUEST_TIMEOUT,
                         ) {
                             Ok(env) => {
-                                handle_response(env.response, &state);
+                                handle_response(env.response, &state, history_sender.as_ref());
                             }
                             Err(_) => {
                                 let mut shared = state.lock().unwrap();
@@ -838,7 +870,11 @@ pub fn background_worker(
             ) {
                 Ok(env) => {
                     if let Response::Snapshot(frame) = env.response {
-                        if !handle_response(Response::Snapshot(frame), &state) {
+                        if !handle_response(
+                            Response::Snapshot(frame),
+                            &state,
+                            history_sender.as_ref(),
+                        ) {
                             state.lock().unwrap().state = Some(AppState::Reconnecting);
                             break;
                         }
@@ -971,7 +1007,7 @@ mod tests {
 
         // Step 2: Receive snapshot -> transitions to Live
         let frame1 = dummy_frame(1);
-        handle_response(Response::Snapshot(Box::new(frame1)), &state);
+        handle_response(Response::Snapshot(Box::new(frame1)), &state, None);
 
         {
             let shared = state.lock().unwrap();
@@ -1003,7 +1039,7 @@ mod tests {
 
         // Step 5: Telemetry recovers -> helper delivers frame 2
         let frame2 = dummy_frame(2);
-        handle_response(Response::Snapshot(Box::new(frame2)), &state);
+        handle_response(Response::Snapshot(Box::new(frame2)), &state, None);
 
         {
             let shared = state.lock().unwrap();
@@ -1020,7 +1056,7 @@ mod tests {
         let state = Arc::new(Mutex::new(Shared::default()));
 
         // Receive snapshot
-        handle_response(Response::Snapshot(Box::new(dummy_frame(1))), &state);
+        handle_response(Response::Snapshot(Box::new(dummy_frame(1))), &state, None);
 
         // Simulate IPC disconnection: since frame exists, transition to Reconnecting
         {
@@ -1042,13 +1078,15 @@ mod tests {
         let state = Arc::new(Mutex::new(Shared::default()));
         assert!(handle_response(
             Response::Snapshot(Box::new(dummy_frame(1))),
-            &state
+            &state,
+            None
         ));
         let received = state.lock().unwrap().last_frame_received.unwrap();
         let original = state.lock().unwrap().frame.clone().unwrap();
         assert!(handle_response(
             Response::Snapshot(Box::new(dummy_frame(1))),
-            &state
+            &state,
+            None
         ));
         assert_eq!(state.lock().unwrap().last_frame_received, Some(received));
         assert!(Arc::ptr_eq(
@@ -1060,7 +1098,8 @@ mod tests {
         invalid.cpu_percent.value = Some(f32::NAN);
         assert!(!handle_response(
             Response::Snapshot(Box::new(invalid)),
-            &state
+            &state,
+            None
         ));
         let shared = state.lock().unwrap();
         assert_eq!(shared.last_frame_received, Some(received));

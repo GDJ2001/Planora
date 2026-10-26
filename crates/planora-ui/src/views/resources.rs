@@ -250,6 +250,9 @@ pub enum SensorTrendKind {
     Clock,
     Fan,
     Load,
+    Voltage,
+    Current,
+    Throughput,
 }
 
 impl SensorTrendKind {
@@ -260,6 +263,9 @@ impl SensorTrendKind {
             Self::Clock => "Clocks (MHz)",
             Self::Fan => "Fans (RPM)",
             Self::Load => "Load (%)",
+            Self::Voltage => "Voltage (V)",
+            Self::Current => "Current (A)",
+            Self::Throughput => "Throughput (B/s)",
         }
     }
 
@@ -270,6 +276,9 @@ impl SensorTrendKind {
             Self::Clock => "MHz",
             Self::Fan => "RPM",
             Self::Load => "%",
+            Self::Voltage => "V",
+            Self::Current => "A",
+            Self::Throughput => "B/s",
         }
     }
 
@@ -304,6 +313,17 @@ impl SensorTrendKind {
                 matches!(reading.sensor_type, planora_core::SensorType::LoadPercent)
                     || reading.value.unit == "%"
             }
+            Self::Voltage => {
+                matches!(reading.sensor_type, planora_core::SensorType::VoltageVolts)
+                    || reading.value.unit == "V"
+            }
+            Self::Current => {
+                matches!(
+                    reading.sensor_type,
+                    planora_core::SensorType::CurrentAmperes
+                ) || reading.value.unit == "A"
+            }
+            Self::Throughput => reading.value.unit == "B/s",
         }
     }
 }
@@ -338,7 +358,7 @@ impl Default for ResourcesViewState {
             detail_height: 790.0,
             selected_resource: None,
             reveal_selected_resource: true,
-            sensors_expanded: false,
+            sensors_expanded: true,
             range: HistoryRange::Sec60,
             selected_cpu: None,
             selected_engines: BTreeSet::new(),
@@ -397,6 +417,9 @@ impl ResourcesViewState {
             SensorTrendKind::Clock,
             SensorTrendKind::Fan,
             SensorTrendKind::Load,
+            SensorTrendKind::Voltage,
+            SensorTrendKind::Current,
+            SensorTrendKind::Throughput,
         ]
         .into_iter()
         .find(|kind| kind.matches_sensor(sensor))
@@ -2625,13 +2648,23 @@ fn render_sensors_tab(
     if show_graphs {
         ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new("Trend Group:").strong());
-            for kind in [
+            let mut trend_kinds = vec![
                 SensorTrendKind::Power,
                 SensorTrendKind::Temperature,
                 SensorTrendKind::Clock,
                 SensorTrendKind::Fan,
                 SensorTrendKind::Load,
+            ];
+            for extra in [
+                SensorTrendKind::Voltage,
+                SensorTrendKind::Current,
+                SensorTrendKind::Throughput,
             ] {
+                if sensors.iter().any(|s| extra.matches_sensor(s)) {
+                    trend_kinds.push(extra);
+                }
+            }
+            for kind in trend_kinds {
                 ui.selectable_value(&mut state.selected_sensor_trend, kind, kind.label());
             }
         });

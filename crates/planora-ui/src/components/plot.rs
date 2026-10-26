@@ -400,7 +400,7 @@ impl PlotStyle {
             Self::SmoothArea => Duration::from_secs(3),
             // CPU history is aggregated into one-second observations. A
             // missing second must remain visible instead of bridging it.
-            Self::CpuUtilization => Duration::from_millis(1750),
+            Self::CpuUtilization => Duration::from_millis(2200),
         }
     }
 }
@@ -655,6 +655,8 @@ fn draw_time_plot(
         )
     };
 
+    let canvas_painter = ui.painter_at(canvas.expand(1.0));
+
     // Render curves, fills, and bands
     for (item, item_segments) in series.iter().zip(segments) {
         for segment in item_segments {
@@ -662,7 +664,11 @@ fn draw_time_plot(
                 continue;
             }
             if segment.len() == 1 {
-                painter.circle_filled(to_point(segment[0].x, segment[0].mean), 3.5, item.color);
+                canvas_painter.circle_filled(
+                    to_point(segment[0].x, segment[0].mean),
+                    3.5,
+                    item.color,
+                );
                 continue;
             }
 
@@ -680,7 +686,7 @@ fn draw_time_plot(
                     &smooth_lower,
                     item.color.gamma_multiply(0.09),
                 );
-                painter.add(band);
+                canvas_painter.add(band);
             }
 
             // Mean trend line and restrained area fill.
@@ -708,13 +714,13 @@ fn draw_time_plot(
                     item.color.gamma_multiply(fill_top),
                     item.color.gamma_multiply(fill_bottom),
                 );
-                painter.add(fill);
-                painter.add(Shape::line(path, Stroke::new(1.75, item.color)));
+                canvas_painter.add(fill);
+                canvas_painter.add(Shape::line(path, Stroke::new(1.75, item.color)));
             } else {
                 let dashed_shapes =
                     dashed_path_shapes(&path, Stroke::new(1.75, item.color), 6.0, 4.0);
                 for shape in dashed_shapes {
-                    painter.add(shape);
+                    canvas_painter.add(shape);
                 }
             }
         }
@@ -921,7 +927,9 @@ pub fn sparkline_sized(
     size: Vec2,
 ) {
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-    ui.painter().rect_filled(rect, 3.0, p.surface_raised);
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 3.0, p.surface_raised);
+    let plot_rect = rect.shrink2(Vec2::new(1.0, 1.5));
     let segments = series.chart_segments(
         now,
         HistoryRange::Sec60,
@@ -941,8 +949,8 @@ pub fn sparkline_sized(
             .iter()
             .map(|p| {
                 Pos2::new(
-                    rect.left() + p.x * rect.width(),
-                    rect.bottom() - (p.mean / ymax).clamp(0.0, 1.0) * rect.height(),
+                    plot_rect.left() + p.x * plot_rect.width(),
+                    plot_rect.bottom() - (p.mean / ymax).clamp(0.0, 1.0) * plot_rect.height(),
                 )
             })
             .collect();
@@ -950,15 +958,14 @@ pub fn sparkline_sized(
             let smooth = monotone_path(&points, 3.0);
             let fill_mesh = area_mesh(
                 &smooth,
-                rect.bottom(),
+                plot_rect.bottom(),
                 color.gamma_multiply(0.18),
                 color.gamma_multiply(0.02),
             );
-            ui.painter().add(fill_mesh);
-            ui.painter()
-                .add(Shape::line(smooth, Stroke::new(1.4, color)));
+            painter.add(fill_mesh);
+            painter.add(Shape::line(smooth, Stroke::new(1.4, color)));
         } else if let Some(point) = points.first() {
-            ui.painter().circle_filled(*point, 2.0, color);
+            painter.circle_filled(*point, 2.0, color);
         }
     }
 }
@@ -975,18 +982,19 @@ pub fn capacity_bar(
     p: Palette,
 ) {
     let (rect, _) = ui.allocate_exact_size(
-        Vec2::new(ui.available_width().max(100.0), 14.0),
+        Vec2::new(ui.available_width().max(1.0), 14.0),
         Sense::hover(),
     );
-    ui.painter().rect_filled(rect, 4.0, p.surface_raised);
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 4.0, p.surface_raised);
     if let (Some(used), Some(total)) = (used, total)
         && total > 0
     {
         let fraction = (used as f64 / total as f64).clamp(0.0, 1.0) as f32;
         let fill = Rect::from_min_size(rect.min, Vec2::new(rect.width() * fraction, rect.height()));
-        ui.painter().rect_filled(fill, 4.0, color);
+        painter.rect_filled(fill.intersect(rect), 4.0, color);
     } else if total == Some(0) {
-        ui.painter().text(
+        painter.text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
             "Shared memory (UMA)",
@@ -994,7 +1002,7 @@ pub fn capacity_bar(
             p.secondary,
         );
     } else {
-        ui.painter().text(
+        painter.text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
             "Unavailable",
@@ -1013,9 +1021,9 @@ mod tests {
     fn cpu_plot_breaks_a_missing_one_second_observation() {
         let now = Instant::now();
         let mut series = TimeSeries::new();
-        series.push(now - Duration::from_secs(4), 1_000, Some(21.0));
-        series.push(now - Duration::from_secs(3), 2_000, Some(33.0));
-        series.push(now - Duration::from_secs(1), 3_000, Some(44.0));
+        series.push(now - Duration::from_millis(4000), 1_000, Some(21.0));
+        series.push(now - Duration::from_millis(3000), 2_000, Some(33.0));
+        series.push(now - Duration::from_millis(500), 4_000, Some(44.0));
         let segments = series.chart_segments(
             now,
             HistoryRange::Sec60,

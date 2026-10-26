@@ -342,6 +342,9 @@ pub struct Sampler {
     sequence: u64,
     session_id: u64,
     topology_generation: u64,
+    last_process_refresh: Option<Instant>,
+    cached_processes: Vec<planora_core::ProcessRecord>,
+    last_disk_refresh: Option<Instant>,
 }
 
 impl Default for Sampler {
@@ -384,6 +387,9 @@ impl Sampler {
             sequence: 0,
             session_id,
             topology_generation,
+            last_process_refresh: None,
+            cached_processes: Vec::new(),
+            last_disk_refresh: None,
         }
     }
 
@@ -405,237 +411,268 @@ impl Sampler {
             self.last_cpu = Some(now);
         }
         self.system.refresh_memory();
-        let kind = if cpu_due {
-            ProcessRefreshKind::everything()
-        } else {
-            ProcessRefreshKind::everything().without_cpu()
-        };
-        self.system
-            .refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
+        let process_due = cpu_due
+            || self
+                .last_process_refresh
+                .is_none_or(|last| now.duration_since(last) >= Duration::from_millis(500));
+        if process_due {
+            let kind = if cpu_due {
+                ProcessRefreshKind::everything()
+            } else {
+                ProcessRefreshKind::everything().without_cpu()
+            };
+            self.system
+                .refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
+            self.last_process_refresh = Some(now);
+        }
+
+        let disk_due = self
+            .last_disk_refresh
+            .is_none_or(|last| now.duration_since(last) >= Duration::from_millis(2000));
+        if disk_due {
+            self.disks.refresh(true);
+            self.last_disk_refresh = Some(now);
+        }
+
+        #[cfg(not(windows))]
         self.networks.refresh(true);
-        self.disks.refresh(true);
+        #[cfg(windows)]
+        if self.prev_windows_networks.is_empty() {
+            self.networks.refresh(true);
+        }
+
         self.sequence += 1;
         let first = elapsed.is_none();
         let delta = elapsed.unwrap_or_default();
         let proc_count = self.system.cpus().len().max(1) as f32;
 
-        #[cfg(windows)]
-        let basic_processes = query_windows_basic_processes().ok();
-        #[cfg(windows)]
-        let basic_map: std::collections::HashMap<u32, u64> = basic_processes
-            .map(|list| {
-                list.into_iter()
-                    .map(|p| (p.pid, p.sequence_number))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let mut processes = Vec::with_capacity(self.system.processes().len());
-        for (pid, p) in self.system.processes() {
-            let io = p.disk_usage();
+        let mut processes = if process_due || self.cached_processes.is_empty() {
             #[cfg(windows)]
-            let (read, write) = (
-                Metric::unavailable(
-                    planora_core::UNIT_BYTES_PER_SEC,
-                    "sysinfo",
-                    stamp,
-                    AvailabilityReason::Unsupported(
-                        "Windows counts all process I/O, not disk I/O".into(),
-                    ),
-                ),
-                Metric::unavailable(
-                    planora_core::UNIT_BYTES_PER_SEC,
-                    "sysinfo",
-                    stamp,
-                    AvailabilityReason::Unsupported(
-                        "Windows counts all process I/O, not disk I/O".into(),
-                    ),
-                ),
-            );
-            #[cfg(not(windows))]
-            let (read, write) = if first {
-                (
-                    Metric::unavailable(
-                        planora_core::UNIT_BYTES_PER_SEC,
-                        "sysinfo",
-                        stamp,
-                        AvailabilityReason::WarmingUp,
-                    ),
-                    Metric::unavailable(
-                        planora_core::UNIT_BYTES_PER_SEC,
-                        "sysinfo",
-                        stamp,
-                        AvailabilityReason::WarmingUp,
-                    ),
-                )
-            } else {
-                (
-                    Metric::available(
-                        rate(io.read_bytes, delta),
-                        planora_core::UNIT_BYTES_PER_SEC,
-                        "sysinfo process disk delta",
-                        stamp,
-                    ),
-                    Metric::available(
-                        rate(io.written_bytes, delta),
-                        planora_core::UNIT_BYTES_PER_SEC,
-                        "sysinfo process disk delta",
-                        stamp,
-                    ),
-                )
-            };
+            let basic_processes = query_windows_basic_processes().ok();
             #[cfg(windows)]
-            let (io_read, io_write) = if first {
-                (
-                    Metric::unavailable(
-                        planora_core::UNIT_BYTES_PER_SEC,
-                        "sysinfo process I/O",
-                        stamp,
-                        AvailabilityReason::WarmingUp,
-                    ),
-                    Metric::unavailable(
-                        planora_core::UNIT_BYTES_PER_SEC,
-                        "sysinfo process I/O",
-                        stamp,
-                        AvailabilityReason::WarmingUp,
-                    ),
-                )
-            } else {
-                (
-                    Metric::available(
-                        rate(io.read_bytes, delta),
-                        planora_core::UNIT_BYTES_PER_SEC,
-                        "Windows process I/O delta",
-                        stamp,
-                    ),
-                    Metric::available(
-                        rate(io.written_bytes, delta),
-                        planora_core::UNIT_BYTES_PER_SEC,
-                        "Windows process I/O delta",
-                        stamp,
-                    ),
-                )
-            };
-            #[cfg(not(windows))]
-            let (io_read, io_write) = (
-                Metric::unavailable(
-                    planora_core::UNIT_BYTES_PER_SEC,
-                    "OS process I/O provider",
-                    stamp,
-                    AvailabilityReason::Unsupported(
-                        "separate process I/O counter unavailable".into(),
-                    ),
-                ),
-                Metric::unavailable(
-                    planora_core::UNIT_BYTES_PER_SEC,
-                    "OS process I/O provider",
-                    stamp,
-                    AvailabilityReason::Unsupported(
-                        "separate process I/O counter unavailable".into(),
-                    ),
-                ),
-            );
-
-            #[cfg(target_os = "linux")]
-            let (started, source) = if let Ok(ticks) = linux_start_ticks(pid.as_u32()) {
-                (ticks, IdentitySource::LinuxProcStartTicks)
-            } else {
-                (p.start_time(), IdentitySource::SysinfoEpochSeconds)
-            };
-            #[cfg(target_os = "linux")]
-            let identity = ProcessIdentity {
-                pid: pid.as_u32(),
-                started,
-                sequence_number: None,
-                source,
-            };
-
-            #[cfg(windows)]
-            let (started, seq, source) = if let Some(ft) = windows_start_filetime(pid.as_u32()) {
-                (
-                    ft,
-                    basic_map.get(&pid.as_u32()).copied(),
-                    IdentitySource::WindowsProcessFiletime,
-                )
-            } else if let Some(&seq) = basic_map.get(&pid.as_u32()) {
-                (seq, Some(seq), IdentitySource::WindowsBasicProcessSequence)
-            } else {
-                (p.start_time(), None, IdentitySource::SysinfoEpochSeconds)
-            };
-            #[cfg(windows)]
-            let identity = ProcessIdentity {
-                pid: pid.as_u32(),
-                started,
-                sequence_number: seq,
-                source,
-            };
-
-            #[cfg(not(any(target_os = "linux", windows)))]
-            let identity = ProcessIdentity {
-                pid: pid.as_u32(),
-                started: p.start_time(),
-                sequence_number: None,
-                #[cfg(target_os = "macos")]
-                source: IdentitySource::DarwinStartTime,
-                #[cfg(not(target_os = "macos"))]
-                source: IdentitySource::SysinfoEpochSeconds,
-            };
-
-            let cpu = if cpu_due {
-                let metric = Metric::available(
-                    (p.cpu_usage() / proc_count).clamp(0.0, 100.0),
-                    "%",
-                    "sysinfo normalized to machine capacity",
-                    stamp,
-                );
-                self.process_cpu.insert(identity.clone(), metric.clone());
-                metric
-            } else {
-                self.process_cpu.get(&identity).cloned().unwrap_or_else(|| {
-                    Metric::unavailable(
-                        "%",
-                        "sysinfo process time delta",
-                        stamp,
-                        AvailabilityReason::WarmingUp,
-                    )
+            let basic_map: std::collections::HashMap<u32, u64> = basic_processes
+                .map(|list| {
+                    list.into_iter()
+                        .map(|p| (p.pid, p.sequence_number))
+                        .collect()
                 })
-            };
+                .unwrap_or_default();
 
-            processes.push(ProcessRecord {
-                identity,
-                name: p.name().to_string_lossy().into_owned(),
-                cpu_percent: cpu,
-                memory_bytes: Metric::available(
-                    p.memory(),
-                    "bytes",
-                    "sysinfo resident memory",
-                    stamp,
-                ),
-                disk_read_bytes_per_sec: read,
-                disk_write_bytes_per_sec: write,
-                io_read_bytes_per_sec: io_read,
-                io_write_bytes_per_sec: io_write,
-                gpu_percent: Metric::unavailable(
-                    "%",
-                    "OS GPU provider",
-                    stamp,
-                    AvailabilityReason::Unsupported("per-process GPU counter unavailable".into()),
-                ),
-                affinity: Metric::unavailable(
-                    "cpus",
-                    "OS affinity provider",
-                    stamp,
-                    AvailabilityReason::Unsupported("not queried in baseline sampler".into()),
-                ),
+            let mut procs = Vec::with_capacity(self.system.processes().len());
+            for (pid, p) in self.system.processes() {
+                let io = p.disk_usage();
+                #[cfg(windows)]
+                let (read, write) = (
+                    Metric::unavailable(
+                        planora_core::UNIT_BYTES_PER_SEC,
+                        "sysinfo",
+                        stamp,
+                        AvailabilityReason::Unsupported(
+                            "Windows counts all process I/O, not disk I/O".into(),
+                        ),
+                    ),
+                    Metric::unavailable(
+                        planora_core::UNIT_BYTES_PER_SEC,
+                        "sysinfo",
+                        stamp,
+                        AvailabilityReason::Unsupported(
+                            "Windows counts all process I/O, not disk I/O".into(),
+                        ),
+                    ),
+                );
+                #[cfg(not(windows))]
+                let (read, write) = if first {
+                    (
+                        Metric::unavailable(
+                            planora_core::UNIT_BYTES_PER_SEC,
+                            "sysinfo",
+                            stamp,
+                            AvailabilityReason::WarmingUp,
+                        ),
+                        Metric::unavailable(
+                            planora_core::UNIT_BYTES_PER_SEC,
+                            "sysinfo",
+                            stamp,
+                            AvailabilityReason::WarmingUp,
+                        ),
+                    )
+                } else {
+                    (
+                        Metric::available(
+                            rate(io.read_bytes, delta),
+                            planora_core::UNIT_BYTES_PER_SEC,
+                            "sysinfo process disk delta",
+                            stamp,
+                        ),
+                        Metric::available(
+                            rate(io.written_bytes, delta),
+                            planora_core::UNIT_BYTES_PER_SEC,
+                            "sysinfo process disk delta",
+                            stamp,
+                        ),
+                    )
+                };
+                #[cfg(windows)]
+                let (io_read, io_write) = if first {
+                    (
+                        Metric::unavailable(
+                            planora_core::UNIT_BYTES_PER_SEC,
+                            "sysinfo process I/O",
+                            stamp,
+                            AvailabilityReason::WarmingUp,
+                        ),
+                        Metric::unavailable(
+                            planora_core::UNIT_BYTES_PER_SEC,
+                            "sysinfo process I/O",
+                            stamp,
+                            AvailabilityReason::WarmingUp,
+                        ),
+                    )
+                } else {
+                    (
+                        Metric::available(
+                            rate(io.read_bytes, delta),
+                            planora_core::UNIT_BYTES_PER_SEC,
+                            "Windows process I/O delta",
+                            stamp,
+                        ),
+                        Metric::available(
+                            rate(io.written_bytes, delta),
+                            planora_core::UNIT_BYTES_PER_SEC,
+                            "Windows process I/O delta",
+                            stamp,
+                        ),
+                    )
+                };
+                #[cfg(not(windows))]
+                let (io_read, io_write) = (
+                    Metric::unavailable(
+                        planora_core::UNIT_BYTES_PER_SEC,
+                        "OS process I/O provider",
+                        stamp,
+                        AvailabilityReason::Unsupported(
+                            "separate process I/O counter unavailable".into(),
+                        ),
+                    ),
+                    Metric::unavailable(
+                        planora_core::UNIT_BYTES_PER_SEC,
+                        "OS process I/O provider",
+                        stamp,
+                        AvailabilityReason::Unsupported(
+                            "separate process I/O counter unavailable".into(),
+                        ),
+                    ),
+                );
+
+                #[cfg(target_os = "linux")]
+                let (started, source) = if let Ok(ticks) = linux_start_ticks(pid.as_u32()) {
+                    (ticks, IdentitySource::LinuxProcStartTicks)
+                } else {
+                    (p.start_time(), IdentitySource::SysinfoEpochSeconds)
+                };
+                #[cfg(target_os = "linux")]
+                let identity = ProcessIdentity {
+                    pid: pid.as_u32(),
+                    started,
+                    sequence_number: None,
+                    source,
+                };
+
+                #[cfg(windows)]
+                let (started, seq, source) = if let Some(ft) = windows_start_filetime(pid.as_u32())
+                {
+                    (
+                        ft,
+                        basic_map.get(&pid.as_u32()).copied(),
+                        IdentitySource::WindowsProcessFiletime,
+                    )
+                } else if let Some(&seq) = basic_map.get(&pid.as_u32()) {
+                    (seq, Some(seq), IdentitySource::WindowsBasicProcessSequence)
+                } else {
+                    (p.start_time(), None, IdentitySource::SysinfoEpochSeconds)
+                };
+                #[cfg(windows)]
+                let identity = ProcessIdentity {
+                    pid: pid.as_u32(),
+                    started,
+                    sequence_number: seq,
+                    source,
+                };
+
+                #[cfg(not(any(target_os = "linux", windows)))]
+                let identity = ProcessIdentity {
+                    pid: pid.as_u32(),
+                    started: p.start_time(),
+                    sequence_number: None,
+                    #[cfg(target_os = "macos")]
+                    source: IdentitySource::DarwinStartTime,
+                    #[cfg(not(target_os = "macos"))]
+                    source: IdentitySource::SysinfoEpochSeconds,
+                };
+
+                let cpu = if cpu_due {
+                    let metric = Metric::available(
+                        (p.cpu_usage() / proc_count).clamp(0.0, 100.0),
+                        "%",
+                        "sysinfo normalized to machine capacity",
+                        stamp,
+                    );
+                    self.process_cpu.insert(identity.clone(), metric.clone());
+                    metric
+                } else {
+                    self.process_cpu.get(&identity).cloned().unwrap_or_else(|| {
+                        Metric::unavailable(
+                            "%",
+                            "sysinfo process time delta",
+                            stamp,
+                            AvailabilityReason::WarmingUp,
+                        )
+                    })
+                };
+
+                procs.push(ProcessRecord {
+                    identity,
+                    name: p.name().to_string_lossy().into_owned(),
+                    cpu_percent: cpu,
+                    memory_bytes: Metric::available(
+                        p.memory(),
+                        "bytes",
+                        "sysinfo resident memory",
+                        stamp,
+                    ),
+                    disk_read_bytes_per_sec: read,
+                    disk_write_bytes_per_sec: write,
+                    io_read_bytes_per_sec: io_read,
+                    io_write_bytes_per_sec: io_write,
+                    gpu_percent: Metric::unavailable(
+                        "%",
+                        "OS GPU provider",
+                        stamp,
+                        AvailabilityReason::Unsupported(
+                            "per-process GPU counter unavailable".into(),
+                        ),
+                    ),
+                    affinity: Metric::unavailable(
+                        "cpus",
+                        "OS affinity provider",
+                        stamp,
+                        AvailabilityReason::Unsupported("not queried in baseline sampler".into()),
+                    ),
+                });
+            }
+
+            procs.sort_by(|a, b| {
+                b.cpu_percent
+                    .value
+                    .unwrap_or_default()
+                    .total_cmp(&a.cpu_percent.value.unwrap_or_default())
             });
-        }
+            self.cached_processes = procs.clone();
+            procs
+        } else {
+            self.cached_processes.clone()
+        };
 
-        processes.sort_by(|a, b| {
-            b.cpu_percent
-                .value
-                .unwrap_or_default()
-                .total_cmp(&a.cpu_percent.value.unwrap_or_default())
-        });
         let live: HashSet<_> = processes.iter().map(|p| &p.identity).collect();
         self.process_cpu
             .retain(|identity, _| live.contains(identity));

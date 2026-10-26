@@ -256,7 +256,7 @@ impl ExportManager {
                             sample.timestamp_ms.to_string(),
                             sample.value.map_or_else(String::new, |v| v.to_string()),
                             unit.into(),
-                            sample.source.clone(),
+                            sample.source.to_string(),
                             sample
                                 .unavailable_reason
                                 .as_ref()
@@ -320,7 +320,7 @@ impl ExportManager {
                             sample.minimum.map_or_else(String::new, |v| v.to_string()),
                             sample.maximum.map_or_else(String::new, |v| v.to_string()),
                             planora_core::canonicalize_unit(unit).to_string(),
-                            sample.source.clone(),
+                            sample.source.to_string(),
                             sample.count.to_string(),
                             sample
                                 .unavailable_reason

@@ -267,6 +267,10 @@ pub fn create_test_app(theme: Theme, page: Page) -> App {
         diagnostic_logs: Vec::new(),
         affinity: None,
         action_error: None,
+        live_history_enabled: false,
+        history_epoch: 0,
+        selected_identity: None,
+        priority_details: std::collections::BTreeSet::new(),
     }));
 
     App {
@@ -715,8 +719,27 @@ pub fn shapes_to_svg(width: f32, height: f32, bg: Color32, shapes: &[ClippedShap
         }
     }
 
-    for clipped in shapes {
-        recurse_shape(&clipped.shape, &mut svg);
+    let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(width, height));
+    for (idx, clipped) in shapes.iter().enumerate() {
+        let cr = clipped.clip_rect.intersect(screen);
+        if cr.is_negative() || cr.width() <= 0.0 || cr.height() <= 0.0 {
+            continue;
+        }
+        let needs_clip = cr.min.x > 0.0 || cr.min.y > 0.0 || cr.max.x < width || cr.max.y < height;
+        if needs_clip {
+            let clip_id = format!("clip_{idx}");
+            svg.push_str(&format!(
+                r#"  <clipPath id="{clip_id}"><rect x="{:.1}" y="{:.1}" width="{:.1}" height="{:.1}"/></clipPath>"#,
+                cr.min.x, cr.min.y, cr.width(), cr.height()
+            ));
+            svg.push('\n');
+            svg.push_str(&format!(r#"  <g clip-path="url(#{clip_id})">"#));
+            svg.push('\n');
+            recurse_shape(&clipped.shape, &mut svg);
+            svg.push_str("  </g>\n");
+        } else {
+            recurse_shape(&clipped.shape, &mut svg);
+        }
     }
 
     svg.push_str("</svg>\n");

@@ -15,20 +15,25 @@ pub fn render_page_header(
     p: Palette,
 ) {
     ui.horizontal(|ui| {
-        let right_width = 260.0;
-        let left_width = (ui.available_width() - right_width - 12.0).max(180.0);
+        let text_scale = crate::appearance::text_scale(ui.ctx()).max(1.0);
+        let right_width = 260.0 * text_scale;
+        let left_width = (ui.available_width() - right_width - 12.0).max(60.0);
 
         ui.allocate_ui_with_layout(
             Vec2::new(left_width, ui.available_height()),
             egui::Layout::top_down(egui::Align::LEFT),
             |ui| {
+                ui.set_max_width(left_width);
                 ui.add_space(2.0);
-                ui.heading(title);
+                ui.add(egui::Label::new(egui::RichText::new(title).heading()).truncate());
                 ui.add_space(2.0);
-                ui.label(
-                    egui::RichText::new(subtitle)
-                        .color(p.secondary)
-                        .size(12.0 * crate::appearance::text_scale(ui.ctx())),
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(subtitle)
+                            .color(p.secondary)
+                            .size(12.0 * text_scale),
+                    )
+                    .truncate(),
                 );
             },
         );
