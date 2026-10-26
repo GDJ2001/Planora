@@ -15,7 +15,10 @@ Beta.24 fixes history loss under detail-series pressure and improves range switc
 - `cargo fmt --all --check`, strict workspace Clippy, and workspace tests passed on Windows x86-64. Two pre-existing hardware-dependent tests remained ignored.
 - Installed on the reference Windows PC over beta.22 on 2026-10-26. The Burn log reports `Apply complete, result: 0x0` and no restart. The installed UI, helper, and sensor broker hashes match the beta.24 manifest; UI and helper report commit `bdfa77d` and protocol v5.
 - The `PlanoraHelper` service is running. An authorized protocol-v5 client received 20 distinct fresh snapshots; the oldest CPU reading was 603 ms. The final snapshot reported one measured Intel Iris Xe adapter, 279 GPU engine instances, and 49 sensor records (48 available). The installed UI and its sensor worker opened normally.
-- The personal settings file remains present. A continuous installed 15-minute range interaction was not observed in this verification; range switching and budget pressure are covered by focused regressions.
+- The personal settings file remains present. After 15.7 minutes of installed operation, the History page's 15-minute table reported **60 / 60 intervals observed**. Both the newest interval and the oldest `885–900 s ago` interval contained CPU, memory, disk, and network values. Switching History through 60 s, 5 min, and 15 min kept the interval rows populated.
+- The previously affected `CPU Core #1 Distance to TjMax` sensor displayed a 15-minute chart with **846 / 900 s (94%)** observed coverage. Switching Performance through 30 s, 60 s, 5 min, and 15 min kept the selected range active and did not return a `History not retained` state. [Native live capture](screenshots/native/performance-sensor-full-15m-beta24-live.png).
+- The installed UI remained responsive with 21 threads and 486 handles at 15.7 minutes. Working set was 418.9 MiB at 4.9 minutes and 419.3 MiB at 15.7 minutes; this short observation does not replace a one-hour growth profile. The saved CPU/60-second view was restored after testing.
+- A second authorized helper check after the full history observation returned another 20 distinct fresh snapshots, with maximum CPU reading age 571 ms, 49 sensor records, and 309 reported GPU engine instances.
 
 ## Package identity
 
