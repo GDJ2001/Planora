@@ -11,6 +11,8 @@ pub mod instance;
 pub mod recording;
 pub mod smoke_test;
 pub mod startup;
+#[cfg(windows)]
+pub mod startup_authorization;
 pub mod state;
 pub mod theme;
 pub mod views;
@@ -24,6 +26,8 @@ use history_worker::{HistoryInput, HistoryWorker};
 use planora_core::{Command, PROTOCOL_VERSION, ProcessIdentity};
 use recording::{Recorder, Replay};
 use state::{AppState, DisplayPause, Page, Shared, UserSettings, background_worker, is_data_stale};
+#[cfg(windows)]
+use std::sync::OnceLock;
 use std::{
     sync::{
         Arc, Mutex,
@@ -125,6 +129,9 @@ pub enum LifecycleState {
     Stopping,
 }
 
+#[cfg(windows)]
+static STARTUP_AUTH_ERROR: OnceLock<String> = OnceLock::new();
+
 impl App {
     fn reset_history(&mut self) {
         self.history_epoch = self.history_epoch.wrapping_add(1);
@@ -137,16 +144,29 @@ impl App {
         if self.authorization_child.is_some() {
             return;
         }
-        let script = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|p| p.join(script_name)));
+        let script = if script_name == "Authorize-Planora.ps1" {
+            startup_authorization::trusted_script()
+        } else {
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|p| p.join(script_name)))
+        };
         let Some(script) = script.filter(|path| path.is_file()) else {
             self.authorization_error = Some(format!(
                 "{script_name} is missing from the installed application."
             ));
             return;
         };
-        let mut command = std::process::Command::new("powershell.exe");
+        let powershell = match startup_authorization::system_powershell() {
+            Ok(path) => path,
+            Err(error) => {
+                self.authorization_error = Some(format!(
+                    "Could not find system PowerShell for helper authorization: {error}"
+                ));
+                return;
+            }
+        };
+        let mut command = std::process::Command::new(powershell);
         command
             .args([
                 "-NoProfile",
@@ -287,7 +307,7 @@ impl App {
             #[cfg(windows)]
             authorization_child: None,
             #[cfg(windows)]
-            authorization_error: None,
+            authorization_error: STARTUP_AUTH_ERROR.get().cloned(),
             page: Page::Performance,
             selected: None,
             display_pause: DisplayPause::default(),
@@ -1161,7 +1181,10 @@ impl App {
                                 ui.colored_label(p.warning, egui::RichText::new("SETUP REQUIRED").strong().size(11.0));
                                 ui.add_space(6.0);
                                 ui.heading("Connect the local helper");
-                                ui.label("Planora cannot reach its installed helper. Authorize or restart it for this Windows account to read system and process measurements. The main window stays at normal user privileges.");
+                                #[cfg(windows)]
+                                ui.label("Planora could not connect to its installed helper. Windows approval is requested before this window opens when needed. If approval was declined or the helper still cannot start, retry below. The main window stays at normal user privileges.");
+                                #[cfg(not(windows))]
+                                ui.label("Planora could not connect to its installed helper. Authorize or restart it for this account to read system and process measurements. The main window stays at normal user privileges.");
                                 ui.add_space(18.0);
                                 egui::Grid::new("authorization_steps")
                                     .num_columns(2)
@@ -1180,13 +1203,11 @@ impl App {
                                 ui.add_space(20.0);
                                 #[cfg(windows)]
                                 {
-                                    let authorization_script_available = std::env::current_exe()
-                                        .ok()
-                                        .and_then(|exe| exe.parent().map(|dir| dir.join("Authorize-Planora.ps1")))
-                                        .is_some_and(|path| path.is_file());
+                                    let authorization_script_available =
+                                        startup_authorization::trusted_script().is_some();
                                     if ui.add_enabled(
                                         self.authorization_child.is_none() && authorization_script_available,
-                                        egui::Button::new("Authorize helper…").min_size(Vec2::new(180.0, 36.0)),
+                                        egui::Button::new("Retry administrator approval…").min_size(Vec2::new(220.0, 36.0)),
                                     ).clicked() {
                                         self.launch_helper_script("Authorize-Planora.ps1");
                                     }
@@ -1714,6 +1735,13 @@ fn main() -> eframe::Result<()> {
             }
         }
     };
+    #[cfg(windows)]
+    if !capture_mode
+        && !native_fixture
+        && let Some(error) = startup_authorization::prepare_before_window()
+    {
+        let _ = STARTUP_AUTH_ERROR.set(error);
+    }
     // Native capture must honor the requested size, independent of the user's
     // saved window geometry. Give every image an isolated, empty state file.
     let capture_state_path = screenshot_out
