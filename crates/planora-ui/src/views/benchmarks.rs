@@ -5,19 +5,34 @@ use crate::{
     theme::{CORNER_RADIUS, Palette},
 };
 use eframe::egui::{self, CornerRadius, Pos2, Rect, Stroke, Vec2};
-use planora_core::{BenchmarkPoint, BenchmarkResult, BenchmarkState, Command};
+use planora_core::{BenchmarkPoint, BenchmarkResult, BenchmarkState, Command, ProfileState};
 use std::sync::mpsc::SyncSender;
 
 pub struct BenchmarksViewState {
+    pub section: usize, // 0: Micro-architectural probes, 1: Advanced profiling (ETW/PMU)
     pub matrix_input: String,
-    pub active_tab: usize, // 0: Cache Latency Curves, 1: Core Heatmap, 2: Raw Table
+    pub active_tab: usize, // 0: Cache latency table, 1: Core heatmap, 2: Raw table
+    // Profiling options:
+    pub profile_type: usize, // 0: Disk I/O, 1: PMU Sampling
+    pub duration_seconds: u32,
+    pub target_pid_input: String,
+    pub pmu_source_cycles: bool,
+    pub pmu_source_instructions: bool,
+    pub pmu_source_branches: bool,
 }
 
 impl Default for BenchmarksViewState {
     fn default() -> Self {
         Self {
+            section: 0,
             matrix_input: "0, 1, 2, 3".to_string(),
             active_tab: 0,
+            profile_type: 0,
+            duration_seconds: 15,
+            target_pid_input: String::new(),
+            pmu_source_cycles: true,
+            pmu_source_instructions: true,
+            pmu_source_branches: false,
         }
     }
 }
@@ -25,6 +40,7 @@ impl Default for BenchmarksViewState {
 pub fn render_benchmarks_view(
     ui: &mut egui::Ui,
     benchmark_state: Option<&BenchmarkState>,
+    profile_state: Option<&ProfileState>,
     state: &mut BenchmarksViewState,
     app_state: &AppState,
     pause_state: &mut DisplayPause,
@@ -35,24 +51,61 @@ pub fn render_benchmarks_view(
     // 1. Page Header
     render_page_header(
         ui,
-        "Micro-Architectural Probes",
-        "Deterministic, memory-bounded single-cycle Sattolo cache line/page probes and inter-core latency",
+        "Probing & Profiling",
+        "Cancellable cache and inter-core probes with measured methodology",
         app_state,
         pause_state,
         poll_interval_ms,
         p,
     );
 
-    // 2. Guardrails & Limits Disclosure Panel
+    // Section Toggle Toolbar
+    ui.horizontal(|ui| {
+        if ui
+            .selectable_label(
+                state.section == 0,
+                egui::RichText::new("Micro-Architectural Probes").strong(),
+            )
+            .clicked()
+        {
+            state.section = 0;
+        }
+        if ui
+            .selectable_label(
+                state.section == 1,
+                egui::RichText::new("Advanced Profiling (ETW & PMU)").strong(),
+            )
+            .clicked()
+        {
+            state.section = 1;
+        }
+    });
+
+    ui.add_space(10.0);
+
+    if state.section == 0 {
+        render_probes_section(ui, benchmark_state, state, app_state, tx, p);
+    } else {
+        render_profiling_section(ui, profile_state, benchmark_state, state, app_state, tx, p);
+    }
+}
+
+fn render_probes_section(
+    ui: &mut egui::Ui,
+    benchmark_state: Option<&BenchmarkState>,
+    state: &mut BenchmarksViewState,
+    app_state: &AppState,
+    tx: &SyncSender<Command>,
+    p: Palette,
+) {
+    // Guardrails & Limits Disclosure Panel
     egui::Frame::group(ui.style())
         .fill(p.surface)
         .stroke(Stroke::new(1.0, p.border))
         .corner_radius(CornerRadius::same(CORNER_RADIUS as u8))
         .inner_margin(egui::Margin::same(12))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.strong("Execution limits and memory budget");
-            });
+            ui.strong("Execution limits and memory budget");
             ui.add_space(4.0);
             ui.label("• Working Set Ceiling: 64 MiB (strict total process memory allocation limit 72 MiB)");
             ui.label("• Cache Probes: 12-second deadline with cancellation checks before and during batch runs");
@@ -85,7 +138,7 @@ pub fn render_benchmarks_view(
         ui.add_space(4.0);
     }
 
-    // 3. Action Controls
+    // Action Controls
     ui.horizontal(|ui| {
         let mut line_btn = ui.add_enabled(
             is_live && !is_running,
@@ -151,7 +204,7 @@ pub fn render_benchmarks_view(
 
     ui.add_space(14.0);
 
-    // 4. Status Indicator
+    // Status Indicator
     match bm_state {
         BenchmarkState::Running { job_id, elapsed_ms } => {
             ui.horizontal(|ui| {
@@ -195,6 +248,27 @@ pub fn render_benchmarks_view(
     }
 }
 
+fn render_profiling_section(
+    ui: &mut egui::Ui,
+    _profile_state: Option<&ProfileState>,
+    _benchmark_state: Option<&BenchmarkState>,
+    _state: &mut BenchmarksViewState,
+    _app_state: &AppState,
+    _tx: &SyncSender<Command>,
+    p: Palette,
+) {
+    egui::Frame::group(ui.style())
+        .fill(p.surface)
+        .stroke(Stroke::new(1.0, p.border))
+        .corner_radius(CornerRadius::same(CORNER_RADIUS as u8))
+        .inner_margin(egui::Margin::same(14))
+        .show(ui, |ui| {
+            ui.heading("Advanced profiling unavailable");
+            ui.label("This build does not collect ETW disk events or sampled PMU data. No event counts or attribution percentages are inferred.");
+            ui.label("The capability table records this limitation. Profiling controls will be enabled after a measured provider and cancellation path pass native tests.");
+        });
+}
+
 fn render_benchmark_result(
     ui: &mut egui::Ui,
     result: &BenchmarkResult,
@@ -213,7 +287,7 @@ fn render_benchmark_result(
     // View Tabs
     ui.horizontal(|ui| {
         if !result.points.is_empty() {
-            ui.selectable_value(&mut state.active_tab, 0, "Latency Curves (Log Scale)");
+            ui.selectable_value(&mut state.active_tab, 0, "Latency Table");
         }
         if !result.core_pairs.is_empty() {
             ui.selectable_value(&mut state.active_tab, 1, "Core Latency Heatmap");
@@ -225,7 +299,7 @@ fn render_benchmark_result(
 
     match state.active_tab {
         0 if !result.points.is_empty() => {
-            render_cache_curves_log_scale(ui, &result.points, p);
+            render_points_table(ui, &result.points, p);
         }
         1 if !result.core_pairs.is_empty() => {
             render_core_heatmap(ui, result, p);
@@ -234,106 +308,6 @@ fn render_benchmark_result(
             render_points_table(ui, &result.points, p);
         }
     }
-}
-
-fn render_cache_curves_log_scale(ui: &mut egui::Ui, points: &[BenchmarkPoint], p: Palette) {
-    let (rect, _resp) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), 240.0), egui::Sense::hover());
-    let painter = ui.painter_at(rect);
-
-    painter.rect_filled(rect, CornerRadius::same(CORNER_RADIUS as u8), p.surface);
-    painter.rect_stroke(
-        rect,
-        CornerRadius::same(CORNER_RADIUS as u8),
-        Stroke::new(1.0, p.border),
-        egui::StrokeKind::Inside,
-    );
-
-    let min_bytes = 16.0 * 1024.0f64; // 16 KiB
-    let max_bytes = 64.0 * 1024.0 * 1024.0f64; // 64 MiB
-    let log_min = min_bytes.log2();
-    let log_max = max_bytes.log2();
-
-    // Determine max latency ns
-    let mut max_ns = 50.0f64;
-    for pt in points {
-        if pt.p95_ns > max_ns {
-            max_ns = pt.p95_ns;
-        }
-    }
-    max_ns *= 1.15;
-
-    // Grid lines for working set (powers of 2)
-    let margin = 32.0;
-    let plot_w = rect.width() - margin * 2.0;
-    let plot_h = rect.height() - margin * 2.0;
-
-    for (kib, label) in [
-        (32, "32K"),
-        (256, "256K"),
-        (1024, "1M"),
-        (4096, "4M"),
-        (16384, "16M"),
-        (65536, "64M"),
-    ] {
-        let b = (kib * 1024) as f64;
-        let norm_x = ((b.log2() - log_min) / (log_max - log_min)).clamp(0.0, 1.0) as f32;
-        let x = rect.min.x + margin + norm_x * plot_w;
-        painter.line_segment(
-            [
-                Pos2::new(x, rect.min.y + margin),
-                Pos2::new(x, rect.max.y - margin),
-            ],
-            Stroke::new(0.5, p.border),
-        );
-        painter.text(
-            Pos2::new(x, rect.max.y - margin + 6.0),
-            egui::Align2::CENTER_TOP,
-            label,
-            egui::FontId::monospace(9.5),
-            p.secondary,
-        );
-    }
-
-    // Series curves: Min (accent), Median (primary), P95 (warning)
-    let mut pts_min = Vec::new();
-    let mut pts_med = Vec::new();
-    let mut pts_p95 = Vec::new();
-
-    for pt in points {
-        let b = pt.working_set_bytes as f64;
-        let norm_x = ((b.log2() - log_min) / (log_max - log_min)).clamp(0.0, 1.0) as f32;
-        let x = rect.min.x + margin + norm_x * plot_w;
-
-        let calc_y = |ns: f64| {
-            let norm_y = (ns / max_ns).clamp(0.0, 1.0) as f32;
-            rect.max.y - margin - norm_y * plot_h
-        };
-
-        pts_min.push(Pos2::new(x, calc_y(pt.min_ns)));
-        pts_med.push(Pos2::new(x, calc_y(pt.median_ns)));
-        pts_p95.push(Pos2::new(x, calc_y(pt.p95_ns)));
-    }
-
-    if pts_min.len() >= 2 {
-        painter.add(egui::Shape::line(pts_min, Stroke::new(1.5, p.accent)));
-    }
-    if pts_med.len() >= 2 {
-        painter.add(egui::Shape::line(pts_med, Stroke::new(2.0, p.primary)));
-    }
-    if pts_p95.len() >= 2 {
-        painter.add(egui::Shape::line(pts_p95, Stroke::new(1.5, p.warning)));
-    }
-
-    // Legend
-    ui.add_space(8.0);
-    ui.horizontal(|ui| {
-        ui.colored_label(p.accent, "● Min Latency");
-        ui.add_space(12.0);
-        ui.colored_label(p.primary, "● Median Latency");
-        ui.add_space(12.0);
-        ui.colored_label(p.warning, "● P95 Latency");
-    });
 }
 
 fn render_core_heatmap(ui: &mut egui::Ui, result: &BenchmarkResult, p: Palette) {
@@ -398,18 +372,22 @@ fn render_core_heatmap(ui: &mut egui::Ui, result: &BenchmarkResult, p: Palette) 
     // Cells
     for (i, cpu_a) in cpus.iter().enumerate() {
         for (j, cpu_b) in cpus.iter().enumerate() {
-            let x = rect.min.x + (j as f32 + 1.0) * cell_size;
-            let y = rect.min.y + (i as f32 + 1.0) * cell_size;
-            let cell_rect = Rect::from_min_size(Pos2::new(x, y), Vec2::new(cell_size, cell_size));
+            let cell_rect = Rect::from_min_size(
+                Pos2::new(
+                    rect.min.x + (j as f32 + 1.0) * cell_size,
+                    rect.min.y + (i as f32 + 1.0) * cell_size,
+                ),
+                Vec2::new(cell_size, cell_size),
+            );
 
-            if cpu_a == cpu_b {
-                // A self-pair is inapplicable, not a measured zero-latency sample.
+            if i == j {
+                // Diagonal: Same core
                 painter.rect_filled(cell_rect, CornerRadius::ZERO, p.surface_raised);
                 painter.text(
                     cell_rect.center(),
                     egui::Align2::CENTER_CENTER,
-                    "N/A",
-                    egui::FontId::monospace(10.5),
+                    "—",
+                    egui::FontId::monospace(11.0),
                     p.secondary,
                 );
             } else {
@@ -418,32 +396,28 @@ fn render_core_heatmap(ui: &mut egui::Ui, result: &BenchmarkResult, p: Palette) 
                     .iter()
                     .find(|cp| pair_matches(cp.cpu_a, cp.cpu_b, *cpu_a, *cpu_b));
                 if let Some(cp) = pair {
-                    let norm = (cp.estimated_one_way_ns / max_lat).clamp(0.0, 1.0);
-                    let color = p.accent.linear_multiply(0.2 + 0.6 * norm as f32);
-                    painter.rect_filled(cell_rect, CornerRadius::ZERO, color);
+                    let norm = (cp.estimated_one_way_ns / max_lat).clamp(0.0, 1.0) as f32;
+                    let fill_color = if norm < 0.5 {
+                        p.success.linear_multiply(0.25 + norm * 0.5)
+                    } else {
+                        p.error.linear_multiply(0.25 + (norm - 0.5) * 1.2)
+                    };
+                    painter.rect_filled(cell_rect, CornerRadius::ZERO, fill_color);
                     painter.text(
                         cell_rect.center(),
                         egui::Align2::CENTER_CENTER,
-                        format!("{:.1}", cp.estimated_one_way_ns),
-                        egui::FontId::monospace(10.5),
+                        format!("{:.0}", cp.estimated_one_way_ns),
+                        egui::FontId::monospace(11.0),
                         p.text,
                     );
 
-                    if let Some(hp) = hover_pos
-                        && cell_rect.contains(hp)
-                    {
+                    if hover_pos.is_some_and(|pos| cell_rect.contains(pos)) {
                         hovered_info = Some(format!(
-                            "Cores {} ↔ {}\nOne-way: {:.2} ns\nMin: {:.2} ns\nP95: {:.2} ns",
-                            cp.cpu_a, cp.cpu_b, cp.estimated_one_way_ns, cp.min_ns, cp.p95_ns
+                            "Core {} ↔ Core {}\nOne-way estimated: {:.1} ns\nMin RTT/2: {:.1} ns · P95: {:.1} ns",
+                            cpu_a, cpu_b, cp.estimated_one_way_ns, cp.min_ns, cp.p95_ns
                         ));
                     }
                 } else {
-                    // Unmeasured
-                    painter.rect_filled(
-                        cell_rect,
-                        CornerRadius::ZERO,
-                        p.surface_raised.linear_multiply(0.5),
-                    );
                     painter.text(
                         cell_rect.center(),
                         egui::Align2::CENTER_CENTER,

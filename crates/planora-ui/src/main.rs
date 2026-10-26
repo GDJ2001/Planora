@@ -31,9 +31,11 @@ use views::{
     benchmarks::{BenchmarksViewState, render_benchmarks_view},
     capabilities::{CapabilitiesViewState, render_capabilities_view},
     hardware::{HardwareViewState, render_hardware_view},
+    history::{HistoryViewState, render_history_view},
     overview::{OverviewViewState, render_overview_view},
     processes::{ProcessesViewState, render_processes_view},
-    settings::render_settings_view,
+    resources::{ResourcesViewState, render_resources_view},
+    settings::{SettingsViewState, render_settings_view},
 };
 
 #[cfg(target_os = "macos")]
@@ -46,6 +48,12 @@ pub struct App {
     shared: Arc<Mutex<Shared>>,
     tx: SyncSender<Command>,
     poll_ms: Arc<AtomicU64>,
+    #[cfg(windows)]
+    sensor_stop: Option<Arc<std::sync::atomic::AtomicBool>>,
+    #[cfg(windows)]
+    sensor_refresh: Option<Arc<std::sync::atomic::AtomicBool>>,
+    #[cfg(windows)]
+    sensor_worker: Option<std::thread::JoinHandle<()>>,
     settings: UserSettings,
     settings_error: Option<String>,
     recorder: Recorder,
@@ -69,12 +77,16 @@ pub struct App {
 
     // View specific state
     overview_state: OverviewViewState,
+    resources_state: ResourcesViewState,
     processes_state: ProcessesViewState,
+    history_state: HistoryViewState,
     hardware_state: HardwareViewState,
     benchmarks_state: BenchmarksViewState,
     capabilities_state: CapabilitiesViewState,
+    settings_state: SettingsViewState,
     auto_close: Option<(Instant, std::time::Duration)>,
     screenshot_out: Option<std::path::PathBuf>,
+    screenshot_pending: bool,
     frames_rendered: usize,
 }
 
@@ -131,10 +143,56 @@ impl App {
             })
             .expect("failed to spawn client worker thread");
 
+        #[cfg(windows)]
+        let sensor_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        #[cfg(windows)]
+        let sensor_refresh = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        #[cfg(windows)]
+        let sensor_worker = {
+            let worker_shared = shared.clone();
+            let stop = sensor_stop.clone();
+            let refresh = sensor_refresh.clone();
+            let context = cc.egui_ctx.clone();
+            std::thread::Builder::new()
+                .name("planora-vendor-sensors".into())
+                .spawn(move || {
+                    let mut supervisor =
+                        planora_telemetry::vendor_sensors::VendorSensorSupervisor::new(env!(
+                            "CARGO_PKG_VERSION"
+                        ));
+                    {
+                        worker_shared.lock().unwrap().sensor_capabilities =
+                            Arc::new(supervisor.probe_capabilities());
+                    }
+                    let mut last_probe = Instant::now();
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        if refresh.swap(false, std::sync::atomic::Ordering::SeqCst)
+                            || last_probe.elapsed() >= std::time::Duration::from_secs(30)
+                        {
+                            supervisor.restart();
+                            worker_shared.lock().unwrap().sensor_capabilities =
+                                Arc::new(supervisor.probe_capabilities());
+                            last_probe = Instant::now();
+                        }
+                        let readings = supervisor.poll_sensors();
+                        worker_shared.lock().unwrap().sensor_readings = Arc::new(readings);
+                        context.request_repaint();
+                        std::thread::park_timeout(std::time::Duration::from_secs(1));
+                    }
+                })
+                .ok()
+        };
+
         Self {
             shared,
             tx,
             poll_ms,
+            #[cfg(windows)]
+            sensor_stop: Some(sensor_stop),
+            #[cfg(windows)]
+            sensor_refresh: Some(sensor_refresh),
+            #[cfg(windows)]
+            sensor_worker,
             settings,
             settings_error: None,
             recorder: Recorder::default(),
@@ -153,12 +211,16 @@ impl App {
             logo_cache: LogoCache::new(),
             histories: ResourceHistories::default(),
             overview_state: OverviewViewState::default(),
+            resources_state: ResourcesViewState::default(),
             processes_state,
+            history_state: HistoryViewState::default(),
             hardware_state: HardwareViewState::default(),
             benchmarks_state: BenchmarksViewState::default(),
             capabilities_state: CapabilitiesViewState::default(),
+            settings_state: SettingsViewState::default(),
             auto_close: None,
             screenshot_out: None,
+            screenshot_pending: false,
             frames_rendered: 0,
         }
     }
@@ -278,10 +340,10 @@ impl App {
                         self.recording_error = Some(format!("Process export failed: {error}"));
                     }
                 }
-                if ui.button("Export Visible Chart Ranges CSV").clicked() {
-                    let ranges = [self.overview_state.cpu_chart.range, self.overview_state.mem_chart.range, self.overview_state.disk_chart.range, self.overview_state.net_chart.range];
+                if ui.button("Export Visible History CSV").clicked() {
+                    let ranges = [self.overview_state.range; 4];
                     if let Err(error) = self.exporter.charts(self.histories.clone(), ranges, Instant::now()) {
-                        self.recording_error = Some(format!("Chart export failed: {error}"));
+                        self.recording_error = Some(format!("History export failed: {error}"));
                     }
                 }
                 if let Some(benchmark) = benchmark
@@ -329,15 +391,29 @@ impl App {
         if let Some((start, dur)) = self.auto_close
             && start.elapsed() >= dur
         {
+            if self.screenshot_out.is_some() || self.screenshot_pending {
+                eprintln!(
+                    "Native screenshot timed out ({} frames rendered)",
+                    self.frames_rendered
+                );
+                std::process::exit(1);
+            }
             root.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
         let ctx = root.ctx().clone();
 
         self.frames_rendered = self.frames_rendered.saturating_add(1);
-        if self.frames_rendered >= 45
+        if self.screenshot_out.is_some() || self.screenshot_pending {
+            ctx.request_repaint();
+        }
+        if self.frames_rendered >= 3
+            && self
+                .auto_close
+                .is_none_or(|(start, _)| start.elapsed() >= std::time::Duration::from_secs(2))
             && let Some(path) = self.screenshot_out.take()
         {
+            self.screenshot_pending = true;
             ctx.request_screenshot(move |img| {
                 let mut raw = Vec::with_capacity(img.pixels.len() * 4);
                 for p in &img.pixels {
@@ -373,7 +449,7 @@ impl App {
         let p = self.palette(&ctx);
 
         self.replay.poll();
-        let (mut app_state, mut frame_opt, mut topo_opt, caps, shared_copy) = {
+        let (mut app_state, mut frame_opt, mut topo_opt, mut caps, shared_copy) = {
             let shared = self.shared.lock().unwrap();
             let state = shared.state.clone().unwrap_or(AppState::Connecting);
             let frame = shared.frame.clone();
@@ -385,7 +461,12 @@ impl App {
                 frame: shared.frame.clone(),
                 topology: shared.topology.clone(),
                 capabilities: shared.capabilities.clone(),
+                #[cfg(windows)]
+                sensor_readings: shared.sensor_readings.clone(),
+                #[cfg(windows)]
+                sensor_capabilities: shared.sensor_capabilities.clone(),
                 benchmark_state: shared.benchmark_state.clone(),
+                profile_state: shared.profile_state.clone(),
                 sampling_effective_ms: shared.sampling_effective_ms,
                 diagnostic_logs: shared.diagnostic_logs.clone(),
                 affinity: shared.affinity.clone(),
@@ -393,6 +474,8 @@ impl App {
             };
             (state, frame, topo, caps, shared_copy)
         };
+        #[cfg(windows)]
+        caps.extend(shared_copy.sensor_capabilities.iter().cloned());
 
         if self.replay.is_active() {
             app_state = AppState::Replay;
@@ -401,7 +484,12 @@ impl App {
         } else if app_state == AppState::Live
             && let Some(frame) = &frame_opt
         {
-            self.recorder.record(frame, self.selected.as_ref());
+            #[cfg(windows)]
+            let recording_sensors = shared_copy.sensor_readings.as_ref();
+            #[cfg(not(windows))]
+            let recording_sensors = &frame.sensors;
+            self.recorder
+                .record(frame, self.selected.as_ref(), recording_sensors);
         }
 
         // Evaluate staleness if in Live state
@@ -600,7 +688,9 @@ impl App {
                         "Overview",
                         icons::draw_overview as fn(&egui::Painter, Rect, Color32),
                     ),
+                    (Page::Resources, "Resources", icons::draw_resources),
                     (Page::Processes, "Processes", icons::draw_processes),
+                    (Page::History, "History", icons::draw_history),
                     (Page::Hardware, "Hardware", icons::draw_hardware),
                     (Page::Benchmarks, "Benchmarks", icons::draw_benchmarks),
                     (Page::Capabilities, "Capabilities", icons::draw_capabilities),
@@ -686,34 +776,112 @@ impl App {
             // Connection state views
             match &app_state {
                 AppState::AwaitingAuthorization => {
-                    ui.heading("Helper Authorization Required");
-                    ui.label("Planora requires an authorized local privileged helper before monitoring starts.");
-                    ui.add_space(8.0);
-
-                    #[cfg(windows)]
-                    if ui.add_enabled(self.authorization_child.is_none(), egui::Button::new("Authorize Windows Helper (Administrator Approval)")).clicked() {
-                        self.launch_helper_script("Authorize-Planora.ps1");
-                    }
-                    #[cfg(windows)]
-                    if self.authorization_child.is_some() { ui.spinner(); ui.label("Waiting for administrator approval and helper restart…"); }
-                    #[cfg(windows)]
-                    if let Some(error) = &self.authorization_error { ui.colored_label(p.error, error); }
-
-                    #[cfg(target_os = "macos")]
-                    if ui.button("Request macOS Daemon Approval").clicked()
-                        && unsafe { planora_register_daemon() } != 0
-                    {
-                        ui.colored_label(p.error, "Registration failed; check Console.app for details.");
-                    }
+                    ui.add_space(32.0);
+                    let card_width = ui.available_width().min(720.0);
+                    let inset = ((ui.available_width() - card_width) / 2.0).max(0.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(inset);
+                        ui.vertical(|ui| {
+                            ui.set_width(card_width);
+                            egui::Frame::group(ui.style())
+                            .fill(p.surface)
+                            .stroke(Stroke::new(1.0, p.border))
+                            .corner_radius(CornerRadius::same(8))
+                            .inner_margin(egui::Margin::same(24))
+                            .show(ui, |ui| {
+                                ui.colored_label(p.warning, egui::RichText::new("SETUP REQUIRED").strong().size(11.0));
+                                ui.add_space(6.0);
+                                ui.heading("Connect the local helper");
+                                ui.label("Planora cannot reach its installed helper. Authorize or restart it for this Windows account to read system and process measurements. The main window stays at normal user privileges.");
+                                ui.add_space(18.0);
+                                egui::Grid::new("authorization_steps")
+                                    .num_columns(2)
+                                    .spacing([18.0, 12.0])
+                                    .show(ui, |ui| {
+                                        for (step, detail) in [
+                                            ("1  Install", "Install Planora and its local helper using the platform package."),
+                                            ("2  Authorize", "Approve your platform's helper authorization for this account."),
+                                            ("3  Connect", "Planora will reconnect and begin collecting measurements."),
+                                        ] {
+                                            ui.strong(step);
+                                            ui.label(detail);
+                                            ui.end_row();
+                                        }
+                                    });
+                                ui.add_space(20.0);
+                                #[cfg(windows)]
+                                {
+                                    let authorization_script_available = std::env::current_exe()
+                                        .ok()
+                                        .and_then(|exe| exe.parent().map(|dir| dir.join("Authorize-Planora.ps1")))
+                                        .is_some_and(|path| path.is_file());
+                                    if ui.add_enabled(
+                                        self.authorization_child.is_none() && authorization_script_available,
+                                        egui::Button::new("Authorize helper…").min_size(Vec2::new(180.0, 36.0)),
+                                    ).clicked() {
+                                        self.launch_helper_script("Authorize-Planora.ps1");
+                                    }
+                                    if !authorization_script_available {
+                                        ui.colored_label(p.warning, "Install Planora with Setup to enable helper authorization.");
+                                    }
+                                    if self.authorization_child.is_some() {
+                                        ui.horizontal(|ui| {
+                                            ui.spinner();
+                                            ui.label("Waiting for administrator approval and helper restart…");
+                                        });
+                                    }
+                                    if let Some(error) = &self.authorization_error {
+                                        ui.colored_label(p.error, error);
+                                    }
+                                }
+                                #[cfg(target_os = "macos")]
+                                if ui.button("Request macOS daemon approval…").clicked()
+                                    && unsafe { planora_register_daemon() } != 0
+                                {
+                                    ui.colored_label(p.error, "Registration failed; check Console.app for details.");
+                                }
+                                ui.add_space(14.0);
+                                ui.colored_label(p.secondary, "Only local IPC is used. No network listener or automatic recording is started.");
+                            });
+                        });
+                    });
                     return;
                 }
                 AppState::IncompatibleVersion { helper_version } => {
-                    ui.heading("Incompatible Helper Version");
-                    ui.colored_label(
-                        p.error,
-                        format!("The running helper reports protocol v{helper_version}, but Planora UI requires protocol v{PROTOCOL_VERSION}."),
-                    );
-                    ui.label("Please upgrade or restart the PlanoraHelper service to continue.");
+                    ui.add_space(32.0);
+                    let card_width = ui.available_width().min(720.0);
+                    let inset = ((ui.available_width() - card_width) / 2.0).max(0.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(inset);
+                        ui.vertical(|ui| {
+                            ui.set_width(card_width);
+                            egui::Frame::group(ui.style())
+                                .fill(p.surface)
+                                .stroke(Stroke::new(1.0, p.error))
+                                .corner_radius(CornerRadius::same(8))
+                                .inner_margin(egui::Margin::same(24))
+                                .show(ui, |ui| {
+                                    ui.colored_label(p.error, egui::RichText::new("VERSION MISMATCH").strong().size(11.0));
+                                    ui.add_space(6.0);
+                                    ui.heading("Planora and its helper need the same version");
+                                    ui.label("The running helper cannot supply data to this version of Planora. Install the matching package, then reopen the application.");
+                                    ui.add_space(18.0);
+                                    egui::Grid::new("helper_version_details")
+                                        .num_columns(2)
+                                        .spacing([24.0, 10.0])
+                                        .show(ui, |ui| {
+                                            ui.label("Application protocol");
+                                            ui.monospace(format!("v{PROTOCOL_VERSION}"));
+                                            ui.end_row();
+                                            ui.label("Running helper protocol");
+                                            ui.monospace(format!("v{helper_version}"));
+                                            ui.end_row();
+                                        });
+                                    ui.add_space(16.0);
+                                    ui.colored_label(p.secondary, "Monitoring will resume after the installed helper matches this application.");
+                                });
+                        });
+                    });
                     return;
                 }
                 AppState::Failed(msg) if render_frame.is_none() => {
@@ -762,6 +930,27 @@ impl App {
                             );
                         });
                 },
+                Page::Resources => {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            render_resources_view(
+                                ui,
+                                frame,
+                                {
+                                    #[cfg(windows)]
+                                    { if app_state == AppState::Replay { &frame.sensors } else { shared_copy.sensor_readings.as_ref() } }
+                                    #[cfg(not(windows))]
+                                    { &frame.sensors }
+                                },
+                                &mut self.resources_state,
+                                &app_state,
+                                &mut self.display_pause,
+                                current_poll,
+                                p,
+                            );
+                        });
+                },
                 Page::Processes => {
                     render_processes_view(
                         ui,
@@ -789,6 +978,22 @@ impl App {
                         self.settings_error = self.settings.save().err().map(|e| format!("Could not save preferences: {e}"));
                     }
                 },
+                Page::History => {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            render_history_view(
+                                ui,
+                                render_histories,
+                                &mut self.history_state,
+                                &app_state,
+                                &mut self.display_pause,
+                                current_poll,
+                                render_now,
+                                p,
+                            );
+                        });
+                },
                 Page::Hardware => {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
@@ -811,6 +1016,7 @@ impl App {
                             render_benchmarks_view(
                                 ui,
                                 shared_copy.benchmark_state.as_ref(),
+                                shared_copy.profile_state.as_ref(),
                                 &mut self.benchmarks_state,
                                 &app_state,
                                 &mut self.display_pause,
@@ -827,12 +1033,19 @@ impl App {
                     &app_state,
                     &mut self.display_pause,
                     current_poll,
+                    &self.tx,
+                    {
+                        #[cfg(windows)]
+                        { self.sensor_refresh.as_ref() }
+                        #[cfg(not(windows))]
+                        { None }
+                    },
                     p,
                 ),
                 Page::Settings => {
                     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                         render_settings_view(
-                            ui, &mut self.settings, &mut self.settings_error, &self.poll_ms,
+                            ui, &mut self.settings, &mut self.settings_error, &mut self.settings_state, &self.poll_ms,
                             shared_copy.sampling_effective_ms, &shared_copy.diagnostic_logs,
                             &app_state, &mut self.display_pause, &self.tx, p,
                         );
@@ -860,7 +1073,31 @@ impl eframe::App for App {
     }
 }
 
+impl Drop for App {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        {
+            if let Some(stop) = &self.sensor_stop {
+                stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            if let Some(worker) = self.sensor_worker.take() {
+                worker.thread().unpark();
+                let _ = worker.join();
+            }
+        }
+    }
+}
+
 fn main() -> eframe::Result<()> {
+    #[cfg(windows)]
+    if std::env::args().any(|a| a == "--sensor-worker") {
+        let expected = std::env::args()
+            .position(|a| a == "--build-id")
+            .and_then(|idx| std::env::args().nth(idx + 1));
+        planora_telemetry::vendor_sensors::run_worker(expected.as_deref());
+        return Ok(());
+    }
+
     if std::env::args().any(|a| a == "--build-info") {
         let info = state::BUILD_INFO;
         println!(
@@ -900,7 +1137,9 @@ fn main() -> eframe::Result<()> {
             "--view" if i + 1 < args.len() => {
                 initial_page = match args[i + 1].to_lowercase().as_str() {
                     "overview" => Page::Overview,
+                    "resources" => Page::Resources,
                     "processes" => Page::Processes,
+                    "history" => Page::History,
                     "hardware" => Page::Hardware,
                     "benchmarks" => Page::Benchmarks,
                     "capabilities" => Page::Capabilities,
@@ -1036,8 +1275,12 @@ mod tests {
                 1,
                 AvailabilityReason::Unsupported("missing".into()),
             ),
+            logical_cpus: Vec::new(),
             memory_used_bytes: m.clone(),
+            memory_available_bytes: m.clone(),
             memory_total_bytes: m.clone(),
+            commit_used_bytes: m.clone(),
+            commit_total_bytes: m.clone(),
             disk_read_bytes_per_sec: m.clone(),
             disk_write_bytes_per_sec: m.clone(),
             network_rx_bytes_per_sec: m.clone(),
@@ -1048,6 +1291,7 @@ mod tests {
                 1,
                 AvailabilityReason::Unsupported("missing".into()),
             ),
+            gpu_adapters: Vec::new(),
             gpu_engines: Vec::new(),
             gpu_engine_unavailable_reason: Some(planora_core::AvailabilityReason::WarmingUp),
             disks: Vec::new(),
@@ -1058,6 +1302,7 @@ mod tests {
                 1,
                 AvailabilityReason::Unsupported("missing".into()),
             ),
+            sensors: Vec::new(),
             processes: vec![
                 make(4, 1, "Alpha", Metric::available(20.0, "%", "fixture", 1)),
                 make(

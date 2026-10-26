@@ -68,7 +68,54 @@ pub struct TimeSeries {
     pub samples: VecDeque<Sample>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ObservedSummary {
+    pub minimum: f32,
+    pub maximum: f32,
+    pub average: f32,
+    pub observed_seconds: usize,
+    pub expected_seconds: usize,
+}
+
+impl ObservedSummary {
+    pub fn coverage_percent(self) -> f32 {
+        100.0 * self.observed_seconds as f32 / self.expected_seconds.max(1) as f32
+    }
+}
+
 impl TimeSeries {
+    pub fn observed_summary(&self, now: Instant, range: HistoryRange) -> Option<ObservedSummary> {
+        let duration = range.duration();
+        let cutoff = now.checked_sub(duration).unwrap_or(now);
+        let mut buckets: std::collections::BTreeMap<u64, (f64, usize)> =
+            std::collections::BTreeMap::new();
+        for sample in &self.samples {
+            if sample.time < cutoff || sample.time > now {
+                continue;
+            }
+            if let Some(value) = sample.value.filter(|v| v.is_finite()) {
+                let second = sample.time.duration_since(cutoff).as_secs();
+                let bucket = buckets.entry(second).or_default();
+                bucket.0 += value as f64;
+                bucket.1 += 1;
+            }
+        }
+        if buckets.is_empty() {
+            return None;
+        }
+        let values: Vec<f32> = buckets
+            .values()
+            .map(|(sum, count)| (sum / *count as f64) as f32)
+            .collect();
+        let total: f64 = values.iter().map(|v| *v as f64).sum();
+        Some(ObservedSummary {
+            minimum: values.iter().copied().fold(f32::INFINITY, f32::min),
+            maximum: values.iter().copied().fold(f32::NEG_INFINITY, f32::max),
+            average: (total / values.len() as f64) as f32,
+            observed_seconds: values.len(),
+            expected_seconds: duration.as_secs() as usize,
+        })
+    }
     pub fn new() -> Self {
         Self {
             samples: VecDeque::with_capacity(3600),
@@ -443,5 +490,20 @@ mod tests {
 
         let segs = ts.normalized_segments(now, HistoryRange::Sec30, Duration::from_secs_f32(5.0));
         assert_eq!(segs.len(), 2, "Expected 2 segments split by None value");
+    }
+
+    #[test]
+    fn summary_counts_observed_seconds_without_filling_gaps() {
+        let now = Instant::now();
+        let mut series = TimeSeries::new();
+        series.push(now - Duration::from_secs(3), 1, Some(10.0));
+        series.push(now - Duration::from_millis(2_900), 2, Some(30.0));
+        series.push(now - Duration::from_secs(2), 3, None);
+        series.push(now - Duration::from_secs(1), 4, Some(50.0));
+        let summary = series.observed_summary(now, HistoryRange::Sec30).unwrap();
+        assert_eq!(summary.observed_seconds, 2);
+        assert_eq!(summary.expected_seconds, 30);
+        assert_eq!(summary.average, 35.0);
+        assert!(summary.coverage_percent() < 7.0);
     }
 }

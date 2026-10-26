@@ -1,8 +1,9 @@
 use interprocess::local_socket::prelude::*;
 use planora_bench::{ChaseMode, run_cache_probe, run_core_matrix};
 use planora_core::{
-    BenchmarkState, Capability, Command, DiagnosticEntry, ErrorCode, PROTOCOL_VERSION,
-    ProcessIdentity, Response, ResponseEnvelope, SUPPORTED_SAMPLE_INTERVALS_MS, TelemetryFrame,
+    BenchmarkState, Capability, CapabilityState, Command, DiagnosticEntry, ErrorCode,
+    PROTOCOL_VERSION, ProcessIdentity, ProfileState, Response, ResponseEnvelope,
+    SUPPORTED_SAMPLE_INTERVALS_MS, TelemetryFrame,
 };
 use planora_helper::{
     HANDSHAKE_TIMEOUT, REQUEST_TIMEOUT, caller_id, listener, peer_authorized,
@@ -174,10 +175,79 @@ impl BenchmarkManager {
     }
 }
 
+struct ProfileManager {
+    current_job_id: AtomicU64,
+    state: Mutex<ProfileState>,
+    cancel: Mutex<Arc<AtomicBool>>,
+    worker: Mutex<Option<thread::JoinHandle<()>>>,
+}
+
+impl ProfileManager {
+    fn new() -> Self {
+        Self {
+            current_job_id: AtomicU64::new(0),
+            state: Mutex::new(ProfileState::Idle),
+            cancel: Mutex::new(Arc::new(AtomicBool::new(false))),
+            worker: Mutex::new(None),
+        }
+    }
+
+    fn status(&self) -> ProfileState {
+        self.state.lock().unwrap().clone()
+    }
+
+    fn cancel(&self, job_id: u64) -> Response {
+        let active = self.current_job_id.load(Ordering::SeqCst);
+        let mut state = self.state.lock().unwrap();
+        if active == job_id
+            && matches!(
+                *state,
+                ProfileState::Running {
+                    job_id: running_id,
+                    ..
+                } if running_id == job_id
+            )
+        {
+            self.cancel.lock().unwrap().store(true, Ordering::SeqCst);
+            *state = ProfileState::Cancelling { job_id };
+            Response::ProfileStatus(state.clone())
+        } else {
+            Response::Error {
+                code: ErrorCode::NotFound,
+                message: format!("no active profile job {job_id} to cancel"),
+            }
+        }
+    }
+
+    fn stop_with_deadline(&self, timeout: Duration) -> bool {
+        self.cancel.lock().unwrap().store(true, Ordering::SeqCst);
+        let deadline = Instant::now() + timeout;
+        loop {
+            let finished = self
+                .worker
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_none_or(thread::JoinHandle::is_finished);
+            if finished {
+                if let Some(handle) = self.worker.lock().unwrap().take() {
+                    return handle.join().is_ok();
+                }
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
 struct State {
     session_id: u64,
     latest_frame: Arc<RwLock<TelemetryFrame>>,
     benchmarks: Arc<BenchmarkManager>,
+    profiling: Arc<ProfileManager>,
     diagnostics: Arc<DiagnosticLogger>,
     sampling: Arc<SamplingCoordinator>,
 }
@@ -227,38 +297,95 @@ fn capabilities() -> Vec<Capability> {
     #[cfg(not(any(target_os = "linux", windows)))]
     let (gpu, power) = (false, false);
 
+    let now = planora_telemetry::unix_ms();
+    let make = |name: &str,
+                scope: &str,
+                provider: &str,
+                state,
+                reason: Option<&str>,
+                recovery: Option<&str>| Capability {
+        name: name.into(),
+        scope: scope.into(),
+        provider: provider.into(),
+        state,
+        last_probed_at_ms: now,
+        reason: reason.map(str::to_owned),
+        recovery_action: recovery.map(str::to_owned),
+    };
     vec![
-        Capability {
-            name: "CPU and process telemetry".into(),
-            available: true,
-            reason: None,
-        },
-        Capability {
-            name: "GPU engine utilization".into(),
-            available: gpu,
-            reason: (!gpu).then(|| "supported GPU utilization counter unavailable".into()),
-        },
-        Capability {
-            name: "Package power".into(),
-            available: power,
-            reason: (!power).then(|| "supported package energy counter unavailable".into()),
-        },
-        Capability {
-            name: "PMU counters".into(),
-            available: false,
-            reason: Some("PMU provider not implemented in v1".into()),
-        },
-        Capability {
-            name: "Process affinity editing".into(),
-            available: cfg!(windows),
-            reason: if cfg!(windows) {
-                None
-            } else if cfg!(target_os = "linux") {
-                Some("Linux affinity writes disabled in v1 (affinity is per-thread without atomic process guarantees)".into())
+        make(
+            "CPU and process telemetry",
+            "System and processes",
+            "OS telemetry",
+            CapabilityState::Available,
+            None,
+            None,
+        ),
+        make(
+            "GPU engine utilization",
+            "GPU engines",
+            "Windows PDH / platform provider",
+            if gpu {
+                CapabilityState::Available
             } else {
-                Some("native affinity provider unavailable on this platform".into())
+                CapabilityState::Unsupported
             },
-        },
+            (!gpu).then_some("No supported GPU engine counter was returned"),
+            (!gpu).then_some("Refresh capabilities after updating the GPU driver"),
+        ),
+        make(
+            "Package power",
+            "CPU package",
+            "Platform energy provider",
+            if power {
+                CapabilityState::Available
+            } else {
+                CapabilityState::Unsupported
+            },
+            (!power).then_some("No supported CPU package energy counter was found"),
+            None,
+        ),
+        make(
+            "GPU memory telemetry",
+            "GPU adapters",
+            "Windows DXGI / PDH",
+            if gpu {
+                CapabilityState::Available
+            } else {
+                CapabilityState::Unsupported
+            },
+            (!gpu).then_some("No supported GPU adapter counters were returned"),
+            None,
+        ),
+        make(
+            "PMU sampled profiling",
+            "Selected process",
+            "Windows ETW profiling",
+            CapabilityState::Unsupported,
+            Some("No ETW PMU trace collector is implemented in this build"),
+            None,
+        ),
+        make(
+            "Disk I/O profiling",
+            "System and processes",
+            "Windows ETW profiling",
+            CapabilityState::Unsupported,
+            Some("No ETW disk trace collector is implemented in this build"),
+            None,
+        ),
+        make(
+            "Process affinity editing",
+            "Selected process",
+            "OS affinity API",
+            if cfg!(windows) {
+                CapabilityState::Available
+            } else {
+                CapabilityState::Unsupported
+            },
+            (!cfg!(windows))
+                .then_some("Process-wide affinity editing is not supported on this platform"),
+            None,
+        ),
     ]
 }
 
@@ -267,6 +394,9 @@ fn windows_handle(
     process: &ProcessIdentity,
     modify: bool,
 ) -> Result<windows_sys::Win32::Foundation::HANDLE, String> {
+    if !process.valid_for_windows_action() {
+        return Err("a nonzero Windows FILETIME process creation identity is required".into());
+    }
     use windows_sys::Win32::{
         Foundation::{CloseHandle, FILETIME},
         System::Threading::{
@@ -290,7 +420,7 @@ fn windows_handle(
         unsafe { GetProcessTimes(handle, &mut created, &mut exit, &mut kernel, &mut user) } != 0;
     let stamp = ((created.dwHighDateTime as u64) << 32) | (created.dwLowDateTime as u64);
 
-    if !ok || (process.started != 0 && stamp != process.started) {
+    if !ok || stamp != process.started {
         unsafe { CloseHandle(handle) };
         return Err("process identity changed or PID reused".into());
     }
@@ -460,7 +590,9 @@ fn dispatch(command: Command, req_id: u64, connection_id: u64, state: &State) ->
             let frame = state.latest_frame.read().unwrap().clone();
             Response::Snapshot(Box::new(frame))
         }
-        Command::Capabilities => Response::Capabilities(capabilities()),
+        Command::Capabilities | Command::RefreshCapabilities => {
+            Response::Capabilities(capabilities())
+        }
         Command::RunCacheProbe { job_id, page_mode } => {
             let mut bm_state = state.benchmarks.state.lock().unwrap();
             if matches!(
@@ -624,6 +756,19 @@ fn dispatch(command: Command, req_id: u64, connection_id: u64, state: &State) ->
         }
         Command::CancelBenchmark { job_id } => state.benchmarks.cancel(job_id),
         Command::BenchmarkStatus => Response::BenchmarkStatus(state.benchmarks.status()),
+        Command::StartProfile { job_id, .. } => {
+            state.diagnostics.log(
+                job_id,
+                ErrorCode::Unsupported,
+                "profiling requested but no ETW trace provider is implemented",
+            );
+            Response::Error {
+                code: ErrorCode::Unsupported,
+                message: "Disk I/O and PMU profiles require an ETW provider; this build cannot collect them yet".into(),
+            }
+        }
+        Command::CancelProfile { job_id } => state.profiling.cancel(job_id),
+        Command::ProfileStatus => Response::ProfileStatus(state.profiling.status()),
         Command::GetAffinity { process } => match get_affinity(&process) {
             Ok(logical_cpus) => Response::Affinity {
                 process,
@@ -664,7 +809,9 @@ fn dispatch(command: Command, req_id: u64, connection_id: u64, state: &State) ->
                     format!("affinity change failed for PID {}: {e}", process.pid),
                 );
                 Response::Error {
-                    code: if e.contains("disabled in Planora v1") || e.contains("unsupported") {
+                    code: if e.contains("creation identity is required") || e.contains("CPU set") {
+                        ErrorCode::InvalidInput
+                    } else if e.contains("disabled in Planora v1") || e.contains("unsupported") {
                         ErrorCode::Unsupported
                     } else if e.contains("PID reused") {
                         ErrorCode::PidReused
@@ -741,13 +888,14 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
         session_id,
         latest_frame,
         benchmarks: Arc::new(BenchmarkManager::new()),
+        profiling: Arc::new(ProfileManager::new()),
         diagnostics: diagnostics.clone(),
         sampling: sampling.clone(),
     });
 
     let listener = listener()?;
     on_ready();
-    eprintln!("Planora helper protocol v3 ready (session {session_id}, local IPC only)");
+    eprintln!("Planora helper protocol v4 ready (session {session_id}, local IPC only)");
 
     for incoming in listener.incoming() {
         if STOP.load(Ordering::Relaxed) {
@@ -881,6 +1029,13 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
             "benchmark did not acknowledge service shutdown within 2 seconds",
         );
     }
+    if !state.profiling.stop_with_deadline(Duration::from_secs(2)) {
+        diagnostics.log(
+            0,
+            ErrorCode::Busy,
+            "profiling did not acknowledge service shutdown within 2 seconds",
+        );
+    }
     if sampling_worker.is_finished() {
         let _ = sampling_worker.join();
     } else {
@@ -973,6 +1128,19 @@ mod windows_service {
 }
 
 fn main() -> io::Result<()> {
+    if std::env::args().any(|arg| arg == "--build-info") {
+        println!(
+            "{}",
+            serde_json::json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "protocolVersion": PROTOCOL_VERSION,
+                "gitCommit": env!("PLANORA_GIT_COMMIT"),
+                "target": env!("PLANORA_TARGET"),
+                "profile": env!("PLANORA_PROFILE"),
+            })
+        );
+        return Ok(());
+    }
     #[cfg(windows)]
     if std::env::args().any(|arg| arg == "--service") {
         return windows_service::start();
@@ -984,6 +1152,60 @@ fn main() -> io::Result<()> {
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
+
+    #[test]
+    fn unsupported_profile_never_starts_worker_or_fabricates_result() {
+        let state = State {
+            session_id: 1,
+            latest_frame: Arc::new(RwLock::new(Sampler::new().sample())),
+            benchmarks: Arc::new(BenchmarkManager::new()),
+            profiling: Arc::new(ProfileManager::new()),
+            diagnostics: Arc::new(DiagnosticLogger::new()),
+            sampling: Arc::new(SamplingCoordinator::default()),
+        };
+        let response = dispatch(
+            Command::StartProfile {
+                job_id: 17,
+                target: planora_core::ProfileTarget::DiskIo {
+                    target_process: None,
+                    duration_seconds: 15,
+                },
+            },
+            17,
+            1,
+            &state,
+        );
+        assert!(matches!(
+            response,
+            Response::Error {
+                code: ErrorCode::Unsupported,
+                ..
+            }
+        ));
+        assert!(matches!(state.profiling.status(), ProfileState::Idle));
+        assert!(state.profiling.worker.lock().unwrap().is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn affinity_rejects_missing_creation_identity_before_opening_pid() {
+        let identity = ProcessIdentity {
+            pid: std::process::id(),
+            started: 0,
+            sequence_number: None,
+            source: planora_core::IdentitySource::WindowsProcessFiletime,
+        };
+        assert!(
+            windows_handle(&identity, true)
+                .unwrap_err()
+                .contains("creation identity is required")
+        );
+        assert!(
+            set_affinity(&identity, &[0])
+                .unwrap_err()
+                .contains("creation identity is required")
+        );
+    }
 
     #[test]
     fn sampling_interval_uses_fastest_connected_client() {

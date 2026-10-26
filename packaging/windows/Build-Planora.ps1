@@ -12,9 +12,13 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'cargo metadata failed' }
     $version = ($metadata.packages | Where-Object { $_.name -eq 'planora-ui' } | Select-Object -First 1).version
     if (-not $version) { throw 'Could not determine Planora version' }
-    # Windows Installer ProductVersion accepts three numeric fields; keep the
-    # prerelease label in the file name and manifest while MSI upgrades use 0.2.0.
-    $productVersionExpected = ($version -split '-', 2)[0]
+    # Windows Installer ignores prerelease text. Beta builds use an ordered
+    # numeric version below 0.3.0 while leaving room for later betas.
+    $productVersionExpected = if ($version -match '^0\.3\.0-beta\.(\d+)$') {
+        "0.2.$(1000 + [int]$Matches[1])"
+    } else {
+        ($version -split '-', 2)[0]
+    }
     if ($productVersionExpected -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid MSI numeric version: $productVersionExpected" }
     $commit = (git rev-parse --short HEAD).Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Could not determine source commit' }
@@ -36,6 +40,14 @@ try {
     if ($LASTEXITCODE -ne 0 -or $identity.version -ne $version -or $identity.gitCommit -ne $commit) {
         throw "UI identity does not match source: version=$($identity.version), commit=$($identity.gitCommit); expected $version, $commit"
     }
+    $helperIdentity = (& $helper --build-info | ConvertFrom-Json)
+    if ($LASTEXITCODE -ne 0 -or $helperIdentity.version -ne $version -or
+        $helperIdentity.gitCommit -ne $commit -or
+        $helperIdentity.protocolVersion -ne $identity.protocolVersion -or
+        $helperIdentity.target -ne $identity.target -or
+        $helperIdentity.profile -ne $identity.profile) {
+        throw "Helper identity does not match UI and source: version=$($helperIdentity.version), commit=$($helperIdentity.gitCommit), protocol=$($helperIdentity.protocolVersion)"
+    }
 
     New-Item -ItemType Directory -Force -Path (Join-Path $root 'dist') | Out-Null
     $msi = Join-Path $root "dist\Planora-$version-x64.msi"
@@ -56,21 +68,29 @@ try {
         throw "MSI ProductVersion $productVersion differs from expected $productVersionExpected"
     }
 
+    $setup = Join-Path $root "dist\Planora-$version-x64-Setup.exe"
+    wix build 'packaging/windows/Planora-Bundle.wxs' -arch x64 `
+        -ext WixToolset.BootstrapperApplications.wixext `
+        -d "BundleVersion=$productVersion" -d "AppVersion=$version" -d "ProjectDir=$root" -d "MsiPath=$msi" -o $setup
+    if ($LASTEXITCODE -ne 0) { throw 'WiX Burn setup build failed' }
+
     $manifest = [pscustomobject]@{
         version = $version
         sourceCommit = $commit
         target = $identity.target
         profile = $identity.profile
         productVersion = $productVersion
+        protocolVersion = $identity.protocolVersion
         binaries = @(
             [pscustomobject]@{ file = 'planora.exe'; sha256 = (Get-FileHash -LiteralPath $ui -Algorithm SHA256).Hash },
             [pscustomobject]@{ file = 'planora-helper.exe'; sha256 = (Get-FileHash -LiteralPath $helper -Algorithm SHA256).Hash }
         )
         msi = [pscustomobject]@{ file = [IO.Path]::GetFileName($msi); sha256 = (Get-FileHash -LiteralPath $msi -Algorithm SHA256).Hash }
+        setup = [pscustomobject]@{ file = [IO.Path]::GetFileName($setup); sha256 = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash }
     }
     $manifestPath = Join-Path $root "dist\Planora-$version-x64.manifest.json"
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestPath -Encoding utf8
-    Write-Host "Built $msi from $commit; manifest $manifestPath"
+    Write-Host "Built $msi and $setup from $commit; manifest $manifestPath"
 } finally {
     Pop-Location
 }

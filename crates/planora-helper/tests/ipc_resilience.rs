@@ -40,8 +40,12 @@ fn dummy_frame(seq: u64) -> TelemetryFrame {
         sampled_at_ms: 1000 + seq * 100,
         collection_duration_ms: 1.5,
         cpu_percent: Metric::available(15.5, "%", "test", 1000),
+        logical_cpus: Vec::new(),
         memory_used_bytes: Metric::available(8 * 1024 * 1024 * 1024, "bytes", "test", 1000),
+        memory_available_bytes: Metric::available(8 * 1024 * 1024 * 1024, "bytes", "test", 1000),
         memory_total_bytes: Metric::available(16 * 1024 * 1024 * 1024, "bytes", "test", 1000),
+        commit_used_bytes: Metric::available(10 * 1024 * 1024 * 1024, "bytes", "test", 1000),
+        commit_total_bytes: Metric::available(20 * 1024 * 1024 * 1024, "bytes", "test", 1000),
         disk_read_bytes_per_sec: Metric::available(1024 * 1024, "B/s", "test", 1000),
         disk_write_bytes_per_sec: Metric::available(512 * 1024, "B/s", "test", 1000),
         network_rx_bytes_per_sec: Metric::available(2048 * 1024, "B/s", "test", 1000),
@@ -52,6 +56,7 @@ fn dummy_frame(seq: u64) -> TelemetryFrame {
             1000,
             AvailabilityReason::Unsupported("None".into()),
         ),
+        gpu_adapters: Vec::new(),
         gpu_engines: Vec::new(),
         gpu_engine_unavailable_reason: Some(AvailabilityReason::WarmingUp),
         disks: Vec::new(),
@@ -62,6 +67,7 @@ fn dummy_frame(seq: u64) -> TelemetryFrame {
             1000,
             AvailabilityReason::PermissionDenied("None".into()),
         ),
+        sensors: Vec::new(),
         processes: Vec::new(),
     }
 }

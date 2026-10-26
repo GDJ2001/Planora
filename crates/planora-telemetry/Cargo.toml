@@ -8,9 +8,11 @@ license.workspace = true
 [dependencies]
 planora-core = { path = "../planora-core" }
 sysinfo.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_Registry", "Win32_System_Performance"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_Registry", "Win32_System_Performance", "Win32_System_LibraryLoader", "Win32_System_JobObjects"] }
 
 [dev-dependencies]
 planora-bench = { path = "../planora-bench" }

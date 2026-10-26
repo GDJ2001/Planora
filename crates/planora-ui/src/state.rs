@@ -23,7 +23,9 @@ use std::{
 pub enum Page {
     #[default]
     Overview,
+    Resources,
     Processes,
+    History,
     Hardware,
     Benchmarks,
     Capabilities,
@@ -34,8 +36,8 @@ pub enum Page {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum HardwareViewMode {
     #[default]
-    Canvas,
     Tree,
+    Canvas,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -56,7 +58,7 @@ pub struct UserSettings {
 impl Default for UserSettings {
     fn default() -> Self {
         Self {
-            schema_version: 2,
+            schema_version: 3,
             theme: Theme::System,
             density: Density::Normal,
             poll_interval_ms: 100,
@@ -102,7 +104,7 @@ impl UserSettings {
                 if let Ok(data) = std::fs::read_to_string(path)
                     && let Ok(mut settings) = serde_json::from_str::<Self>(&data)
                 {
-                    settings.schema_version = 2;
+                    settings.schema_version = 3;
                     settings.poll_interval_ms = match settings.poll_interval_ms {
                         50 => 100,
                         200 => 250,
@@ -235,7 +237,12 @@ pub struct Shared {
     pub frame: Option<Arc<TelemetryFrame>>,
     pub topology: Option<Topology>,
     pub capabilities: Vec<Capability>,
+    #[cfg(windows)]
+    pub sensor_readings: Arc<Vec<planora_core::SensorReading>>,
+    #[cfg(windows)]
+    pub sensor_capabilities: Arc<Vec<Capability>>,
     pub benchmark_state: Option<BenchmarkState>,
+    pub profile_state: Option<planora_core::ProfileState>,
     pub sampling_effective_ms: Option<u64>,
     pub diagnostic_logs: Vec<DiagnosticEntry>,
     pub affinity: Option<(planora_core::ProcessIdentity, Vec<u16>)>,
@@ -273,6 +280,12 @@ fn handle_response(response: Response, state: &Arc<Mutex<Shared>>) -> bool {
         Response::BenchmarkStatus(bms) => {
             shared.benchmark_state = Some(bms);
         }
+        Response::ProfileStatus(ps) => {
+            shared.profile_state = Some(ps);
+        }
+        Response::Capabilities(caps) => {
+            shared.capabilities = caps;
+        }
         Response::SamplingStatus { effective_ms, .. } => {
             shared.sampling_effective_ms = Some(effective_ms);
         }
@@ -303,6 +316,48 @@ fn handle_response(response: Response, state: &Arc<Mutex<Shared>>) -> bool {
     true
 }
 
+/// Protocol v3 predates the structured version-mismatch response and rejects a
+/// v4 Hello as Unauthorized. Confirm the old version on a separate connection
+/// before deciding whether the user actually needs authorization.
+fn probe_legacy_v3() -> Option<u32> {
+    let mut stream = planora_helper::connect().ok()?;
+    let request = Request {
+        request_id: 1,
+        command: Command::Hello { version: 3 },
+    };
+    let response = planora_helper::exchange_request_timeout(
+        &mut stream,
+        &request,
+        planora_helper::HANDSHAKE_TIMEOUT,
+    )
+    .ok()?;
+    match response {
+        ResponseEnvelope {
+            request_id: 1,
+            response: Response::Hello { version: 3, .. },
+        } => Some(3),
+        _ => None,
+    }
+}
+
+fn connection_failure_state(
+    had_frame: bool,
+    error_kind: io::ErrorKind,
+    failure_elapsed: Duration,
+) -> AppState {
+    if had_frame {
+        AppState::Reconnecting
+    } else if error_kind == io::ErrorKind::PermissionDenied
+        || failure_elapsed >= Duration::from_secs(2)
+    {
+        // A fresh install deliberately leaves the demand-start service stopped
+        // until the user authorizes it. Avoid an endless first-launch spinner.
+        AppState::AwaitingAuthorization
+    } else {
+        AppState::Connecting
+    }
+}
+
 pub fn background_worker(
     state: Arc<Mutex<Shared>>,
     rx: Receiver<Command>,
@@ -312,21 +367,20 @@ pub fn background_worker(
     let mut next_request_id = 1u64;
     let mut _current_session_id: Option<u64> = None;
     let mut reconnect_backoff = Duration::from_millis(200);
+    let mut first_connection_failure: Option<Instant> = None;
 
     loop {
         let mut stream = match planora_helper::connect() {
             Ok(s) => s,
             Err(error) => {
+                let failure_since = *first_connection_failure.get_or_insert_with(Instant::now);
                 {
                     let mut shared = state.lock().unwrap();
-                    let had_frame = shared.frame.is_some();
-                    if had_frame {
-                        shared.state = Some(AppState::Reconnecting);
-                    } else if error.kind() == io::ErrorKind::PermissionDenied {
-                        shared.state = Some(AppState::AwaitingAuthorization);
-                    } else {
-                        shared.state = Some(AppState::Connecting);
-                    }
+                    shared.state = Some(connection_failure_state(
+                        shared.frame.is_some(),
+                        error.kind(),
+                        failure_since.elapsed(),
+                    ));
                 }
                 context.request_repaint();
                 thread::sleep(reconnect_backoff);
@@ -334,6 +388,7 @@ pub fn background_worker(
                 continue;
             }
         };
+        first_connection_failure = None;
 
         // Handshake with HANDSHAKE_TIMEOUT
         next_request_id = next_request_id.wrapping_add(1);
@@ -386,8 +441,13 @@ pub fn background_worker(
                     },
                 ..
             }) => {
+                let legacy_version = probe_legacy_v3();
                 let mut shared = state.lock().unwrap();
-                shared.state = Some(AppState::AwaitingAuthorization);
+                shared.state = Some(
+                    legacy_version.map_or(AppState::AwaitingAuthorization, |helper_version| {
+                        AppState::IncompatibleVersion { helper_version }
+                    }),
+                );
                 context.request_repaint();
                 thread::sleep(Duration::from_secs(1));
                 continue;
@@ -688,6 +748,28 @@ pub fn background_worker(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fresh_install_without_running_helper_prompts_for_authorization() {
+        use super::{AppState, connection_failure_state};
+        use std::{io, time::Duration};
+
+        assert_eq!(
+            connection_failure_state(false, io::ErrorKind::NotFound, Duration::from_millis(200)),
+            AppState::Connecting
+        );
+        assert_eq!(
+            connection_failure_state(false, io::ErrorKind::NotFound, Duration::from_secs(2)),
+            AppState::AwaitingAuthorization
+        );
+        assert_eq!(
+            connection_failure_state(false, io::ErrorKind::PermissionDenied, Duration::ZERO),
+            AppState::AwaitingAuthorization
+        );
+        assert_eq!(
+            connection_failure_state(true, io::ErrorKind::NotFound, Duration::from_secs(2)),
+            AppState::Reconnecting
+        );
+    }
     use super::*;
     use planora_core::{AvailabilityReason, Metric, PROTOCOL_VERSION, TelemetryFrame};
 
@@ -700,8 +782,12 @@ mod tests {
             sampled_at_ms: 1000 + seq * 100,
             collection_duration_ms: 1.5,
             cpu_percent: Metric::available(25.0, "%", "test", 1000),
+            logical_cpus: Vec::new(),
             memory_used_bytes: Metric::available(1024 * 1024, "bytes", "test", 1000),
+            memory_available_bytes: Metric::available(3 * 1024 * 1024, "bytes", "test", 1000),
             memory_total_bytes: Metric::available(4 * 1024 * 1024, "bytes", "test", 1000),
+            commit_used_bytes: Metric::available(2 * 1024 * 1024, "bytes", "test", 1000),
+            commit_total_bytes: Metric::available(8 * 1024 * 1024, "bytes", "test", 1000),
             disk_read_bytes_per_sec: Metric::available(0, "B/s", "test", 1000),
             disk_write_bytes_per_sec: Metric::available(0, "B/s", "test", 1000),
             network_rx_bytes_per_sec: Metric::available(0, "B/s", "test", 1000),
@@ -712,6 +798,7 @@ mod tests {
                 1000,
                 AvailabilityReason::Unsupported("None".into()),
             ),
+            gpu_adapters: Vec::new(),
             gpu_engines: Vec::new(),
             gpu_engine_unavailable_reason: Some(planora_core::AvailabilityReason::WarmingUp),
             disks: Vec::new(),
@@ -722,6 +809,7 @@ mod tests {
                 1000,
                 AvailabilityReason::Unsupported("None".into()),
             ),
+            sensors: Vec::new(),
             processes: Vec::new(),
         }
     }

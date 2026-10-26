@@ -8,7 +8,7 @@ use crate::{
     state::{AppState, DisplayPause},
     theme::{CORNER_RADIUS, Palette},
 };
-use eframe::egui::{self, CornerRadius, Pos2, Stroke, Vec2};
+use eframe::egui::{self, CornerRadius, Stroke, Vec2};
 use planora_core::{Command, ProcessIdentity, ProcessRecord, TelemetryFrame, Topology};
 use std::{
     collections::{HashMap, HashSet},
@@ -122,6 +122,8 @@ pub fn render_processes_view(
             ui.checkbox(&mut state.table_state.columns.show_pid, "PID");
             ui.checkbox(&mut state.table_state.columns.show_cpu, "CPU %");
             ui.checkbox(&mut state.table_state.columns.show_memory, "Memory");
+            ui.checkbox(&mut state.table_state.columns.show_io_read, "I/O Read");
+            ui.checkbox(&mut state.table_state.columns.show_io_write, "I/O Write");
             ui.checkbox(&mut state.table_state.columns.show_disk_read, "Disk Read");
             ui.checkbox(&mut state.table_state.columns.show_disk_write, "Disk Write");
             ui.checkbox(&mut state.table_state.columns.show_gpu, "GPU (optional)");
@@ -294,6 +296,7 @@ pub fn render_processes_view(
                         actions_disabled || pause_state.is_paused,
                         current_affinity,
                         topology,
+                        &frame.gpu_engines,
                         tx,
                         now,
                         p,
@@ -332,6 +335,7 @@ pub fn render_processes_view(
                 actions_disabled || pause_state.is_paused,
                 current_affinity,
                 topology,
+                &frame.gpu_engines,
                 tx,
                 now,
                 p,
@@ -367,13 +371,21 @@ fn render_inspector_pane(
     is_paused: bool,
     current_affinity: Option<&Vec<u16>>,
     topology: Option<&Topology>,
+    gpu_engines: &[planora_core::GpuEngineSample],
     tx: &SyncSender<Command>,
     now: Instant,
     p: Palette,
 ) {
     // Editing controls are Windows-only; other targets show read-only details.
     #[cfg(not(windows))]
-    let _ = (&state, is_paused, current_affinity, topology, tx);
+    let _ = (
+        &state,
+        is_paused,
+        current_affinity,
+        topology,
+        tx,
+        gpu_engines,
+    );
     egui::Frame::group(ui.style())
         .fill(p.surface)
         .stroke(Stroke::new(1.0, p.border))
@@ -424,51 +436,23 @@ fn render_inspector_pane(
             ui.separator();
             ui.add_space(8.0);
 
-            // Selected Process Sparkline Trends (recorded only while observed!)
-            ui.strong("Observed Trends (Since Selection)");
-            ui.add_space(4.0);
-
-            let (spark_rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 40.0), egui::Sense::hover());
-            ui.painter().rect_filled(spark_rect, CornerRadius::same(3), p.surface_raised);
-
-            let segs_cpu = histories.selected_cpu.normalized_segments(now, HistoryRange::Sec60, Duration::from_secs(3));
-            let segs_mem = histories.selected_memory.normalized_segments(now, HistoryRange::Sec60, Duration::from_secs(3));
-
-            for seg in segs_cpu {
-                if seg.len() >= 2 {
-                    let pts: Vec<Pos2> = seg
-                        .iter()
-                        .map(|(norm_x, val)| {
-                            let x = spark_rect.min.x + norm_x * spark_rect.width();
-                            let norm_y = (val / 100.0).clamp(0.0, 1.0);
-                            let y = spark_rect.max.y - norm_y * (spark_rect.height() - 4.0) - 2.0;
-                            Pos2::new(x, y)
-                        })
-                        .collect();
-                    ui.painter().add(egui::Shape::line(pts, Stroke::new(1.8, p.cpu)));
+            ui.strong("Observed history (last 60 seconds)");
+            egui::Grid::new("selected_process_history").striped(true).num_columns(4).show(ui, |ui| {
+                ui.strong("Metric"); ui.strong("Average"); ui.strong("Range"); ui.strong("Coverage"); ui.end_row();
+                for (label, series, unit, color) in [
+                    ("CPU", &histories.selected_cpu, "%", p.cpu),
+                    ("Memory", &histories.selected_memory, "bytes", p.memory),
+                ] {
+                    ui.colored_label(color, label);
+                    if let Some(summary) = series.observed_summary(now, HistoryRange::Sec60) {
+                        ui.monospace(format!("{:.1} {unit}", summary.average));
+                        ui.monospace(format!("{:.1}–{:.1}", summary.minimum, summary.maximum));
+                        ui.label(format!("{}/{} s", summary.observed_seconds, summary.expected_seconds));
+                    } else {
+                        ui.label("—"); ui.label("—"); ui.label("Collecting");
+                    }
+                    ui.end_row();
                 }
-            }
-
-            for seg in segs_mem {
-                if seg.len() >= 2 {
-                    let max_mem = 1024.0 * 1024.0 * 1024.0 * 2.0; // 2 GiB
-                    let pts: Vec<Pos2> = seg
-                        .iter()
-                        .map(|(norm_x, val)| {
-                            let x = spark_rect.min.x + norm_x * spark_rect.width();
-                            let norm_y = (val / max_mem).clamp(0.0, 1.0);
-                            let y = spark_rect.max.y - norm_y * (spark_rect.height() - 4.0) - 2.0;
-                            Pos2::new(x, y)
-                        })
-                        .collect();
-                    ui.painter().add(egui::Shape::line(pts, Stroke::new(1.5, p.memory)));
-                }
-            }
-
-            ui.horizontal(|ui| {
-                ui.colored_label(p.cpu, "● CPU %");
-                ui.add_space(10.0);
-                ui.colored_label(p.memory, "● Memory");
             });
 
             ui.add_space(10.0);
@@ -523,6 +507,35 @@ fn render_inspector_pane(
                     ui.label(egui::RichText::new(format_percent(record.gpu_percent.value)).monospace());
                     ui.end_row();
                 });
+
+            let matching_engines: Vec<_> = gpu_engines
+                .iter()
+                .filter(|e| e.process_pid == Some(record.identity.pid))
+                .collect();
+            if !matching_engines.is_empty() {
+                ui.add_space(8.0);
+                ui.strong(format!("GPU Engines ({})", matching_engines.len()));
+                egui::Grid::new("proc_gpu_engines_grid")
+                    .striped(true)
+                    .num_columns(3)
+                    .spacing([14.0, 4.0])
+                    .show(ui, |ui| {
+                        ui.strong("Adapter");
+                        ui.strong("Engine");
+                        ui.strong("Usage");
+                        ui.end_row();
+                        for eng in matching_engines {
+                            let luid_str = eng
+                                .adapter_luid
+                                .map(|l| format!("0x{l:x}"))
+                                .unwrap_or_else(|| "Adapter".into());
+                            ui.label(luid_str);
+                            ui.label(&eng.engine_type);
+                            ui.monospace(format_percent(eng.utilization_percent.value));
+                            ui.end_row();
+                        }
+                    });
+            }
 
             ui.add_space(10.0);
             ui.separator();
