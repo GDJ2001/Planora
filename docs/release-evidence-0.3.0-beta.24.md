@@ -13,7 +13,9 @@ Beta.24 fixes history loss under detail-series pressure and improves range switc
 
 - Focused regressions cover selected sensor retention under GPU engine pressure, recovery of an explicitly selected evicted engine, and 15-minute chart/table observations after changing ranges.
 - `cargo fmt --all --check`, strict workspace Clippy, and workspace tests passed on Windows x86-64. Two pre-existing hardware-dependent tests remained ignored.
-- Native long-running installed verification is pending. The previous installed package remains the rollback baseline until installation and observation complete.
+- Installed on the reference Windows PC over beta.22 on 2026-10-26. The Burn log reports `Apply complete, result: 0x0` and no restart. The installed UI, helper, and sensor broker hashes match the beta.24 manifest; UI and helper report commit `bdfa77d` and protocol v5.
+- The `PlanoraHelper` service is running. An authorized protocol-v5 client received 20 distinct fresh snapshots; the oldest CPU reading was 603 ms. The final snapshot reported one measured Intel Iris Xe adapter, 279 GPU engine instances, and 49 sensor records (48 available). The installed UI and its sensor worker opened normally.
+- The personal settings file remains present. A continuous installed 15-minute range interaction was not observed in this verification; range switching and budget pressure are covered by focused regressions.
 
 ## Package identity
 
