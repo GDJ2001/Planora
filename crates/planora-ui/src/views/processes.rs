@@ -460,6 +460,14 @@ fn render_inspector_pane(
             }
             egui::Grid::new("selected_process_history").striped(true).num_columns(4).show(ui, |ui| {
                 ui.strong("Metric"); ui.strong("Average"); ui.strong("Range"); ui.strong("Coverage"); ui.end_row();
+                let fmt_val = |v: f32, u: &str| -> String {
+                    match u {
+                        "%" => format_percent(Some(v)),
+                        "bytes" => format_bytes(v.max(0.0) as u64),
+                        "B/s" | "bytes/s" => format_rate(Some(v)),
+                        _ => format!("{:.1} {u}", v),
+                    }
+                };
                 for (label, series, unit, color) in [
                     ("CPU", &histories.selected_cpu, "%", p.cpu),
                     ("Memory", &histories.selected_memory, "bytes", p.memory),
@@ -468,8 +476,8 @@ fn render_inspector_pane(
                 ] {
                     ui.colored_label(color, label);
                     if let Some(summary) = series.observed_summary(now, HistoryRange::Sec60) {
-                        ui.monospace(format!("{:.1} {unit}", summary.average));
-                        ui.monospace(format!("{:.1}–{:.1}", summary.minimum, summary.maximum));
+                        ui.monospace(fmt_val(summary.average, unit));
+                        ui.monospace(format!("{}–{}", fmt_val(summary.minimum, unit), fmt_val(summary.maximum, unit)));
                         ui.label(format!("{}/{} s", summary.observed_seconds, summary.expected_seconds));
                     } else {
                         ui.label("—"); ui.label("—"); ui.label("Collecting");

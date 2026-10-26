@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sysinfo::{Disks, Networks, ProcessRefreshKind, ProcessesToUpdate, System};
 
+#[cfg(windows)]
 pub mod vendor_sensors;
 #[cfg(windows)]
 pub mod windows_counters;
@@ -323,6 +324,11 @@ pub struct Sampler {
     process_cpu: HashMap<ProcessIdentity, Metric<f32>>,
     prev_disks: HashMap<String, (u64, u64)>,
     prev_networks: HashMap<String, (u64, u64)>,
+    last_logical_cpus: Vec<planora_core::LogicalCpuSample>,
+    #[cfg(windows)]
+    prev_windows_networks: HashMap<u64, (u64, u64)>,
+    #[cfg(windows)]
+    prev_windows_net_instant: Option<Instant>,
     #[cfg(target_os = "linux")]
     rapl: HashMap<String, RaplSample>,
     #[cfg(windows)]
@@ -360,6 +366,11 @@ impl Sampler {
             process_cpu: HashMap::new(),
             prev_disks: HashMap::new(),
             prev_networks: HashMap::new(),
+            last_logical_cpus: Vec::new(),
+            #[cfg(windows)]
+            prev_windows_networks: HashMap::new(),
+            #[cfg(windows)]
+            prev_windows_net_instant: None,
             #[cfg(target_os = "linux")]
             rapl: HashMap::new(),
             #[cfg(windows)]
@@ -425,7 +436,7 @@ impl Sampler {
             #[cfg(windows)]
             let (read, write) = (
                 Metric::unavailable(
-                    "bytes/s",
+                    planora_core::UNIT_BYTES_PER_SEC,
                     "sysinfo",
                     stamp,
                     AvailabilityReason::Unsupported(
@@ -433,7 +444,7 @@ impl Sampler {
                     ),
                 ),
                 Metric::unavailable(
-                    "bytes/s",
+                    planora_core::UNIT_BYTES_PER_SEC,
                     "sysinfo",
                     stamp,
                     AvailabilityReason::Unsupported(
@@ -444,20 +455,30 @@ impl Sampler {
             #[cfg(not(windows))]
             let (read, write) = if first {
                 (
-                    Metric::unavailable("bytes/s", "sysinfo", stamp, AvailabilityReason::WarmingUp),
-                    Metric::unavailable("bytes/s", "sysinfo", stamp, AvailabilityReason::WarmingUp),
+                    Metric::unavailable(
+                        planora_core::UNIT_BYTES_PER_SEC,
+                        "sysinfo",
+                        stamp,
+                        AvailabilityReason::WarmingUp,
+                    ),
+                    Metric::unavailable(
+                        planora_core::UNIT_BYTES_PER_SEC,
+                        "sysinfo",
+                        stamp,
+                        AvailabilityReason::WarmingUp,
+                    ),
                 )
             } else {
                 (
                     Metric::available(
                         rate(io.read_bytes, delta),
-                        "bytes/s",
+                        planora_core::UNIT_BYTES_PER_SEC,
                         "sysinfo process disk delta",
                         stamp,
                     ),
                     Metric::available(
                         rate(io.written_bytes, delta),
-                        "bytes/s",
+                        planora_core::UNIT_BYTES_PER_SEC,
                         "sysinfo process disk delta",
                         stamp,
                     ),
@@ -467,13 +488,13 @@ impl Sampler {
             let (io_read, io_write) = if first {
                 (
                     Metric::unavailable(
-                        "bytes/s",
+                        planora_core::UNIT_BYTES_PER_SEC,
                         "sysinfo process I/O",
                         stamp,
                         AvailabilityReason::WarmingUp,
                     ),
                     Metric::unavailable(
-                        "bytes/s",
+                        planora_core::UNIT_BYTES_PER_SEC,
                         "sysinfo process I/O",
                         stamp,
                         AvailabilityReason::WarmingUp,
@@ -483,13 +504,13 @@ impl Sampler {
                 (
                     Metric::available(
                         rate(io.read_bytes, delta),
-                        "bytes/s",
+                        planora_core::UNIT_BYTES_PER_SEC,
                         "Windows process I/O delta",
                         stamp,
                     ),
                     Metric::available(
                         rate(io.written_bytes, delta),
-                        "bytes/s",
+                        planora_core::UNIT_BYTES_PER_SEC,
                         "Windows process I/O delta",
                         stamp,
                     ),
@@ -498,7 +519,7 @@ impl Sampler {
             #[cfg(not(windows))]
             let (io_read, io_write) = (
                 Metric::unavailable(
-                    "bytes/s",
+                    planora_core::UNIT_BYTES_PER_SEC,
                     "OS process I/O provider",
                     stamp,
                     AvailabilityReason::Unsupported(
@@ -506,7 +527,7 @@ impl Sampler {
                     ),
                 ),
                 Metric::unavailable(
-                    "bytes/s",
+                    planora_core::UNIT_BYTES_PER_SEC,
                     "OS process I/O provider",
                     stamp,
                     AvailabilityReason::Unsupported(
@@ -619,22 +640,685 @@ impl Sampler {
         self.process_cpu
             .retain(|identity, _| live.contains(identity));
 
-        // Deduplicate disks by name to avoid double-counting partitions on the same device
+        #[cfg(windows)]
+        let (gpu_adapters, gpu_engines, gpu_engine_unavailable_reason) =
+            match self.windows_gpu.as_mut() {
+                Some(provider) => match provider.sample(stamp) {
+                    Ok((adapters, engines)) if !engines.is_empty() => (adapters, engines, None),
+                    Ok((adapters, engines)) if !adapters.is_empty() => {
+                        (adapters, engines, Some(AvailabilityReason::WarmingUp))
+                    }
+                    Ok(_) => (
+                        Vec::new(),
+                        Vec::new(),
+                        Some(AvailabilityReason::Unsupported(
+                            "no valid GPU counter instances were reported".into(),
+                        )),
+                    ),
+                    Err(error) => (
+                        Vec::new(),
+                        Vec::new(),
+                        Some(AvailabilityReason::TemporarilyFailed(error.to_string())),
+                    ),
+                },
+                None => (
+                    Vec::new(),
+                    Vec::new(),
+                    Some(AvailabilityReason::Unsupported(
+                        "Windows PDH GPU monitoring unavailable".into(),
+                    )),
+                ),
+            };
+
+        #[cfg(windows)]
+        let (disk_read_metric, disk_write_metric, disk_devices) = {
+            let pdh_disks_available = self
+                .windows_gpu
+                .as_ref()
+                .is_some_and(|g| !g.physical_disks().is_empty());
+            if pdh_disks_available {
+                let gpu = self.windows_gpu.as_ref().unwrap();
+                let (total_r, total_w) = gpu.total_disk_io();
+                let is_primed = gpu.is_primed() && !first;
+                let pdh_stamp = gpu.last_stamp_ms().unwrap_or(stamp);
+                let disk_read_metric = if is_primed {
+                    Metric::available(
+                        total_r,
+                        planora_core::UNIT_BYTES_PER_SEC,
+                        "Windows PDH PhysicalDisk",
+                        pdh_stamp,
+                    )
+                } else {
+                    Metric::unavailable(
+                        planora_core::UNIT_BYTES_PER_SEC,
+                        "Windows PDH PhysicalDisk",
+                        stamp,
+                        AvailabilityReason::WarmingUp,
+                    )
+                };
+                let disk_write_metric = if is_primed {
+                    Metric::available(
+                        total_w,
+                        planora_core::UNIT_BYTES_PER_SEC,
+                        "Windows PDH PhysicalDisk",
+                        pdh_stamp,
+                    )
+                } else {
+                    Metric::unavailable(
+                        planora_core::UNIT_BYTES_PER_SEC,
+                        "Windows PDH PhysicalDisk",
+                        stamp,
+                        AvailabilityReason::WarmingUp,
+                    )
+                };
+
+                let mut disk_devices = Vec::new();
+                for pd in gpu.physical_disks() {
+                    let id = match pd.disk_index {
+                        Some(idx) => format!("disk:{idx}"),
+                        None => format!("disk:{}", pd.instance_name),
+                    };
+                    let label = match (pd.disk_index, pd.drive_letters.is_empty()) {
+                        (Some(idx), true) => format!("Disk {idx}"),
+                        (Some(idx), false) => {
+                            format!("Disk {idx} ({})", pd.drive_letters.join(", "))
+                        }
+                        (None, _) => format!("Disk ({})", pd.instance_name),
+                    };
+                    disk_devices.push(planora_core::ResourceDeviceSample {
+                        id,
+                        label,
+                        read_bytes_per_sec: if is_primed {
+                            Metric::available(
+                                pd.read_bytes_per_sec,
+                                planora_core::UNIT_BYTES_PER_SEC,
+                                "Windows PDH PhysicalDisk",
+                                pdh_stamp,
+                            )
+                        } else {
+                            Metric::unavailable(
+                                planora_core::UNIT_BYTES_PER_SEC,
+                                "Windows PDH PhysicalDisk",
+                                stamp,
+                                AvailabilityReason::WarmingUp,
+                            )
+                        },
+                        write_bytes_per_sec: if is_primed {
+                            Metric::available(
+                                pd.write_bytes_per_sec,
+                                planora_core::UNIT_BYTES_PER_SEC,
+                                "Windows PDH PhysicalDisk",
+                                pdh_stamp,
+                            )
+                        } else {
+                            Metric::unavailable(
+                                planora_core::UNIT_BYTES_PER_SEC,
+                                "Windows PDH PhysicalDisk",
+                                stamp,
+                                AvailabilityReason::WarmingUp,
+                            )
+                        },
+                        latency_ms: if is_primed {
+                            pd.latency_ms.map(|v| {
+                                Metric::available(
+                                    v,
+                                    planora_core::UNIT_MILLISECONDS,
+                                    "Windows PDH PhysicalDisk",
+                                    pdh_stamp,
+                                )
+                            })
+                        } else if gpu.has_disk_latency_counter() {
+                            Some(Metric::unavailable(
+                                planora_core::UNIT_MILLISECONDS,
+                                "Windows PDH PhysicalDisk",
+                                stamp,
+                                AvailabilityReason::WarmingUp,
+                            ))
+                        } else {
+                            None
+                        },
+                        queue_depth: pd.queue_depth.map(|v| {
+                            Metric::available(
+                                v,
+                                planora_core::UNIT_QUEUE_DEPTH,
+                                "Windows PDH PhysicalDisk",
+                                pdh_stamp,
+                            )
+                        }),
+                        link_speed_bps: None,
+                        link_state: None,
+                    });
+                }
+                (disk_read_metric, disk_write_metric, disk_devices)
+            } else {
+                self.sample_sysinfo_disks(first, delta, stamp)
+            }
+        };
+        #[cfg(not(windows))]
+        let (disk_read_metric, disk_write_metric, disk_devices) =
+            self.sample_sysinfo_disks(first, delta, stamp);
+
+        // 3. Network: prioritize native Windows IP Helper interface enumeration without filter duplicates
+        #[cfg(windows)]
+        let (net_rx_delta, net_tx_delta, net_agg_delta, network_interfaces) = {
+            let net_snap_now = Instant::now();
+            let win_ifaces = windows_counters::query_windows_net_interfaces();
+            let win_net_delta = self
+                .prev_windows_net_instant
+                .map(|prev| net_snap_now.duration_since(prev))
+                .unwrap_or(delta);
+            if !win_ifaces.is_empty() {
+                self.prev_windows_net_instant = Some(net_snap_now);
+                let mut network_interfaces = Vec::with_capacity(win_ifaces.len());
+                let mut net_rx_delta = 0u64;
+                let mut net_tx_delta = 0u64;
+                let has_hw = win_ifaces.iter().any(|i| i.is_hardware);
+                let mut seen_luids = HashSet::new();
+                for iface in &win_ifaces {
+                    seen_luids.insert(iface.interface_luid);
+                    let curr_rx = iface.in_octets;
+                    let curr_tx = iface.out_octets;
+
+                    let mut device_delta = None;
+                    if let Some(&(prev_rx, prev_tx)) =
+                        self.prev_windows_networks.get(&iface.interface_luid)
+                    {
+                        let rx_d = if curr_rx >= prev_rx {
+                            curr_rx - prev_rx
+                        } else if curr_rx.wrapping_sub(prev_rx) < (u64::MAX / 2) {
+                            curr_rx.wrapping_sub(prev_rx)
+                        } else {
+                            0
+                        };
+                        let tx_d = if curr_tx >= prev_tx {
+                            curr_tx - prev_tx
+                        } else if curr_tx.wrapping_sub(prev_tx) < (u64::MAX / 2) {
+                            curr_tx.wrapping_sub(prev_tx)
+                        } else {
+                            0
+                        };
+                        if !has_hw || iface.is_hardware {
+                            net_rx_delta = net_rx_delta.saturating_add(rx_d);
+                            net_tx_delta = net_tx_delta.saturating_add(tx_d);
+                        }
+                        device_delta = Some((rx_d, tx_d));
+                    }
+
+                    let source = "Windows IP Helper";
+                    let metric = |value: Option<u64>| match value {
+                        Some(value) => Metric::available(
+                            rate(value, win_net_delta),
+                            planora_core::UNIT_BYTES_PER_SEC,
+                            source,
+                            stamp,
+                        ),
+                        None => Metric::unavailable(
+                            planora_core::UNIT_BYTES_PER_SEC,
+                            source,
+                            stamp,
+                            AvailabilityReason::WarmingUp,
+                        ),
+                    };
+
+                    let label = if iface.is_hardware {
+                        iface.alias.clone()
+                    } else {
+                        format!("{} (Virtual)", iface.alias)
+                    };
+
+                    network_interfaces.push(planora_core::ResourceDeviceSample {
+                        id: format!("net_luid:0x{:016x}", iface.interface_luid),
+                        label,
+                        read_bytes_per_sec: metric(device_delta.map(|d| d.0)),
+                        write_bytes_per_sec: metric(device_delta.map(|d| d.1)),
+                        latency_ms: None,
+                        queue_depth: None,
+                        link_speed_bps: iface.speed_bps.map(|s| {
+                            Metric::available(
+                                s,
+                                planora_core::UNIT_BITS_PER_SEC,
+                                "Windows IP Helper",
+                                stamp,
+                            )
+                        }),
+                        link_state: iface.link_state.clone(),
+                    });
+
+                    self.prev_windows_networks
+                        .insert(iface.interface_luid, (curr_rx, curr_tx));
+                }
+                self.prev_windows_networks
+                    .retain(|luid, _| seen_luids.contains(luid));
+                (
+                    net_rx_delta,
+                    net_tx_delta,
+                    win_net_delta,
+                    network_interfaces,
+                )
+            } else {
+                let (rx_d, tx_d, ifaces) = self.sample_sysinfo_networks(delta, stamp);
+                (rx_d, tx_d, delta, ifaces)
+            }
+        };
+        #[cfg(not(windows))]
+        let (net_rx_delta, net_tx_delta, net_agg_delta, network_interfaces) = {
+            let (rx_d, tx_d, ifaces) = self.sample_sysinfo_networks(delta, stamp);
+            (rx_d, tx_d, delta, ifaces)
+        };
+        let network_rx_bytes_per_sec = if first {
+            Metric::unavailable(
+                planora_core::UNIT_BYTES_PER_SEC,
+                "Network interface aggregation",
+                stamp,
+                AvailabilityReason::WarmingUp,
+            )
+        } else {
+            Metric::available(
+                rate(net_rx_delta, net_agg_delta),
+                planora_core::UNIT_BYTES_PER_SEC,
+                "Network interface aggregation",
+                stamp,
+            )
+        };
+        let network_tx_bytes_per_sec = if first {
+            Metric::unavailable(
+                planora_core::UNIT_BYTES_PER_SEC,
+                "Network interface aggregation",
+                stamp,
+                AvailabilityReason::WarmingUp,
+            )
+        } else {
+            Metric::available(
+                rate(net_tx_delta, net_agg_delta),
+                planora_core::UNIT_BYTES_PER_SEC,
+                "Network interface aggregation",
+                stamp,
+            )
+        };
+
+        if cpu_due {
+            self.system_cpu = Some(Metric::available(
+                self.system.global_cpu_usage().clamp(0.0, 100.0),
+                planora_core::UNIT_PERCENT,
+                "sysinfo total CPU delta",
+                stamp,
+            ));
+        }
+        let system_cpu = self.system_cpu.clone().unwrap_or_else(|| {
+            Metric::unavailable(
+                planora_core::UNIT_PERCENT,
+                "sysinfo total CPU delta",
+                stamp,
+                AvailabilityReason::WarmingUp,
+            )
+        });
+
+        #[cfg(not(windows))]
+        let (gpu_adapters, gpu_engines, gpu_engine_unavailable_reason) = (
+            Vec::new(),
+            Vec::new(),
+            Some(AvailabilityReason::Unsupported(
+                "GPU Engine counter unavailable on this platform".into(),
+            )),
+        );
+
+        #[cfg(windows)]
+        if let Some(sample_ms) = gpu_engines
+            .first()
+            .map(|engine| engine.utilization_percent.sampled_at_ms)
+        {
+            if sample_ms != self.gpu_last_sample_ms {
+                self.gpu_validated_pids.clear();
+                for process in &processes {
+                    if self.gpu_last_identities.get(&process.identity.pid)
+                        == Some(&process.identity)
+                    {
+                        self.gpu_validated_pids.insert(process.identity.pid);
+                    }
+                }
+                self.gpu_last_identities = processes
+                    .iter()
+                    .map(|p| (p.identity.pid, p.identity.clone()))
+                    .collect();
+                self.gpu_last_sample_ms = sample_ms;
+            }
+            for process in &mut processes {
+                let busiest = gpu_engines
+                    .iter()
+                    .filter(|engine| engine.process_pid == Some(process.identity.pid))
+                    .filter_map(|engine| engine.utilization_percent.value)
+                    .max_by(f32::total_cmp);
+                process.gpu_percent = if !self.gpu_validated_pids.contains(&process.identity.pid)
+                    || self.gpu_last_identities.get(&process.identity.pid)
+                        != Some(&process.identity)
+                {
+                    Metric::unavailable(
+                        planora_core::UNIT_PERCENT,
+                        "Windows PDH GPU Engine",
+                        sample_ms,
+                        AvailabilityReason::WarmingUp,
+                    )
+                } else if let Some(value) = busiest {
+                    Metric::available(
+                        value,
+                        planora_core::UNIT_PERCENT,
+                        "Windows PDH busiest process engine",
+                        sample_ms,
+                    )
+                } else {
+                    Metric::unavailable(
+                        planora_core::UNIT_PERCENT,
+                        "Windows PDH GPU Engine",
+                        sample_ms,
+                        AvailabilityReason::Unsupported(
+                            "no engine instance for this process in the current PDH sample".into(),
+                        ),
+                    )
+                };
+            }
+        } else {
+            self.gpu_last_identities.clear();
+            self.gpu_validated_pids.clear();
+        }
+
+        #[cfg(target_os = "linux")]
+        let gpu = match amd_gpu_busy() {
+            Ok((value, device)) => Metric::available(
+                value,
+                planora_core::UNIT_PERCENT,
+                format!("Linux amdgpu {device} gpu_busy_percent"),
+                stamp,
+            ),
+            Err(reason) => Metric::unavailable(
+                planora_core::UNIT_PERCENT,
+                "Linux amdgpu sysfs",
+                stamp,
+                AvailabilityReason::Unsupported(reason),
+            ),
+        };
+        #[cfg(windows)]
+        let gpu = if let Some(busiest) = gpu_adapters
+            .iter()
+            .filter(|a| a.busiest_engine_percent.value.is_some())
+            .max_by(|a, b| {
+                a.busiest_engine_percent
+                    .value
+                    .unwrap()
+                    .total_cmp(&b.busiest_engine_percent.value.unwrap())
+            }) {
+            Metric::available(
+                busiest.busiest_engine_percent.value.unwrap(),
+                planora_core::UNIT_PERCENT,
+                "Windows PDH busiest adapter engine",
+                busiest.busiest_engine_percent.sampled_at_ms,
+            )
+        } else {
+            Metric::unavailable(
+                planora_core::UNIT_PERCENT,
+                "OS GPU provider",
+                stamp,
+                AvailabilityReason::Unsupported(
+                    "no unambiguous system GPU total; inspect individual engines when available"
+                        .into(),
+                ),
+            )
+        };
+        #[cfg(all(not(windows), not(target_os = "linux")))]
+        let gpu = Metric::unavailable(
+            planora_core::UNIT_PERCENT,
+            "OS GPU provider",
+            stamp,
+            AvailabilityReason::Unsupported(
+                "no unambiguous system GPU total; inspect individual engines when available".into(),
+            ),
+        );
+
+        #[cfg(target_os = "linux")]
+        let package_power = self.sample_rapl(now, stamp);
+        #[cfg(not(target_os = "linux"))]
+        let package_power = Metric::unavailable(
+            planora_core::UNIT_WATTS,
+            "OS power provider",
+            stamp,
+            AvailabilityReason::Unsupported(
+                "Package power counter unavailable on this platform".into(),
+            ),
+        );
+
+        // 4. Logical CPUs: emit WarmingUp on first sample, cache on !cpu_due, and map groups accurately
+        let logical_cpus: Vec<planora_core::LogicalCpuSample> = if first {
+            #[cfg(windows)]
+            let proc_map = windows_counters::windows_processor_group_map();
+            self.system
+                .cpus()
+                .iter()
+                .enumerate()
+                .map(|(idx, _)| {
+                    #[cfg(windows)]
+                    let (group, cpu_index) = proc_map
+                        .get(idx)
+                        .copied()
+                        .unwrap_or(((idx / 64) as u16, (idx % 64) as u16));
+                    #[cfg(not(windows))]
+                    let (group, cpu_index) = ((idx / 64) as u16, (idx % 64) as u16);
+
+                    planora_core::LogicalCpuSample {
+                        cpu_index,
+                        group,
+                        utilization_percent: Metric::unavailable(
+                            planora_core::UNIT_PERCENT,
+                            "sysinfo cpu",
+                            stamp,
+                            AvailabilityReason::WarmingUp,
+                        ),
+                    }
+                })
+                .collect()
+        } else if cpu_due || self.last_logical_cpus.is_empty() {
+            #[cfg(windows)]
+            let proc_map = windows_counters::windows_processor_group_map();
+            let cpus = self
+                .system
+                .cpus()
+                .iter()
+                .enumerate()
+                .map(|(idx, cpu)| {
+                    #[cfg(windows)]
+                    let (group, cpu_index) = proc_map
+                        .get(idx)
+                        .copied()
+                        .unwrap_or(((idx / 64) as u16, (idx % 64) as u16));
+                    #[cfg(not(windows))]
+                    let (group, cpu_index) = ((idx / 64) as u16, (idx % 64) as u16);
+
+                    planora_core::LogicalCpuSample {
+                        cpu_index,
+                        group,
+                        utilization_percent: Metric::available(
+                            cpu.cpu_usage().clamp(0.0, 100.0),
+                            planora_core::UNIT_PERCENT,
+                            "sysinfo cpu",
+                            stamp,
+                        ),
+                    }
+                })
+                .collect();
+            self.last_logical_cpus = cpus;
+            self.last_logical_cpus.clone()
+        } else {
+            self.last_logical_cpus.clone()
+        };
+
+        // 5. Memory: atomic snapshot from single OS call
+        #[cfg(windows)]
+        let (mem_used, mem_avail, mem_total, commit_used, commit_total) =
+            match windows_counters::get_memory_status() {
+                Some(status) => (
+                    Metric::available(
+                        status.physical_used,
+                        planora_core::UNIT_BYTES,
+                        "Windows GlobalMemoryStatusEx",
+                        stamp,
+                    ),
+                    Metric::available(
+                        status.physical_available,
+                        planora_core::UNIT_BYTES,
+                        "Windows GlobalMemoryStatusEx",
+                        stamp,
+                    ),
+                    Metric::available(
+                        status.physical_total,
+                        planora_core::UNIT_BYTES,
+                        "Windows GlobalMemoryStatusEx",
+                        stamp,
+                    ),
+                    Metric::available(
+                        status.commit_used,
+                        planora_core::UNIT_BYTES,
+                        "Windows GlobalMemoryStatusEx",
+                        stamp,
+                    ),
+                    Metric::available(
+                        status.commit_total,
+                        planora_core::UNIT_BYTES,
+                        "Windows GlobalMemoryStatusEx",
+                        stamp,
+                    ),
+                ),
+                None => (
+                    Metric::available(
+                        self.system.used_memory(),
+                        planora_core::UNIT_BYTES,
+                        "sysinfo physical memory",
+                        stamp,
+                    ),
+                    Metric::available(
+                        self.system.available_memory(),
+                        planora_core::UNIT_BYTES,
+                        "sysinfo available memory",
+                        stamp,
+                    ),
+                    Metric::available(
+                        self.system.total_memory(),
+                        planora_core::UNIT_BYTES,
+                        "sysinfo physical memory",
+                        stamp,
+                    ),
+                    Metric::unavailable(
+                        planora_core::UNIT_BYTES,
+                        "OS memory provider",
+                        stamp,
+                        AvailabilityReason::Unsupported("commit unavailable".into()),
+                    ),
+                    Metric::unavailable(
+                        planora_core::UNIT_BYTES,
+                        "OS memory provider",
+                        stamp,
+                        AvailabilityReason::Unsupported("commit unavailable".into()),
+                    ),
+                ),
+            };
+        #[cfg(not(windows))]
+        let (mem_used, mem_avail, mem_total, commit_used, commit_total) = (
+            Metric::available(
+                self.system.used_memory(),
+                planora_core::UNIT_BYTES,
+                "sysinfo physical memory",
+                stamp,
+            ),
+            Metric::available(
+                self.system.available_memory(),
+                planora_core::UNIT_BYTES,
+                "sysinfo available memory",
+                stamp,
+            ),
+            Metric::available(
+                self.system.total_memory(),
+                planora_core::UNIT_BYTES,
+                "sysinfo physical memory",
+                stamp,
+            ),
+            Metric::unavailable(
+                planora_core::UNIT_BYTES,
+                "OS memory provider",
+                stamp,
+                AvailabilityReason::Unsupported("commit unavailable on platform".into()),
+            ),
+            Metric::unavailable(
+                planora_core::UNIT_BYTES,
+                "OS memory provider",
+                stamp,
+                AvailabilityReason::Unsupported("commit unavailable on platform".into()),
+            ),
+        );
+
+        let sensors = Vec::new();
+
+        let mut frame = TelemetryFrame {
+            protocol_version: PROTOCOL_VERSION,
+            session_id: self.session_id,
+            topology_generation: self.topology_generation,
+            sequence: self.sequence,
+            sampled_at_ms: stamp,
+            collection_duration_ms: 0.0,
+            cpu_percent: system_cpu,
+            logical_cpus,
+            memory_used_bytes: mem_used,
+            memory_available_bytes: mem_avail,
+            memory_total_bytes: mem_total,
+            commit_used_bytes: commit_used,
+            commit_total_bytes: commit_total,
+            disk_read_bytes_per_sec: disk_read_metric,
+            disk_write_bytes_per_sec: disk_write_metric,
+            network_rx_bytes_per_sec,
+            network_tx_bytes_per_sec,
+            gpu_percent: gpu,
+            gpu_adapters,
+            gpu_engines,
+            gpu_engine_unavailable_reason,
+            disks: disk_devices,
+            network_interfaces,
+            package_power_watts: package_power,
+            sensors,
+            processes,
+        };
+        frame.sanitize_provider_anomalies();
+        frame.sampled_at_ms = unix_ms();
+        frame.collection_duration_ms = now.elapsed().as_secs_f32() * 1000.0;
+        self.last = Some(now);
+        frame
+    }
+
+    fn sample_sysinfo_disks(
+        &mut self,
+        first: bool,
+        delta: Duration,
+        stamp: u64,
+    ) -> (
+        Metric<u64>,
+        Metric<u64>,
+        Vec<planora_core::ResourceDeviceSample>,
+    ) {
+        let mut disk_devices = Vec::new();
         let mut disk_read_delta = 0u64;
         let mut disk_write_delta = 0u64;
         let mut seen_disks = HashSet::new();
-        let mut disk_devices = Vec::new();
         for disk in self.disks.list() {
             let name = disk.name().to_string_lossy().into_owned();
-            if !seen_disks.insert(name.clone()) {
+            let key = if name.is_empty() {
+                disk.mount_point().to_string_lossy().into_owned()
+            } else {
+                name.clone()
+            };
+            if !seen_disks.insert(key.clone()) {
                 continue;
             }
             let usage = disk.usage();
-            let curr_read = usage.read_bytes;
-            let curr_write = usage.written_bytes;
+            let curr_read = usage.total_read_bytes;
+            let curr_write = usage.total_written_bytes;
 
             let mut device_delta = None;
-            if let Some(&(prev_read, prev_write)) = self.prev_disks.get(&name) {
+            if let Some(&(prev_read, prev_write)) = self.prev_disks.get(&key) {
                 let r_delta = if curr_read >= prev_read {
                     curr_read - prev_read
                 } else if curr_read.wrapping_sub(prev_read) < (u64::MAX / 2) {
@@ -655,60 +1339,74 @@ impl Sampler {
             }
             let source = "sysinfo disk device delta";
             let metric = |value: Option<u64>| match value {
-                Some(value) => Metric::available(rate(value, delta), "bytes/s", source, stamp),
-                None => {
-                    Metric::unavailable("bytes/s", source, stamp, AvailabilityReason::WarmingUp)
-                }
-            };
-            let (lat, q) = {
-                #[cfg(windows)]
-                {
-                    self.windows_gpu
-                        .as_ref()
-                        .and_then(|gpu| {
-                            let metrics = gpu.disk_metrics();
-                            metrics
-                                .get(&name)
-                                .or_else(|| {
-                                    metrics
-                                        .iter()
-                                        .find(|(k, _)| {
-                                            k.contains(&name) || name.contains(k.as_str())
-                                        })
-                                        .map(|(_, v)| v)
-                                })
-                                .copied()
-                        })
-                        .unwrap_or((None, None))
-                }
-                #[cfg(not(windows))]
-                (None, None)
+                Some(value) => Metric::available(
+                    rate(value, delta),
+                    planora_core::UNIT_BYTES_PER_SEC,
+                    source,
+                    stamp,
+                ),
+                None => Metric::unavailable(
+                    planora_core::UNIT_BYTES_PER_SEC,
+                    source,
+                    stamp,
+                    AvailabilityReason::WarmingUp,
+                ),
             };
             disk_devices.push(planora_core::ResourceDeviceSample {
-                id: name.clone(),
-                label: name.clone(),
+                id: key.clone(),
+                label: if name.is_empty() { key.clone() } else { name },
                 read_bytes_per_sec: metric(device_delta.map(|d| d.0)),
                 write_bytes_per_sec: metric(device_delta.map(|d| d.1)),
-                latency_ms: lat
-                    .map(|v| Metric::available(v, "ms", "Windows PDH PhysicalDisk", stamp)),
-                queue_depth: q
-                    .map(|v| Metric::available(v, "queue", "Windows PDH PhysicalDisk", stamp)),
+                latency_ms: None,
+                queue_depth: None,
                 link_speed_bps: None,
                 link_state: None,
             });
-            self.prev_disks.insert(name, (curr_read, curr_write));
+            self.prev_disks.insert(key, (curr_read, curr_write));
         }
-        self.prev_disks.retain(|name, _| seen_disks.contains(name));
+        self.prev_disks.retain(|k, _| seen_disks.contains(k));
 
-        #[cfg(windows)]
-        let net_links = windows_counters::query_network_links();
-        #[cfg(not(windows))]
-        let net_links = std::collections::HashMap::<String, ()>::new();
+        let disk_read_metric = if first {
+            Metric::unavailable(
+                planora_core::UNIT_BYTES_PER_SEC,
+                "sysinfo disk device delta",
+                stamp,
+                AvailabilityReason::WarmingUp,
+            )
+        } else {
+            Metric::available(
+                rate(disk_read_delta, delta),
+                planora_core::UNIT_BYTES_PER_SEC,
+                "sysinfo disk device delta",
+                stamp,
+            )
+        };
+        let disk_write_metric = if first {
+            Metric::unavailable(
+                planora_core::UNIT_BYTES_PER_SEC,
+                "sysinfo disk device delta",
+                stamp,
+                AvailabilityReason::WarmingUp,
+            )
+        } else {
+            Metric::available(
+                rate(disk_write_delta, delta),
+                planora_core::UNIT_BYTES_PER_SEC,
+                "sysinfo disk device delta",
+                stamp,
+            )
+        };
+        (disk_read_metric, disk_write_metric, disk_devices)
+    }
 
-        // Deduplicate network interfaces and ignore loopback interfaces
+    fn sample_sysinfo_networks(
+        &mut self,
+        delta: Duration,
+        stamp: u64,
+    ) -> (u64, u64, Vec<planora_core::ResourceDeviceSample>) {
+        let mut network_interfaces = Vec::new();
         let mut net_rx_delta = 0u64;
         let mut net_tx_delta = 0u64;
-        let mut network_interfaces = Vec::new();
         let mut seen_interfaces = HashSet::new();
         for (name, net) in self.networks.iter() {
             let name_lower = name.to_lowercase();
@@ -741,26 +1439,19 @@ impl Sampler {
             }
             let source = "sysinfo interface delta";
             let metric = |value: Option<u64>| match value {
-                Some(value) => Metric::available(rate(value, delta), "bytes/s", source, stamp),
-                None => {
-                    Metric::unavailable("bytes/s", source, stamp, AvailabilityReason::WarmingUp)
-                }
+                Some(value) => Metric::available(
+                    rate(value, delta),
+                    planora_core::UNIT_BYTES_PER_SEC,
+                    source,
+                    stamp,
+                ),
+                None => Metric::unavailable(
+                    planora_core::UNIT_BYTES_PER_SEC,
+                    source,
+                    stamp,
+                    AvailabilityReason::WarmingUp,
+                ),
             };
-            #[cfg(windows)]
-            let (link_speed, link_state) = {
-                net_links
-                    .get(name)
-                    .or_else(|| {
-                        net_links
-                            .iter()
-                            .find(|(k, _)| k.contains(name) || name.contains(k.as_str()))
-                            .map(|(_, v)| v)
-                    })
-                    .map(|info| (info.speed_bps, info.link_state.clone()))
-                    .unwrap_or((None, None))
-            };
-            #[cfg(not(windows))]
-            let (link_speed, link_state) = (None, None);
 
             network_interfaces.push(planora_core::ResourceDeviceSample {
                 id: name.clone(),
@@ -769,320 +1460,14 @@ impl Sampler {
                 write_bytes_per_sec: metric(device_delta.map(|d| d.1)),
                 latency_ms: None,
                 queue_depth: None,
-                link_speed_bps: link_speed
-                    .map(|s| Metric::available(s, "bps", "Windows IP Helper", stamp)),
-                link_state,
+                link_speed_bps: None,
+                link_state: None,
             });
             self.prev_networks.insert(name.clone(), (curr_rx, curr_tx));
         }
         self.prev_networks
             .retain(|name, _| seen_interfaces.contains(name));
-
-        let measured = |value: u64, source: &str| {
-            if first {
-                Metric::unavailable("bytes/s", source, stamp, AvailabilityReason::WarmingUp)
-            } else {
-                Metric::available(rate(value, delta), "bytes/s", source, stamp)
-            }
-        };
-
-        if cpu_due {
-            self.system_cpu = Some(Metric::available(
-                self.system.global_cpu_usage().clamp(0.0, 100.0),
-                "%",
-                "sysinfo total CPU delta",
-                stamp,
-            ));
-        }
-        let system_cpu = self.system_cpu.clone().unwrap_or_else(|| {
-            Metric::unavailable(
-                "%",
-                "sysinfo total CPU delta",
-                stamp,
-                AvailabilityReason::WarmingUp,
-            )
-        });
-
-        #[cfg(target_os = "linux")]
-        let gpu = match amd_gpu_busy() {
-            Ok((value, device)) => Metric::available(
-                value,
-                "%",
-                format!("Linux amdgpu {device} gpu_busy_percent"),
-                stamp,
-            ),
-            Err(reason) => Metric::unavailable(
-                "%",
-                "Linux amdgpu sysfs",
-                stamp,
-                AvailabilityReason::Unsupported(reason),
-            ),
-        };
-        #[cfg(windows)]
-        let (gpu_adapters, gpu_engines, gpu_engine_unavailable_reason) =
-            match self.windows_gpu.as_mut() {
-                Some(provider) => match provider.sample(stamp) {
-                    Ok((adapters, engines)) if !engines.is_empty() => (adapters, engines, None),
-                    Ok((adapters, engines)) if !adapters.is_empty() => {
-                        (adapters, engines, Some(AvailabilityReason::WarmingUp))
-                    }
-                    Ok(_) => (
-                        Vec::new(),
-                        Vec::new(),
-                        Some(AvailabilityReason::Unsupported(
-                            "no valid GPU counter instances were reported".into(),
-                        )),
-                    ),
-                    Err(error) => (
-                        Vec::new(),
-                        Vec::new(),
-                        Some(AvailabilityReason::TemporarilyFailed(error.to_string())),
-                    ),
-                },
-                None => (
-                    Vec::new(),
-                    Vec::new(),
-                    Some(AvailabilityReason::Unsupported(
-                        "GPU performance counter unavailable".into(),
-                    )),
-                ),
-            };
-        #[cfg(not(windows))]
-        let gpu_adapters = Vec::new();
-        #[cfg(not(windows))]
-        let gpu_engines = Vec::new();
-        #[cfg(not(windows))]
-        let gpu_engine_unavailable_reason = Some(AvailabilityReason::Unsupported(
-            "GPU Engine counter unavailable on this platform".into(),
-        ));
-        #[cfg(windows)]
-        if let Some(sample_ms) = gpu_engines
-            .first()
-            .map(|engine| engine.utilization_percent.sampled_at_ms)
-        {
-            if sample_ms != self.gpu_last_sample_ms {
-                self.gpu_validated_pids.clear();
-                for process in &processes {
-                    if self.gpu_last_identities.get(&process.identity.pid)
-                        == Some(&process.identity)
-                    {
-                        self.gpu_validated_pids.insert(process.identity.pid);
-                    }
-                }
-                self.gpu_last_identities = processes
-                    .iter()
-                    .map(|p| (p.identity.pid, p.identity.clone()))
-                    .collect();
-                self.gpu_last_sample_ms = sample_ms;
-            }
-            for process in &mut processes {
-                let busiest = gpu_engines
-                    .iter()
-                    .filter(|engine| engine.process_pid == Some(process.identity.pid))
-                    .filter_map(|engine| engine.utilization_percent.value)
-                    .max_by(f32::total_cmp);
-                process.gpu_percent = if !self.gpu_validated_pids.contains(&process.identity.pid)
-                    || self.gpu_last_identities.get(&process.identity.pid)
-                        != Some(&process.identity)
-                {
-                    Metric::unavailable(
-                        "%",
-                        "Windows PDH GPU Engine",
-                        sample_ms,
-                        AvailabilityReason::WarmingUp,
-                    )
-                } else if let Some(value) = busiest {
-                    Metric::available(value, "%", "Windows PDH busiest process engine", sample_ms)
-                } else {
-                    Metric::unavailable(
-                        "%",
-                        "Windows PDH GPU Engine",
-                        sample_ms,
-                        AvailabilityReason::Unsupported(
-                            "no engine instance for this process in the current PDH sample".into(),
-                        ),
-                    )
-                };
-            }
-        } else {
-            self.gpu_last_identities.clear();
-            self.gpu_validated_pids.clear();
-        }
-        #[cfg(windows)]
-        let gpu = if let Some(busiest) = gpu_adapters
-            .iter()
-            .filter(|a| a.busiest_engine_percent.value.is_some())
-            .max_by(|a, b| {
-                a.busiest_engine_percent
-                    .value
-                    .unwrap()
-                    .total_cmp(&b.busiest_engine_percent.value.unwrap())
-            }) {
-            Metric::available(
-                busiest.busiest_engine_percent.value.unwrap(),
-                "%",
-                "Windows PDH busiest adapter engine",
-                busiest.busiest_engine_percent.sampled_at_ms,
-            )
-        } else {
-            Metric::unavailable(
-                "%",
-                "OS GPU provider",
-                stamp,
-                AvailabilityReason::Unsupported(
-                    "no unambiguous system GPU total; inspect individual engines when available"
-                        .into(),
-                ),
-            )
-        };
-        #[cfg(all(not(windows), not(target_os = "linux")))]
-        let gpu = Metric::unavailable(
-            "%",
-            "OS GPU provider",
-            stamp,
-            AvailabilityReason::Unsupported(
-                "no unambiguous system GPU total; inspect individual engines when available".into(),
-            ),
-        );
-
-        #[cfg(target_os = "linux")]
-        let package_power = self.sample_rapl(now, stamp);
-        #[cfg(not(target_os = "linux"))]
-        let package_power = Metric::unavailable(
-            "W",
-            "OS power provider",
-            stamp,
-            AvailabilityReason::Unsupported(
-                "Package power counter unavailable on this platform".into(),
-            ),
-        );
-
-        let logical_cpus: Vec<planora_core::LogicalCpuSample> = self
-            .system
-            .cpus()
-            .iter()
-            .enumerate()
-            .map(|(idx, cpu)| planora_core::LogicalCpuSample {
-                cpu_index: (idx % 64) as u16,
-                group: (idx / 64) as u16,
-                utilization_percent: Metric::available(
-                    cpu.cpu_usage().clamp(0.0, 100.0),
-                    "%",
-                    "sysinfo cpu",
-                    stamp,
-                ),
-            })
-            .collect();
-
-        #[cfg(windows)]
-        let (memory_avail, commit_used, commit_total) = match windows_counters::get_memory_status()
-        {
-            Some(status) => (
-                Metric::available(
-                    status.physical_available,
-                    "bytes",
-                    "Windows GlobalMemoryStatusEx",
-                    stamp,
-                ),
-                Metric::available(
-                    status.commit_used,
-                    "bytes",
-                    "Windows GlobalMemoryStatusEx",
-                    stamp,
-                ),
-                Metric::available(
-                    status.commit_total,
-                    "bytes",
-                    "Windows GlobalMemoryStatusEx",
-                    stamp,
-                ),
-            ),
-            None => (
-                Metric::available(
-                    self.system.available_memory(),
-                    "bytes",
-                    "sysinfo available memory",
-                    stamp,
-                ),
-                Metric::unavailable(
-                    "bytes",
-                    "OS memory provider",
-                    stamp,
-                    AvailabilityReason::Unsupported("commit unavailable".into()),
-                ),
-                Metric::unavailable(
-                    "bytes",
-                    "OS memory provider",
-                    stamp,
-                    AvailabilityReason::Unsupported("commit unavailable".into()),
-                ),
-            ),
-        };
-        #[cfg(not(windows))]
-        let (memory_avail, commit_used, commit_total) = (
-            Metric::available(
-                self.system.available_memory(),
-                "bytes",
-                "sysinfo available memory",
-                stamp,
-            ),
-            Metric::unavailable(
-                "bytes",
-                "OS memory provider",
-                stamp,
-                AvailabilityReason::Unsupported("commit unavailable on platform".into()),
-            ),
-            Metric::unavailable(
-                "bytes",
-                "OS memory provider",
-                stamp,
-                AvailabilityReason::Unsupported("commit unavailable on platform".into()),
-            ),
-        );
-
-        let sensors = Vec::new();
-
-        let mut frame = TelemetryFrame {
-            protocol_version: PROTOCOL_VERSION,
-            session_id: self.session_id,
-            topology_generation: self.topology_generation,
-            sequence: self.sequence,
-            sampled_at_ms: stamp,
-            collection_duration_ms: 0.0,
-            cpu_percent: system_cpu,
-            logical_cpus,
-            memory_used_bytes: Metric::available(
-                self.system.used_memory(),
-                "bytes",
-                "sysinfo physical memory",
-                stamp,
-            ),
-            memory_available_bytes: memory_avail,
-            memory_total_bytes: Metric::available(
-                self.system.total_memory(),
-                "bytes",
-                "sysinfo physical memory",
-                stamp,
-            ),
-            commit_used_bytes: commit_used,
-            commit_total_bytes: commit_total,
-            disk_read_bytes_per_sec: measured(disk_read_delta, "sysinfo disk device delta"),
-            disk_write_bytes_per_sec: measured(disk_write_delta, "sysinfo disk device delta"),
-            network_rx_bytes_per_sec: measured(net_rx_delta, "sysinfo interface delta"),
-            network_tx_bytes_per_sec: measured(net_tx_delta, "sysinfo interface delta"),
-            gpu_percent: gpu,
-            gpu_adapters,
-            gpu_engines,
-            gpu_engine_unavailable_reason,
-            disks: disk_devices,
-            network_interfaces,
-            package_power_watts: package_power,
-            sensors,
-            processes,
-        };
-        frame.collection_duration_ms = now.elapsed().as_secs_f32() * 1000.0;
-        self.last = Some(now);
-        frame
+        (net_rx_delta, net_tx_delta, network_interfaces)
     }
 
     #[cfg(target_os = "linux")]
@@ -1192,7 +1577,10 @@ mod tests {
         assert!(f.disk_read_bytes_per_sec.value.is_none());
         assert!(f.network_rx_bytes_per_sec.value.is_none());
         assert_eq!(f.cpu_percent.unit, "%");
-        assert_eq!(f.disk_read_bytes_per_sec.unit, "bytes/s");
+        assert_eq!(
+            f.disk_read_bytes_per_sec.unit,
+            planora_core::UNIT_BYTES_PER_SEC
+        );
         assert_eq!(
             f.cpu_percent.unavailable_reason,
             Some(AvailabilityReason::WarmingUp)
@@ -1219,6 +1607,62 @@ mod tests {
         assert!(cached.cpu_percent.value.is_some());
         assert!(cached.cpu_percent.sampled_at_ms >= later.cpu_percent.sampled_at_ms);
         assert!(later.validate().is_ok());
+    }
+
+    #[test]
+    fn live_telemetry_accuracy_and_contract_validation() {
+        let mut sampler = Sampler::new();
+        let _ = sampler.sample();
+        std::thread::sleep(Duration::from_millis(250));
+        let frame = sampler.sample();
+        assert!(frame.validate().is_ok());
+
+        println!("=== LIVE VALIDATED TELEMETRY FRAME ===");
+        println!("Logical CPUs: {}", frame.logical_cpus.len());
+        println!(
+            "Memory: {} / {} (Available: {})",
+            frame.memory_used_bytes.value.unwrap_or(0),
+            frame.memory_total_bytes.value.unwrap_or(0),
+            frame.memory_available_bytes.value.unwrap_or(0)
+        );
+        println!(
+            "Commit: {} / {}",
+            frame.commit_used_bytes.value.unwrap_or(0),
+            frame.commit_total_bytes.value.unwrap_or(0)
+        );
+        println!("Disks (Physical): {}", frame.disks.len());
+        for disk in &frame.disks {
+            println!(
+                "  Disk '{}': latency={:?} ms, queue={:?}, r_rate={:?} B/s, w_rate={:?} B/s",
+                disk.label,
+                disk.latency_ms.as_ref().and_then(|m| m.value),
+                disk.queue_depth.as_ref().and_then(|m| m.value),
+                disk.read_bytes_per_sec.value,
+                disk.write_bytes_per_sec.value
+            );
+        }
+        println!("Network Interfaces: {}", frame.network_interfaces.len());
+        for iface in &frame.network_interfaces {
+            println!(
+                "  Net '{}': rx={:?} B/s, tx={:?} B/s, link={:?} bps",
+                iface.label,
+                iface.read_bytes_per_sec.value,
+                iface.write_bytes_per_sec.value,
+                iface.link_speed_bps.as_ref().and_then(|m| m.value)
+            );
+        }
+        println!("GPU Adapters: {}", frame.gpu_adapters.len());
+        for gpu in &frame.gpu_adapters {
+            println!(
+                "  GPU '{}': busiest={:?}%, dedicated_used={:?}, dedicated_total={:?}, shared_used={:?}, shared_total={:?}",
+                gpu.name,
+                gpu.busiest_engine_percent.value,
+                gpu.dedicated_used_bytes.value,
+                gpu.dedicated_total_bytes.value,
+                gpu.shared_used_bytes.value,
+                gpu.shared_total_bytes.value
+            );
+        }
     }
 
     #[test]

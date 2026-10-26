@@ -50,7 +50,7 @@ public class SampleResponse
     public string Status { get; set; } = "ok";
 
     [JsonPropertyName("version")]
-    public string Version { get; set; } = "0.3.0-beta.22";
+    public string Version { get; set; } = Program.AppVersion;
 
     [JsonPropertyName("build_commit")]
     public string BuildCommit { get; set; } = Program.BuildCommit;
@@ -68,7 +68,7 @@ public class PingResponse
     public string Status { get; set; } = "ok";
 
     [JsonPropertyName("version")]
-    public string Version { get; set; } = "0.3.0-beta.22";
+    public string Version { get; set; } = Program.AppVersion;
 
     [JsonPropertyName("build_commit")]
     public string BuildCommit { get; set; } = Program.BuildCommit;
@@ -97,6 +97,10 @@ public class UpdateVisitor : IVisitor
 
 public static class Program
 {
+    public static readonly string AppVersion = typeof(Program).Assembly
+        .GetCustomAttributes<AssemblyMetadataAttribute>()
+        .FirstOrDefault(attribute => attribute.Key == "PlanoraVersion")?.Value ?? "0.3.0-beta.23";
+
     public static readonly string BuildCommit = typeof(Program).Assembly
         .GetCustomAttributes<AssemblyMetadataAttribute>()
         .FirstOrDefault(attribute => attribute.Key == "PlanoraGitCommit")?.Value ?? "unknown";
@@ -313,13 +317,48 @@ public static class Program
             }
 
             string sensorId = sensor.Identifier.ToString().TrimStart('/');
-            // LibreHardwareMonitor can expose a CPU package power sensor with a
-            // permanent zero when the required register access is unavailable.
-            // A running CPU consumes power; report that case as unavailable.
             float? value = sensor.Value;
-            if (hardware.HardwareType == HardwareType.Cpu &&
-                sensor.SensorType == SensorType.Power && value <= 0)
-                value = null;
+            if (value.HasValue)
+            {
+                float v = value.Value;
+                if (!float.IsFinite(v))
+                {
+                    value = null;
+                }
+                else
+                {
+                    switch (sensor.SensorType)
+                    {
+                        case SensorType.Voltage:
+                            if (v < 0.0f || v > 30.0f) value = null;
+                            break;
+                        case SensorType.Current:
+                            if (v < 0.0f || v > 200.0f) value = null;
+                            break;
+                        case SensorType.Power:
+                            if (v <= 0.0f || v > 1500.0f) value = null;
+                            break;
+                        case SensorType.Temperature:
+                            // SuperIO disconnected thermistors or uninitialized readings
+                            if (v <= -40.0f || v == 0.0f || v > 125.0f) value = null;
+                            break;
+                        case SensorType.Fan:
+                            // SuperIO 16-bit sentinel / overflow / disconnected
+                            if (v < 0.0f || v >= 30000.0f || (int)Math.Round(v) == 65535) value = null;
+                            break;
+                        case SensorType.Clock:
+                            if (v < 0.0f || v > 10000.0f) value = null;
+                            break;
+                        case SensorType.Load:
+                            if (v < 0.0f || v > 100.5f) value = null;
+                            else if (v > 100.0f) value = 100.0f;
+                            break;
+                        case SensorType.Energy:
+                            if (v < 0.0f) value = null;
+                            break;
+                    }
+                }
+            }
 
             readings.Add(new BrokerReading
             {

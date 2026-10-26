@@ -985,6 +985,14 @@ pub fn capacity_bar(
         let fraction = (used as f64 / total as f64).clamp(0.0, 1.0) as f32;
         let fill = Rect::from_min_size(rect.min, Vec2::new(rect.width() * fraction, rect.height()));
         ui.painter().rect_filled(fill, 4.0, color);
+    } else if total == Some(0) {
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "Shared memory (UMA)",
+            egui::FontId::proportional(10.0 * crate::appearance::text_scale(ui.ctx())),
+            p.secondary,
+        );
     } else {
         ui.painter().text(
             rect.center(),

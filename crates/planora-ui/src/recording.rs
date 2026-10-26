@@ -522,7 +522,8 @@ fn read_recording(
                     }
                 }
                 previous_ms = Some(snapshot.sampled_at_ms);
-                let frame = (*snapshot).into_frame();
+                let mut frame = (*snapshot).into_frame();
+                frame.sanitize_provider_anomalies();
                 frame.validate().map_err(io::Error::other)?;
                 tx.send(ReplayMessage::Sample(Box::new(frame)))
                     .map_err(io::Error::other)?;

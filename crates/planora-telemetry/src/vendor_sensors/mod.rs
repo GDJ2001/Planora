@@ -7,6 +7,7 @@ pub mod intel;
 pub mod nvidia;
 pub mod worker;
 
+use planora_core::{AvailabilityReason, Metric};
 pub use worker::{WorkerCommand, WorkerResponse, run_worker};
 
 #[cfg(windows)]
@@ -249,6 +250,25 @@ impl VendorSensorSupervisor {
         }
     }
 
+    fn cached_readings_with_staleness(&self) -> Vec<SensorReading> {
+        let mut readings = self.last_readings.clone();
+        if let Some(last_poll) = self.last_poll {
+            let elapsed_ms = last_poll.elapsed().as_millis() as u64;
+            if elapsed_ms > 5000 {
+                let now_ms = crate::unix_ms();
+                for r in &mut readings {
+                    r.value = Metric::unavailable(
+                        &r.value.unit,
+                        &r.value.source,
+                        now_ms,
+                        AvailabilityReason::Stale(elapsed_ms),
+                    );
+                }
+            }
+        }
+        readings
+    }
+
     pub fn poll_sensors(&mut self) -> Vec<SensorReading> {
         let broker_readings = self
             .broker
@@ -272,13 +292,13 @@ impl VendorSensorSupervisor {
 
         if !success {
             self.handle_failure();
-            let mut combined = self.last_readings.clone();
+            let mut combined = self.cached_readings_with_staleness();
             combined.extend(broker_readings);
             return combined;
         }
 
         let Some(rx) = &self.rx else {
-            let mut combined = self.last_readings.clone();
+            let mut combined = self.cached_readings_with_staleness();
             combined.extend(broker_readings);
             return combined;
         };
@@ -301,7 +321,7 @@ impl VendorSensorSupervisor {
             }
         }
 
-        let mut combined = self.last_readings.clone();
+        let mut combined = self.cached_readings_with_staleness();
         combined.extend(broker_readings);
         combined
     }

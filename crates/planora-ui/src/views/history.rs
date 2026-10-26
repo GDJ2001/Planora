@@ -53,14 +53,21 @@ fn bucket_rate(value: Option<f32>) -> String {
 
 fn bucket_average(series: &TimeSeries, bucket_start: Instant, bucket_end: Instant) -> Option<f32> {
     let mut sum = 0.0f64;
-    let mut count = 0usize;
+    let mut count = 0u64;
     for s in &series.samples {
-        if s.time >= bucket_start
-            && s.time < bucket_end
+        let mid = s.midpoint();
+        if mid >= bucket_start
+            && mid < bucket_end
             && let Some(v) = s.value.filter(|v| v.is_finite())
         {
-            sum += v as f64;
-            count += 1;
+            let c = (s.count as u64).max(1);
+            let s_sum = if s.count > 0 && s.sum.is_finite() {
+                s.sum
+            } else {
+                v as f64 * c as f64
+            };
+            sum += s_sum;
+            count += c;
         }
     }
     if count > 0 {

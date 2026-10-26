@@ -7,6 +7,38 @@ pub const MAX_REQUEST_SIZE: usize = 64 * 1024;
 pub const MAX_RESPONSE_SIZE: usize = 8 * 1024 * 1024;
 pub const MAX_PROCESSES_LIMIT: usize = 65_536;
 
+pub const UNIT_PERCENT: &str = "%";
+pub const UNIT_BYTES: &str = "bytes";
+pub const UNIT_BYTES_PER_SEC: &str = "B/s";
+pub const UNIT_BITS_PER_SEC: &str = "bps";
+pub const UNIT_WATTS: &str = "W";
+pub const UNIT_CELSIUS: &str = "°C";
+pub const UNIT_MHZ: &str = "MHz";
+pub const UNIT_VOLTS: &str = "V";
+pub const UNIT_AMPERES: &str = "A";
+pub const UNIT_RPM: &str = "RPM";
+pub const UNIT_JOULES: &str = "J";
+pub const UNIT_MILLISECONDS: &str = "ms";
+pub const UNIT_QUEUE_DEPTH: &str = "requests";
+
+pub fn canonicalize_unit(unit: &str) -> &str {
+    match unit {
+        "bytes/s" | "B/s" => UNIT_BYTES_PER_SEC,
+        "%" => UNIT_PERCENT,
+        "bytes" | "B" => UNIT_BYTES,
+        "bps" | "bits/s" => UNIT_BITS_PER_SEC,
+        "W" | "watts" | "Watts" => UNIT_WATTS,
+        "°C" | "C" | "degC" => UNIT_CELSIUS,
+        "MHz" | "mhz" => UNIT_MHZ,
+        "V" | "volts" => UNIT_VOLTS,
+        "A" | "amperes" => UNIT_AMPERES,
+        "RPM" | "rpm" => UNIT_RPM,
+        "J" | "joules" => UNIT_JOULES,
+        "ms" => UNIT_MILLISECONDS,
+        _ => unit,
+    }
+}
+
 /// Typed classification of why a metric cannot be provided.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum AvailabilityReason {
@@ -253,7 +285,7 @@ pub struct GpuAdapterSample {
     pub budget_bytes: Option<Metric<u64>>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum SensorType {
     GpuChipPowerWatts,
     GpuBoardPowerWatts,
@@ -290,6 +322,95 @@ impl std::fmt::Display for SensorType {
     }
 }
 
+impl SensorType {
+    pub fn is_plausible_value(&self, val: f32) -> bool {
+        if !val.is_finite() {
+            return false;
+        }
+        match self {
+            Self::GpuTemperatureCelsius
+            | Self::CpuTemperatureCelsius
+            | Self::ThermalZoneCelsius
+            | Self::StorageTemperatureCelsius => {
+                (-40.0..=150.0).contains(&val)
+                    && (val - 127.0).abs() > 0.01
+                    && (val - 128.0).abs() > 0.01
+                    && (val - 255.0).abs() > 0.01
+            }
+            Self::GpuChipPowerWatts | Self::GpuBoardPowerWatts | Self::CpuPackagePowerWatts => {
+                (0.0..=2_500.0).contains(&val)
+            }
+            Self::FanRpm => (0.0..=50_000.0).contains(&val) && (val - 65535.0).abs() > 0.1,
+            Self::ClockMhz => (0.0..=15_000.0).contains(&val),
+            Self::VoltageVolts => (0.0..=30.0).contains(&val),
+            Self::CurrentAmperes => (0.0..=1_500.0).contains(&val),
+            Self::LoadPercent => (0.0..=100.0).contains(&val),
+            Self::EnergyJoules => val >= 0.0,
+        }
+    }
+
+    pub fn expected_unit(&self) -> &'static str {
+        match self {
+            Self::GpuTemperatureCelsius
+            | Self::CpuTemperatureCelsius
+            | Self::ThermalZoneCelsius
+            | Self::StorageTemperatureCelsius => UNIT_CELSIUS,
+            Self::GpuChipPowerWatts | Self::GpuBoardPowerWatts | Self::CpuPackagePowerWatts => {
+                UNIT_WATTS
+            }
+            Self::FanRpm => UNIT_RPM,
+            Self::ClockMhz => UNIT_MHZ,
+            Self::VoltageVolts => UNIT_VOLTS,
+            Self::CurrentAmperes => UNIT_AMPERES,
+            Self::LoadPercent => UNIT_PERCENT,
+            Self::EnergyJoules => UNIT_JOULES,
+        }
+    }
+
+    pub fn validate_reading(&self, reading: &SensorReading) -> Result<(), FrameValidationError> {
+        let name = "sensor.value";
+        validate_metric(&reading.value, name)?;
+        if canonicalize_unit(&reading.value.unit) != canonicalize_unit(self.expected_unit()) {
+            return Err(FrameValidationError::UnitMismatch {
+                field: name,
+                expected: self.expected_unit(),
+                actual: reading.value.unit.clone(),
+            });
+        }
+        if let Some(val) = reading.value.value
+            && !self.is_plausible_value(val)
+        {
+            return Err(FrameValidationError::OutOfPhysicalBounds {
+                field: name,
+                value: val,
+                min: match self {
+                    Self::GpuTemperatureCelsius
+                    | Self::CpuTemperatureCelsius
+                    | Self::ThermalZoneCelsius
+                    | Self::StorageTemperatureCelsius => -40.0,
+                    _ => 0.0,
+                },
+                max: match self {
+                    Self::GpuTemperatureCelsius
+                    | Self::CpuTemperatureCelsius
+                    | Self::ThermalZoneCelsius
+                    | Self::StorageTemperatureCelsius => 150.0,
+                    Self::GpuChipPowerWatts
+                    | Self::GpuBoardPowerWatts
+                    | Self::CpuPackagePowerWatts => 2500.0,
+                    Self::FanRpm => 50000.0,
+                    Self::ClockMhz => 15000.0,
+                    Self::VoltageVolts => 30.0,
+                    Self::CurrentAmperes => 1500.0,
+                    Self::LoadPercent => 100.0,
+                    Self::EnergyJoules => f32::MAX,
+                },
+            });
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SensorReading {
     #[serde(default)]
@@ -305,6 +426,16 @@ pub struct SensorReading {
     #[serde(default)]
     pub provider: String,
     pub value: Metric<f32>,
+}
+
+impl SensorReading {
+    pub fn is_plausible(&self) -> bool {
+        if let Some(val) = self.value.value {
+            self.sensor_type.is_plausible_value(val)
+        } else {
+            true
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -368,8 +499,27 @@ pub enum FrameValidationError {
     NonFiniteFloat { field: &'static str },
     #[error("percentage in '{field}' out of bounds: {value}")]
     PercentageOutOfBounds { field: &'static str, value: f32 },
+    #[error("metric in '{field}' out of physical bounds: {value} (min: {min}, max: {max})")]
+    OutOfPhysicalBounds {
+        field: &'static str,
+        value: f32,
+        min: f32,
+        max: f32,
+    },
+    #[error("unit mismatch in '{field}': expected '{expected}', got '{actual}'")]
+    UnitMismatch {
+        field: &'static str,
+        expected: &'static str,
+        actual: String,
+    },
     #[error("memory used ({used}) exceeds total ({total})")]
     MemoryExceedsTotal { used: u64, total: u64 },
+    #[error("memory available ({available}) exceeds total ({total})")]
+    AvailableExceedsTotal { available: u64, total: u64 },
+    #[error("commit memory used ({used}) exceeds total ({total})")]
+    CommitExceedsTotal { used: u64, total: u64 },
+    #[error("GPU dedicated memory used ({used}) exceeds total ({total})")]
+    DedicatedExceedsTotal { used: u64, total: u64 },
     #[error(
         "metric '{field}' has contradictory state (has_value={has_value}, has_reason={has_reason})"
     )]
@@ -452,6 +602,20 @@ impl TelemetryFrame {
             if let Some(budget) = &adapter.budget_bytes {
                 validate_metric(budget, "gpu_adapter.budget_bytes")?;
             }
+            if let (Some(used), Some(total)) = (
+                adapter.dedicated_used_bytes.value,
+                adapter.dedicated_total_bytes.value,
+            ) && (used > total || total == 0)
+            {
+                return Err(FrameValidationError::DedicatedExceedsTotal { used, total });
+            }
+            if let (Some(used), Some(total)) = (
+                adapter.shared_used_bytes.value,
+                adapter.shared_total_bytes.value,
+            ) && (used > total || total == 0)
+            {
+                return Err(FrameValidationError::DedicatedExceedsTotal { used, total });
+            }
         }
         for engine in &self.gpu_engines {
             validate_pct(
@@ -478,12 +642,42 @@ impl TelemetryFrame {
             validate_metric(&device.write_bytes_per_sec, "device.write_bytes_per_sec")?;
             if let Some(latency) = &device.latency_ms {
                 validate_metric(latency, "device.latency_ms")?;
+                if let Some(val) = latency.value
+                    && (!val.is_finite() || !(0.0..=60_000.0).contains(&val))
+                {
+                    return Err(FrameValidationError::OutOfPhysicalBounds {
+                        field: "device.latency_ms",
+                        value: val,
+                        min: 0.0,
+                        max: 60_000.0,
+                    });
+                }
             }
             if let Some(queue) = &device.queue_depth {
                 validate_metric(queue, "device.queue_depth")?;
+                if let Some(val) = queue.value
+                    && (!val.is_finite() || !(0.0..=65_536.0).contains(&val))
+                {
+                    return Err(FrameValidationError::OutOfPhysicalBounds {
+                        field: "device.queue_depth",
+                        value: val,
+                        min: 0.0,
+                        max: 65_536.0,
+                    });
+                }
             }
             if let Some(speed) = &device.link_speed_bps {
                 validate_metric(speed, "device.link_speed_bps")?;
+                if let Some(spd) = speed.value
+                    && (spd == 0 || spd == u64::MAX || spd > 10_000_000_000_000)
+                {
+                    return Err(FrameValidationError::OutOfPhysicalBounds {
+                        field: "device.link_speed_bps",
+                        value: spd as f32,
+                        min: 1.0,
+                        max: 10_000_000_000_000.0,
+                    });
+                }
             }
         }
         validate_metric(&self.memory_used_bytes, "memory_used_bytes")?;
@@ -496,15 +690,25 @@ impl TelemetryFrame {
         validate_metric(&self.network_rx_bytes_per_sec, "network_rx_bytes_per_sec")?;
         validate_metric(&self.network_tx_bytes_per_sec, "network_tx_bytes_per_sec")?;
         validate_metric(&self.package_power_watts, "package_power_watts")?;
-        for sensor in &self.sensors {
-            validate_metric(&sensor.value, "sensor.value")?;
-            if let Some(val) = sensor.value.value
-                && !val.is_finite()
-            {
-                return Err(FrameValidationError::NonFiniteFloat {
-                    field: "sensor.value",
+        if let Some(val) = self.package_power_watts.value {
+            if !val.is_finite() || !(0.0..=2_500.0).contains(&val) {
+                return Err(FrameValidationError::OutOfPhysicalBounds {
+                    field: "package_power_watts",
+                    value: val,
+                    min: 0.0,
+                    max: 2_500.0,
                 });
             }
+            if canonicalize_unit(&self.package_power_watts.unit) != canonicalize_unit(UNIT_WATTS) {
+                return Err(FrameValidationError::UnitMismatch {
+                    field: "package_power_watts",
+                    expected: UNIT_WATTS,
+                    actual: self.package_power_watts.unit.clone(),
+                });
+            }
+        }
+        for sensor in &self.sensors {
+            sensor.sensor_type.validate_reading(sensor)?;
         }
 
         if let (Some(used), Some(total)) =
@@ -513,6 +717,23 @@ impl TelemetryFrame {
             && used > total
         {
             return Err(FrameValidationError::MemoryExceedsTotal { used, total });
+        }
+
+        if let (Some(available), Some(total)) = (
+            self.memory_available_bytes.value,
+            self.memory_total_bytes.value,
+        ) && total > 0
+            && available > total
+        {
+            return Err(FrameValidationError::AvailableExceedsTotal { available, total });
+        }
+
+        if let (Some(used), Some(total)) =
+            (self.commit_used_bytes.value, self.commit_total_bytes.value)
+            && total > 0
+            && used > total
+        {
+            return Err(FrameValidationError::CommitExceedsTotal { used, total });
         }
 
         if self.processes.len() > MAX_PROCESSES_LIMIT {
@@ -540,6 +761,209 @@ impl TelemetryFrame {
         }
 
         Ok(())
+    }
+
+    /// Sanitizes known hardware sensor/counter provider anomalies (such as disconnected
+    /// fan tachometers, unpopulated diodes, or driver rate jitter) into unavailable metrics
+    /// so an isolated anomalous sensor never fails validation of the whole frame.
+    pub fn sanitize_provider_anomalies(&mut self) {
+        fn sanitize_pct_metric(metric: &mut Metric<f32>, label: &str) {
+            let canonical = canonicalize_unit(&metric.unit);
+            if metric.unit != canonical {
+                metric.unit = canonical.to_string();
+            }
+            if let Some(val) = metric.value {
+                if val > 100.0 && val <= 100.5 {
+                    metric.value = Some(100.0);
+                } else if !val.is_finite() || !(0.0..=100.0).contains(&val) {
+                    metric.value = None;
+                    metric.unavailable_reason = Some(AvailabilityReason::TemporarilyFailed(
+                        format!("{label} percentage out of bounds: {val}"),
+                    ));
+                }
+            }
+        }
+
+        fn canonicalize_metric_unit<T>(metric: &mut Metric<T>) {
+            let canonical = canonicalize_unit(&metric.unit);
+            if metric.unit != canonical {
+                metric.unit = canonical.to_string();
+            }
+        }
+
+        fn sanitize_used_against_total(
+            used_metric: &mut Metric<u64>,
+            total: Option<u64>,
+            zero_total_reason: Option<&str>,
+            label: &str,
+        ) {
+            if let Some(total_val) = total
+                && let Some(used_val) = used_metric.value
+            {
+                if total_val == 0 {
+                    used_metric.value = None;
+                    used_metric.unavailable_reason = Some(AvailabilityReason::Unsupported(
+                        zero_total_reason
+                            .unwrap_or("Capacity reported as zero")
+                            .into(),
+                    ));
+                } else if used_val > total_val {
+                    if used_val <= total_val.saturating_mul(2) {
+                        used_metric.value = Some(total_val);
+                    } else {
+                        used_metric.value = None;
+                        used_metric.unavailable_reason =
+                            Some(AvailabilityReason::TemporarilyFailed(format!(
+                                "{label} usage ({used_val}) exceeded total capacity ({total_val})"
+                            )));
+                    }
+                }
+            }
+        }
+
+        // Canonicalize top-level units & sanitize percentages
+        sanitize_pct_metric(&mut self.cpu_percent, "CPU");
+        sanitize_pct_metric(&mut self.gpu_percent, "GPU");
+        for cpu in &mut self.logical_cpus {
+            sanitize_pct_metric(&mut cpu.utilization_percent, "Logical CPU");
+        }
+        for m in [
+            &mut self.memory_used_bytes,
+            &mut self.memory_available_bytes,
+            &mut self.memory_total_bytes,
+            &mut self.commit_used_bytes,
+            &mut self.commit_total_bytes,
+            &mut self.disk_read_bytes_per_sec,
+            &mut self.disk_write_bytes_per_sec,
+            &mut self.network_rx_bytes_per_sec,
+            &mut self.network_tx_bytes_per_sec,
+        ] {
+            canonicalize_metric_unit(m);
+        }
+        canonicalize_metric_unit(&mut self.package_power_watts);
+
+        let mem_total = self.memory_total_bytes.value;
+        sanitize_used_against_total(&mut self.memory_used_bytes, mem_total, None, "Memory");
+        sanitize_used_against_total(
+            &mut self.memory_available_bytes,
+            mem_total,
+            None,
+            "Available memory",
+        );
+        let commit_total = self.commit_total_bytes.value;
+        sanitize_used_against_total(&mut self.commit_used_bytes, commit_total, None, "Commit");
+
+        // Sanitize individual sensor readings
+        for sensor in &mut self.sensors {
+            canonicalize_metric_unit(&mut sensor.value);
+            if let Some(val) = sensor.value.value
+                && (!sensor.sensor_type.is_plausible_value(val)
+                    || canonicalize_unit(&sensor.value.unit)
+                        != canonicalize_unit(sensor.sensor_type.expected_unit()))
+            {
+                let bad_unit = sensor.value.unit.clone();
+                sensor.value.unit = sensor.sensor_type.expected_unit().to_string();
+                sensor.value.value = None;
+                sensor.value.unavailable_reason =
+                    Some(AvailabilityReason::TemporarilyFailed(format!(
+                        "Filtered implausible {} reading: {:.1} {}",
+                        sensor.sensor_type, val, bad_unit
+                    )));
+            }
+        }
+
+        // Sanitize package_power_watts if out of bounds or wrong unit
+        if let Some(val) = self.package_power_watts.value
+            && (!val.is_finite()
+                || !(0.0..=2_500.0).contains(&val)
+                || self.package_power_watts.unit != UNIT_WATTS)
+        {
+            self.package_power_watts.unit = UNIT_WATTS.to_string();
+            self.package_power_watts.value = None;
+            self.package_power_watts.unavailable_reason =
+                Some(AvailabilityReason::TemporarilyFailed(format!(
+                    "Filtered implausible package power: {val:.1} W"
+                )));
+        }
+
+        // Sanitize device link speeds, latencies, queue depths, and units
+        for dev in self.disks.iter_mut().chain(&mut self.network_interfaces) {
+            canonicalize_metric_unit(&mut dev.read_bytes_per_sec);
+            canonicalize_metric_unit(&mut dev.write_bytes_per_sec);
+            if let Some(spd) = &mut dev.link_speed_bps {
+                canonicalize_metric_unit(spd);
+                if let Some(val) = spd.value
+                    && (val == 0 || val == u64::MAX || val > 10_000_000_000_000)
+                {
+                    spd.value = None;
+                    spd.unavailable_reason = Some(AvailabilityReason::Unsupported(
+                        "Link speed unknown or invalid".into(),
+                    ));
+                }
+            }
+            if let Some(lat) = &mut dev.latency_ms {
+                canonicalize_metric_unit(lat);
+                if let Some(val) = lat.value
+                    && (!val.is_finite() || !(0.0..=60_000.0).contains(&val))
+                {
+                    lat.value = None;
+                    lat.unavailable_reason = Some(AvailabilityReason::TemporarilyFailed(
+                        "Disk latency counter out of bounds".into(),
+                    ));
+                }
+            }
+            if let Some(qd) = &mut dev.queue_depth {
+                canonicalize_metric_unit(qd);
+                if let Some(val) = qd.value
+                    && (!val.is_finite() || !(0.0..=65_536.0).contains(&val))
+                {
+                    qd.value = None;
+                    qd.unavailable_reason = Some(AvailabilityReason::TemporarilyFailed(
+                        "Disk queue counter out of bounds".into(),
+                    ));
+                }
+            }
+        }
+
+        // Sanitize GPU engine & adapter metrics
+        for engine in &mut self.gpu_engines {
+            sanitize_pct_metric(&mut engine.utilization_percent, "GPU engine");
+        }
+        for adapter in &mut self.gpu_adapters {
+            sanitize_pct_metric(&mut adapter.busiest_engine_percent, "GPU adapter");
+            canonicalize_metric_unit(&mut adapter.dedicated_used_bytes);
+            canonicalize_metric_unit(&mut adapter.dedicated_total_bytes);
+            canonicalize_metric_unit(&mut adapter.shared_used_bytes);
+            canonicalize_metric_unit(&mut adapter.shared_total_bytes);
+            if let Some(budget) = &mut adapter.budget_bytes {
+                canonicalize_metric_unit(budget);
+            }
+            let ded_total = adapter.dedicated_total_bytes.value;
+            sanitize_used_against_total(
+                &mut adapter.dedicated_used_bytes,
+                ded_total,
+                Some("Dedicated VRAM not applicable on unified memory architecture"),
+                "Dedicated VRAM",
+            );
+            let shr_total = adapter.shared_total_bytes.value;
+            sanitize_used_against_total(
+                &mut adapter.shared_used_bytes,
+                shr_total,
+                Some("Shared GPU memory capacity reported as zero"),
+                "Shared GPU memory",
+            );
+        }
+
+        // Sanitize per-process percentages & canonicalize units
+        for proc in &mut self.processes {
+            sanitize_pct_metric(&mut proc.cpu_percent, "Process CPU");
+            sanitize_pct_metric(&mut proc.gpu_percent, "Process GPU");
+            canonicalize_metric_unit(&mut proc.memory_bytes);
+            canonicalize_metric_unit(&mut proc.disk_read_bytes_per_sec);
+            canonicalize_metric_unit(&mut proc.disk_write_bytes_per_sec);
+            canonicalize_metric_unit(&mut proc.io_read_bytes_per_sec);
+            canonicalize_metric_unit(&mut proc.io_write_bytes_per_sec);
+        }
     }
 }
 
@@ -1041,5 +1465,245 @@ mod tests {
             bad_version.validate(),
             Err(FrameValidationError::VersionMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn canonicalize_unit_handles_standard_variations() {
+        assert_eq!(canonicalize_unit("bytes/s"), UNIT_BYTES_PER_SEC);
+        assert_eq!(canonicalize_unit("B/s"), UNIT_BYTES_PER_SEC);
+        assert_eq!(canonicalize_unit("%"), UNIT_PERCENT);
+        assert_eq!(canonicalize_unit("W"), UNIT_WATTS);
+        assert_eq!(canonicalize_unit("Watts"), UNIT_WATTS);
+        assert_eq!(canonicalize_unit("°C"), UNIT_CELSIUS);
+        assert_eq!(canonicalize_unit("C"), UNIT_CELSIUS);
+        assert_eq!(canonicalize_unit("RPM"), UNIT_RPM);
+        assert_eq!(canonicalize_unit("MHz"), UNIT_MHZ);
+    }
+
+    #[test]
+    fn sensor_reading_physical_bounds_and_unit_validation() {
+        let reading = SensorReading {
+            id: "s1".into(),
+            device_id: "cpu0".into(),
+            device_name: "CPU".into(),
+            name: "Core 0 Temp".into(),
+            sensor_type: SensorType::CpuTemperatureCelsius,
+            scope: "Core".into(),
+            provider: "test".into(),
+            value: Metric::available(65.0, "°C", "test", 1000),
+        };
+        assert!(reading.sensor_type.validate_reading(&reading).is_ok());
+
+        // Sentinel temperature 255°C rejected
+        let mut bad_temp = reading.clone();
+        bad_temp.value.value = Some(255.0);
+        assert!(matches!(
+            bad_temp.sensor_type.validate_reading(&bad_temp),
+            Err(FrameValidationError::OutOfPhysicalBounds { .. })
+        ));
+
+        // Negative temperature < -40°C rejected
+        bad_temp.value.value = Some(-50.0);
+        assert!(matches!(
+            bad_temp.sensor_type.validate_reading(&bad_temp),
+            Err(FrameValidationError::OutOfPhysicalBounds { .. })
+        ));
+
+        // Fan RPM cannot have unit "%"
+        let bad_fan_unit = SensorReading {
+            id: "fan1".into(),
+            device_id: "gpu0".into(),
+            device_name: "GPU".into(),
+            name: "Fan".into(),
+            sensor_type: SensorType::FanRpm,
+            scope: "Cooling".into(),
+            provider: "test".into(),
+            value: Metric::available(50.0, "%", "test", 1000),
+        };
+        assert!(matches!(
+            bad_fan_unit.sensor_type.validate_reading(&bad_fan_unit),
+            Err(FrameValidationError::UnitMismatch { .. })
+        ));
+
+        // Disconnected fan tachometer sentinel (65535 RPM) rejected
+        let mut disconnected_fan = bad_fan_unit.clone();
+        disconnected_fan.value.unit = "RPM".into();
+        disconnected_fan.value.value = Some(65535.0);
+        assert!(matches!(
+            disconnected_fan
+                .sensor_type
+                .validate_reading(&disconnected_fan),
+            Err(FrameValidationError::OutOfPhysicalBounds { .. })
+        ));
+    }
+
+    #[test]
+    fn sanitize_provider_anomalies_isolates_faulty_hardware_sensor() {
+        let mut frame = TelemetryFrame {
+            protocol_version: PROTOCOL_VERSION,
+            session_id: 1,
+            topology_generation: 1,
+            sequence: 1,
+            sampled_at_ms: 1000,
+            collection_duration_ms: 10.0,
+            cpu_percent: Metric::available(10.0, "%", "sys", 1000),
+            logical_cpus: Vec::new(),
+            memory_used_bytes: Metric::available(1000, "bytes", "sys", 1000),
+            memory_available_bytes: Metric::available(2000, "bytes", "sys", 1000),
+            memory_total_bytes: Metric::available(3000, "bytes", "sys", 1000),
+            commit_used_bytes: Metric::available(1000, "bytes", "sys", 1000),
+            commit_total_bytes: Metric::available(3000, "bytes", "sys", 1000),
+            disk_read_bytes_per_sec: Metric::available(0, "B/s", "sys", 1000),
+            disk_write_bytes_per_sec: Metric::available(0, "B/s", "sys", 1000),
+            network_rx_bytes_per_sec: Metric::available(0, "B/s", "sys", 1000),
+            network_tx_bytes_per_sec: Metric::available(0, "B/s", "sys", 1000),
+            gpu_percent: Metric::unavailable(
+                "%",
+                "sys",
+                1000,
+                AvailabilityReason::Unsupported("none".into()),
+            ),
+            gpu_adapters: Vec::new(),
+            gpu_engines: Vec::new(),
+            gpu_engine_unavailable_reason: None,
+            disks: vec![ResourceDeviceSample {
+                id: "d0".into(),
+                label: "Disk 0".into(),
+                read_bytes_per_sec: Metric::available(0, "B/s", "sys", 1000),
+                write_bytes_per_sec: Metric::available(0, "B/s", "sys", 1000),
+                latency_ms: Some(Metric::available(100_000.0, "ms", "sys", 1000)), // corrupted latency
+                queue_depth: None,
+                link_speed_bps: Some(Metric::available(u64::MAX, "bps", "sys", 1000)), // NDIS unknown sentinel
+                link_state: None,
+            }],
+            network_interfaces: Vec::new(),
+            package_power_watts: Metric::available(5000.0, "W", "sys", 1000), // out of bounds power
+            sensors: vec![
+                SensorReading {
+                    id: "good_temp".into(),
+                    device_id: "cpu0".into(),
+                    device_name: "CPU".into(),
+                    name: "CPU Package".into(),
+                    sensor_type: SensorType::CpuTemperatureCelsius,
+                    scope: "Package".into(),
+                    provider: "test".into(),
+                    value: Metric::available(55.0, "°C", "test", 1000),
+                },
+                SensorReading {
+                    id: "bad_fan".into(),
+                    device_id: "fan0".into(),
+                    device_name: "Chassis".into(),
+                    name: "Fan 1".into(),
+                    sensor_type: SensorType::FanRpm,
+                    scope: "Cooling".into(),
+                    provider: "test".into(),
+                    value: Metric::available(65535.0, "RPM", "test", 1000), // sentinel disconnected tach
+                },
+            ],
+            processes: Vec::new(),
+        };
+
+        // Before sanitization, frame validation fails on bad_fan / corrupted latency / bad link speed
+        assert!(frame.validate().is_err());
+
+        // After sanitization, anomalies are converted to Unavailable and the frame is valid!
+        frame.sanitize_provider_anomalies();
+        assert!(frame.validate().is_ok());
+
+        assert_eq!(frame.sensors[0].value.value, Some(55.0));
+        assert!(frame.sensors[1].value.value.is_none());
+        assert!(frame.sensors[1].value.unavailable_reason.is_some());
+        assert!(frame.disks[0].latency_ms.as_ref().unwrap().value.is_none());
+        assert!(
+            frame.disks[0]
+                .link_speed_bps
+                .as_ref()
+                .unwrap()
+                .value
+                .is_none()
+        );
+        assert!(frame.package_power_watts.value.is_none());
+    }
+
+    #[test]
+    fn sanitize_uma_and_vram_overshoot_preserves_contract() {
+        let mut frame = TelemetryFrame {
+            protocol_version: PROTOCOL_VERSION,
+            session_id: 1,
+            topology_generation: 1,
+            sequence: 2,
+            sampled_at_ms: 1000,
+            collection_duration_ms: 2.0,
+            cpu_percent: Metric::available(12.0, "%", "sys", 1000),
+            logical_cpus: Vec::new(),
+            memory_used_bytes: Metric::available(1000, "bytes", "sys", 1000),
+            memory_available_bytes: Metric::available(2000, "bytes", "sys", 1000),
+            memory_total_bytes: Metric::available(3000, "bytes", "sys", 1000),
+            commit_used_bytes: Metric::available(1000, "bytes", "sys", 1000),
+            commit_total_bytes: Metric::available(3000, "bytes", "sys", 1000),
+            disk_read_bytes_per_sec: Metric::available(10, "bytes/s", "legacy", 1000),
+            disk_write_bytes_per_sec: Metric::available(20, "bytes/s", "legacy", 1000),
+            network_rx_bytes_per_sec: Metric::available(30, "bytes/s", "legacy", 1000),
+            network_tx_bytes_per_sec: Metric::available(40, "bytes/s", "legacy", 1000),
+            gpu_percent: Metric::available(100.3, "%", "pdh", 1000),
+            gpu_adapters: vec![
+                GpuAdapterSample {
+                    adapter_luid: 1,
+                    physical_adapter: Some(0),
+                    name: "Integrated UMA GPU".into(),
+                    busiest_engine_percent: Metric::available(100.2, "%", "pdh", 1000),
+                    dedicated_used_bytes: Metric::available(0, "bytes", "pdh", 1000),
+                    dedicated_total_bytes: Metric::available(0, "bytes", "dxgi", 1000),
+                    shared_used_bytes: Metric::available(512, "bytes", "pdh", 1000),
+                    shared_total_bytes: Metric::available(4096, "bytes", "dxgi", 1000),
+                    budget_bytes: None,
+                },
+                GpuAdapterSample {
+                    adapter_luid: 2,
+                    physical_adapter: Some(0),
+                    name: "Discrete GPU".into(),
+                    busiest_engine_percent: Metric::available(99.0, "%", "pdh", 1000),
+                    dedicated_used_bytes: Metric::available(8_050_000_000, "bytes", "pdh", 1000),
+                    dedicated_total_bytes: Metric::available(8_000_000_000, "bytes", "dxgi", 1000),
+                    shared_used_bytes: Metric::available(128, "bytes", "pdh", 1000),
+                    shared_total_bytes: Metric::available(4096, "bytes", "dxgi", 1000),
+                    budget_bytes: None,
+                },
+            ],
+            gpu_engines: Vec::new(),
+            gpu_engine_unavailable_reason: Some(AvailabilityReason::WarmingUp),
+            disks: Vec::new(),
+            network_interfaces: Vec::new(),
+            package_power_watts: Metric::unavailable(
+                "W",
+                "sys",
+                1000,
+                AvailabilityReason::Unsupported("none".into()),
+            ),
+            sensors: Vec::new(),
+            processes: Vec::new(),
+        };
+
+        assert!(matches!(
+            frame.validate(),
+            Err(FrameValidationError::PercentageOutOfBounds { .. }
+                | FrameValidationError::DedicatedExceedsTotal { .. })
+        ));
+
+        frame.sanitize_provider_anomalies();
+        assert!(frame.validate().is_ok());
+        assert_eq!(frame.gpu_percent.value, Some(100.0));
+        assert_eq!(frame.disk_read_bytes_per_sec.unit, UNIT_BYTES_PER_SEC);
+        assert!(frame.gpu_adapters[0].dedicated_used_bytes.value.is_none());
+        assert!(matches!(
+            frame.gpu_adapters[0]
+                .dedicated_used_bytes
+                .unavailable_reason,
+            Some(AvailabilityReason::Unsupported(_))
+        ));
+        assert_eq!(
+            frame.gpu_adapters[1].dedicated_used_bytes.value,
+            Some(8_000_000_000)
+        );
     }
 }

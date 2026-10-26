@@ -52,7 +52,7 @@ fn csv_metric<T: ToString>(metric: &Metric<T>) -> [String; 5] {
             .value
             .as_ref()
             .map_or_else(String::new, ToString::to_string),
-        metric.unit.clone(),
+        planora_core::canonicalize_unit(&metric.unit).to_string(),
         metric.source.clone(),
         metric.sampled_at_ms.to_string(),
         metric
@@ -231,10 +231,10 @@ impl ExportManager {
             let all: [(&str, &TimeSeries, &str, HistoryRange); 6] = [
                 ("CPU", &histories.cpu, "%", ranges[0]),
                 ("Memory", &histories.memory_pct, "%", ranges[1]),
-                ("Disk read", &histories.disk_read, "bytes/s", ranges[2]),
-                ("Disk write", &histories.disk_write, "bytes/s", ranges[2]),
-                ("Network receive", &histories.net_rx, "bytes/s", ranges[3]),
-                ("Network transmit", &histories.net_tx, "bytes/s", ranges[3]),
+                ("Disk read", &histories.disk_read, "B/s", ranges[2]),
+                ("Disk write", &histories.disk_write, "B/s", ranges[2]),
+                ("Network receive", &histories.net_rx, "B/s", ranges[3]),
+                ("Network transmit", &histories.net_tx, "B/s", ranges[3]),
             ];
             for (name, series, unit, range) in all {
                 if cancel.load(Ordering::Acquire) {
@@ -319,7 +319,7 @@ impl ExportManager {
                             sample.value.map_or_else(String::new, |v| v.to_string()),
                             sample.minimum.map_or_else(String::new, |v| v.to_string()),
                             sample.maximum.map_or_else(String::new, |v| v.to_string()),
-                            unit.clone(),
+                            planora_core::canonicalize_unit(unit).to_string(),
                             sample.source.clone(),
                             sample.count.to_string(),
                             sample
@@ -423,7 +423,7 @@ impl ExportManager {
                         s.name.clone(),
                         format!("{:?}", s.sensor_type),
                         s.value.value.map_or_else(String::new, |v| v.to_string()),
-                        s.value.unit.clone(),
+                        planora_core::canonicalize_unit(&s.value.unit).to_string(),
                         s.provider.clone(),
                         s.value.sampled_at_ms.to_string(),
                         s.value

@@ -60,127 +60,176 @@ pub struct NetworkLinkInfo {
     pub link_state: Option<String>,
 }
 
-#[repr(C)]
-struct MibIfRow2 {
-    interface_luid: u64,
-    interface_index: u32,
-    interface_guid: [u8; 16],
-    alias: [u16; 257],
-    description: [u16; 257],
-    physical_address_length: u32,
-    physical_address: [u8; 32],
-    flags: u32,
-    interface_type: u32,
-    tunnel_type: u32,
-    media_type: u32,
-    physical_medium_type: u32,
-    access_type: u32,
-    direction_type: u32,
-    interface_and_oper_status_flags: u32,
-    oper_status: u32,
-    admin_status: u32,
-    media_connect_state: u32,
-    network_guid: [u8; 16],
-    connection_type: u32,
-    transmit_link_speed: u64,
-    receive_link_speed: u64,
-    in_octets: u64,
-    in_ucast_pkts: u64,
-    in_nucast_pkts: u64,
-    in_discards: u64,
-    in_errors: u64,
-    in_unknown_protos: u64,
-    in_ucast_octets: u64,
-    in_multicast_octets: u64,
-    in_broadcast_octets: u64,
-    out_octets: u64,
-    out_ucast_pkts: u64,
-    out_nucast_pkts: u64,
-    out_discards: u64,
-    out_errors: u64,
-    out_ucast_octets: u64,
-    out_multicast_octets: u64,
-    out_broadcast_octets: u64,
-    out_ql_len: u64,
+#[derive(Clone, Debug)]
+pub struct WindowsNetIfSnapshot {
+    pub interface_luid: u64,
+    pub alias: String,
+    pub description: String,
+    pub if_type: u32,
+    pub is_hardware: bool,
+    pub in_octets: u64,
+    pub out_octets: u64,
+    pub oper_status: u32,
+    pub speed_bps: Option<u64>,
+    pub link_state: Option<String>,
 }
 
-#[repr(C)]
-struct MibIfTable2 {
-    num_entries: u32,
-    // followed by table entries
-}
+use windows_sys::Win32::NetworkManagement::IpHelper::{FreeMibTable, GetIfTable2, MIB_IF_TABLE2};
 
 pub fn query_network_links() -> HashMap<String, NetworkLinkInfo> {
     let mut links = HashMap::new();
     unsafe {
-        let iphlp = windows_sys::Win32::System::LibraryLoader::GetModuleHandleA(
-            c"iphlpapi.dll".as_ptr().cast(),
-        );
-        let hmod = if iphlp.is_null() {
-            windows_sys::Win32::System::LibraryLoader::LoadLibraryA(c"iphlpapi.dll".as_ptr().cast())
-        } else {
-            iphlp
-        };
-        if hmod.is_null() {
-            return links;
-        }
-        let get_if_table2 = windows_sys::Win32::System::LibraryLoader::GetProcAddress(
-            hmod,
-            c"GetIfTable2".as_ptr().cast(),
-        );
-        let free_if_table2 = windows_sys::Win32::System::LibraryLoader::GetProcAddress(
-            hmod,
-            c"FreeMibTable".as_ptr().cast(),
-        );
-        if let (Some(get_fn), Some(free_fn)) = (get_if_table2, free_if_table2) {
-            type GetTableFn = unsafe extern "system" fn(*mut *mut MibIfTable2) -> u32;
-            type FreeTableFn = unsafe extern "system" fn(*mut std::ffi::c_void);
-            let get: GetTableFn = std::mem::transmute(get_fn);
-            let free: FreeTableFn = std::mem::transmute(free_fn);
+        let mut table_ptr: *mut MIB_IF_TABLE2 = std::ptr::null_mut();
+        if GetIfTable2(&mut table_ptr) == 0 && !table_ptr.is_null() {
+            let num_entries = (*table_ptr).NumEntries as usize;
+            let rows = std::slice::from_raw_parts((*table_ptr).Table.as_ptr(), num_entries);
+            for row in rows {
+                let alias_len = row
+                    .Alias
+                    .iter()
+                    .position(|&c| c == 0)
+                    .unwrap_or(row.Alias.len());
+                let desc_len = row
+                    .Description
+                    .iter()
+                    .position(|&c| c == 0)
+                    .unwrap_or(row.Description.len());
+                let alias = String::from_utf16_lossy(&row.Alias[..alias_len]);
+                let desc = String::from_utf16_lossy(&row.Description[..desc_len]);
 
-            let mut table_ptr: *mut MibIfTable2 = std::ptr::null_mut();
-            if get(&mut table_ptr) == 0 && !table_ptr.is_null() {
-                let num_entries = (*table_ptr).num_entries as usize;
-                let rows_ptr = (table_ptr as *const u8).add(8) as *const MibIfRow2;
-                let rows = std::slice::from_raw_parts(rows_ptr, num_entries);
-                for row in rows {
-                    let alias_len = row
-                        .alias
-                        .iter()
-                        .position(|&c| c == 0)
-                        .unwrap_or(row.alias.len());
-                    let desc_len = row
-                        .description
-                        .iter()
-                        .position(|&c| c == 0)
-                        .unwrap_or(row.description.len());
-                    let alias = String::from_utf16_lossy(&row.alias[..alias_len]);
-                    let desc = String::from_utf16_lossy(&row.description[..desc_len]);
-
-                    let state_str = match row.media_connect_state {
-                        1 => "Connected",
-                        2 => "Disconnected",
-                        _ => "Unknown",
-                    }
-                    .to_string();
-
-                    let speed = row.receive_link_speed.max(row.transmit_link_speed);
-                    let info = NetworkLinkInfo {
-                        speed_bps: if speed > 0 { Some(speed) } else { None },
-                        link_state: Some(state_str),
-                    };
-                    if !alias.is_empty() {
-                        links.insert(alias.clone(), info.clone());
-                    }
-                    if !desc.is_empty() {
-                        links.insert(desc, info);
-                    }
+                let state_str = match row.MediaConnectState {
+                    1 => "Connected",
+                    2 => "Disconnected",
+                    _ => "Unknown",
                 }
-                free(table_ptr.cast());
+                .to_string();
+
+                let speed = row.ReceiveLinkSpeed.max(row.TransmitLinkSpeed);
+                let info = NetworkLinkInfo {
+                    speed_bps: if speed > 0 && speed < u64::MAX && speed <= 10_000_000_000_000 {
+                        Some(speed)
+                    } else {
+                        None
+                    },
+                    link_state: Some(state_str),
+                };
+                if !alias.is_empty() {
+                    links.insert(alias.clone(), info.clone());
+                }
+                if !desc.is_empty() {
+                    links.insert(desc, info);
+                }
             }
+            FreeMibTable(table_ptr.cast());
         }
     }
     links
+}
+
+pub fn query_windows_net_interfaces() -> Vec<WindowsNetIfSnapshot> {
+    let mut snapshots = Vec::new();
+    unsafe {
+        let mut table_ptr: *mut MIB_IF_TABLE2 = std::ptr::null_mut();
+        if GetIfTable2(&mut table_ptr) == 0 && !table_ptr.is_null() {
+            let num_entries = (*table_ptr).NumEntries as usize;
+            let rows = std::slice::from_raw_parts((*table_ptr).Table.as_ptr(), num_entries);
+            for row in rows {
+                // Skip filter interfaces (FilterInterface is bit 1: 0x02)
+                let bitfield = row.InterfaceAndOperStatusFlags._bitfield;
+                if (bitfield & 0x02) != 0 {
+                    continue;
+                }
+                // Skip software loopback (IF_TYPE_SOFTWARE_LOOPBACK = 24)
+                if row.Type == 24 {
+                    continue;
+                }
+                // Skip tunnels (IF_TYPE_TUNNEL = 131)
+                if row.Type == 131 {
+                    continue;
+                }
+
+                let alias_len = row
+                    .Alias
+                    .iter()
+                    .position(|&c| c == 0)
+                    .unwrap_or(row.Alias.len());
+                let desc_len = row
+                    .Description
+                    .iter()
+                    .position(|&c| c == 0)
+                    .unwrap_or(row.Description.len());
+                let alias = String::from_utf16_lossy(&row.Alias[..alias_len]);
+                let description = String::from_utf16_lossy(&row.Description[..desc_len]);
+
+                let state_str = match row.MediaConnectState {
+                    1 => "Connected",
+                    2 => "Disconnected",
+                    _ => "Unknown",
+                }
+                .to_string();
+
+                let speed = row.ReceiveLinkSpeed.max(row.TransmitLinkSpeed);
+                let speed_bps = if speed > 0 && speed < u64::MAX && speed <= 10_000_000_000_000 {
+                    Some(speed)
+                } else {
+                    None
+                };
+
+                let is_hardware = (bitfield & 0x01) != 0;
+                let luid = row.InterfaceLuid.Value;
+
+                snapshots.push(WindowsNetIfSnapshot {
+                    interface_luid: luid,
+                    alias,
+                    description,
+                    if_type: row.Type,
+                    is_hardware,
+                    in_octets: row.InOctets,
+                    out_octets: row.OutOctets,
+                    oper_status: row.OperStatus as u32,
+                    speed_bps,
+                    link_state: Some(state_str),
+                });
+            }
+            FreeMibTable(table_ptr.cast());
+        }
+    }
+    snapshots
+}
+
+pub fn windows_processor_group_map() -> Vec<(u16, u16)> {
+    let mut map = Vec::new();
+    unsafe {
+        let kernel32 = windows_sys::Win32::System::LibraryLoader::GetModuleHandleA(
+            c"kernel32.dll".as_ptr().cast(),
+        );
+        if !kernel32.is_null() {
+            let get_group_count_ptr = windows_sys::Win32::System::LibraryLoader::GetProcAddress(
+                kernel32,
+                c"GetActiveProcessorGroupCount".as_ptr().cast(),
+            );
+            let get_proc_count_ptr = windows_sys::Win32::System::LibraryLoader::GetProcAddress(
+                kernel32,
+                c"GetActiveProcessorCount".as_ptr().cast(),
+            );
+            if let (Some(get_group_count), Some(get_proc_count)) =
+                (get_group_count_ptr, get_proc_count_ptr)
+            {
+                type GetGroupCountFn = unsafe extern "system" fn() -> u16;
+                type GetProcCountFn = unsafe extern "system" fn(u16) -> u32;
+                let get_groups: GetGroupCountFn = std::mem::transmute(get_group_count);
+                let get_procs: GetProcCountFn = std::mem::transmute(get_proc_count);
+                let num_groups = get_groups();
+                for g in 0..num_groups {
+                    let procs_in_group = get_procs(g);
+                    for p in 0..procs_in_group {
+                        map.push((g, p as u16));
+                    }
+                }
+            }
+        }
+    }
+    map
 }
 
 #[cfg(test)]
@@ -206,6 +255,35 @@ mod tests {
             if let Some(state) = info.link_state {
                 assert!(["Connected", "Disconnected", "Unknown"].contains(&state.as_str()));
             }
+            if let Some(spd) = info.speed_bps {
+                assert!(spd > 0 && spd < u64::MAX);
+            }
+        }
+
+        let ifaces = query_windows_net_interfaces();
+        for iface in ifaces {
+            assert!(iface.interface_luid > 0);
+            if let Some(spd) = iface.speed_bps {
+                assert!(spd > 0 && spd < u64::MAX);
+            }
+        }
+    }
+
+    #[test]
+    fn processor_group_map_returns_valid_entries() {
+        let map = windows_processor_group_map();
+        // On any modern Windows machine, at least 1 logical processor exists
+        assert!(!map.is_empty());
+        let mut prev: Option<(u16, u16)> = None;
+        for &(group, cpu) in &map {
+            assert!(cpu < 64, "group-local CPU index must be < 64, got {cpu}");
+            if let Some(p) = prev {
+                assert!(
+                    (group, cpu) > p,
+                    "processor group map must be strictly increasing: {p:?} -> ({group}, {cpu})"
+                );
+            }
+            prev = Some((group, cpu));
         }
     }
 }

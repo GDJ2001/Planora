@@ -304,10 +304,12 @@ fn capabilities(frame: &TelemetryFrame) -> Vec<Capability> {
     #[cfg(windows)]
     let (gpu, power) = (
         planora_telemetry::windows_gpu_counter_available(),
-        frame.sensors.iter().any(|sensor| {
-            sensor.sensor_type == planora_core::SensorType::CpuPackagePowerWatts
-                && sensor.value.value.is_some()
-        }),
+        frame.package_power_watts.value.is_some()
+            || frame.sensors.iter().any(|sensor| {
+                sensor.sensor_type == planora_core::SensorType::CpuPackagePowerWatts
+                    && sensor.scope.eq_ignore_ascii_case("Package")
+                    && sensor.value.value.is_some()
+            }),
     );
     #[cfg(not(any(target_os = "linux", windows)))]
     let (gpu, power) = (false, false);
@@ -1156,7 +1158,8 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
 
     let session_id = planora_telemetry::unix_ms();
     let mut initial_sampler = Sampler::new_with_session(session_id, 1);
-    let initial_frame = initial_sampler.sample();
+    let mut initial_frame = initial_sampler.sample();
+    initial_frame.sanitize_provider_anomalies();
     initial_frame.validate().map_err(io::Error::other)?;
 
     let latest_frame = Arc::new(RwLock::new(initial_frame));
@@ -1214,7 +1217,17 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
             #[cfg(windows)]
             {
                 frame.sensors = sensor_source.read().unwrap().clone();
+                if frame.package_power_watts.value.is_none()
+                    && let Some(pkg_reading) = frame.sensors.iter().find(|s| {
+                        s.sensor_type == planora_core::SensorType::CpuPackagePowerWatts
+                            && s.scope.eq_ignore_ascii_case("Package")
+                            && s.value.value.is_some()
+                    })
+                {
+                    frame.package_power_watts = pkg_reading.value.clone();
+                }
             }
+            frame.sanitize_provider_anomalies();
             if let Err(err) = frame.validate() {
                 diag_sink.log(
                     0,

@@ -18,16 +18,47 @@ struct CtlInitArgs {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct CtlFirmwareVersion {
+    major_version: u64,
+    minor_version: u64,
+    build_number: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct CtlAdapterBdf {
+    bus: u8,
+    device: u8,
+    function: u8,
+}
+
+#[repr(C)]
 struct CtlDeviceAdapterProperties {
     size: u32,
     version: u8,
-    device_type: u8,
-    reserved: [u8; 2],
-    device_id: u32,
-    rev_id: u32,
+    reserved_pad: [u8; 3],
+    p_device_id: *mut std::ffi::c_void,
+    device_id_size: u32,
+    device_type: u32,
+    supported_subfunction_flags: u64,
+    driver_version: u64,
+    firmware_version: CtlFirmwareVersion,
     pci_vendor_id: u32,
     pci_device_id: u32,
+    rev_id: u32,
+    num_eus_per_sub_slice: u32,
+    num_sub_slices_per_slice: u32,
+    num_slices: u32,
     name: [u8; 100],
+    graphics_adapter_properties: u32,
+    frequency: u32,
+    pci_subsys_id: u16,
+    pci_subsys_vendor_id: u16,
+    adapter_bdf: CtlAdapterBdf,
+    reserved_bdf_pad: u8,
+    num_xe_cores: u32,
+    reserved: [u8; 108],
 }
 
 #[repr(C)]
@@ -43,11 +74,12 @@ struct CtlPowerEnergyCounter {
 struct CtlFreqState {
     size: u32,
     version: u8,
-    freq_type: u8,
-    reserved: u8,
-    current_freq: f64,
-    target_freq: f64,
-    actual_freq: f64,
+    reserved: [u8; 3],
+    current_voltage: f64,
+    request: f64,
+    tdp: f64,
+    efficient: f64,
+    actual: f64,
     throttle_reasons: u32,
 }
 
@@ -217,21 +249,53 @@ impl IntelIgclProvider {
                             continue;
                         }
                         let mut name = format!("Intel Graphics Adapter {idx}");
+                        let mut dev_id = format!("intel_gpu/{idx}");
                         if let Some(ctl_props) = ctl_props_ptr {
                             let ctl_props: CtlGetPropsFn =
                                 unsafe { std::mem::transmute(ctl_props) };
+                            let mut luid_bytes = [0u8; 8];
+                            let mut props_ok = false;
                             let mut props = CtlDeviceAdapterProperties {
                                 size: std::mem::size_of::<CtlDeviceAdapterProperties>() as u32,
-                                version: 0,
+                                version: 2,
+                                reserved_pad: [0; 3],
+                                p_device_id: luid_bytes.as_mut_ptr().cast(),
+                                device_id_size: luid_bytes.len() as u32,
                                 device_type: 0,
-                                reserved: [0; 2],
-                                device_id: 0,
-                                rev_id: 0,
+                                supported_subfunction_flags: 0,
+                                driver_version: 0,
+                                firmware_version: CtlFirmwareVersion::default(),
                                 pci_vendor_id: 0,
                                 pci_device_id: 0,
+                                rev_id: 0,
+                                num_eus_per_sub_slice: 0,
+                                num_sub_slices_per_slice: 0,
+                                num_slices: 0,
                                 name: [0; 100],
+                                graphics_adapter_properties: 0,
+                                frequency: 0,
+                                pci_subsys_id: 0,
+                                pci_subsys_vendor_id: 0,
+                                adapter_bdf: CtlAdapterBdf::default(),
+                                reserved_bdf_pad: 0,
+                                num_xe_cores: 0,
+                                reserved: [0; 108],
                             };
-                            if unsafe { ctl_props(dev, &mut props) } == 0 {
+                            for ver in [2u8, 1, 0] {
+                                luid_bytes = [0u8; 8];
+                                props.version = ver;
+                                props.p_device_id = luid_bytes.as_mut_ptr().cast();
+                                props.device_id_size = luid_bytes.len() as u32;
+                                if unsafe { ctl_props(dev, &mut props) } == 0 {
+                                    props_ok = true;
+                                    break;
+                                }
+                            }
+                            if props_ok {
+                                let luid = u64::from_le_bytes(luid_bytes);
+                                if luid != 0 {
+                                    dev_id = format!("gpu_luid:0x{luid:016x}");
+                                }
                                 let len = props
                                     .name
                                     .iter()
@@ -336,7 +400,7 @@ impl IntelIgclProvider {
                         devices.push(IntelDeviceState {
                             adapter_handle: dev,
                             name,
-                            device_id: format!("intel_gpu/{idx}"),
+                            device_id: dev_id,
                             power_handles,
                             last_energy,
                             temp_handles,
@@ -418,11 +482,18 @@ impl IntelIgclProvider {
                             && *prev_time > 0
                             && counter.timestamp > *prev_time
                         {
-                            let delta_e = counter.energy.saturating_sub(*prev_energy);
-                            let delta_t = counter.timestamp.saturating_sub(*prev_time);
+                            if counter.energy < *prev_energy {
+                                if p_idx < dev_state.last_energy.len() {
+                                    dev_state.last_energy[p_idx] =
+                                        Some((counter.energy, counter.timestamp));
+                                }
+                                continue;
+                            }
+                            let delta_e = counter.energy - *prev_energy;
+                            let delta_t = counter.timestamp - *prev_time;
                             if delta_t > 0 {
                                 let watts = (delta_e as f64 / delta_t as f64) as f32;
-                                if watts.is_finite() && watts >= 0.0 {
+                                if watts.is_finite() && (0.0..=1000.0).contains(&watts) {
                                     let sensor_name = if p_idx == 0 {
                                         "GPU Package Power".to_string()
                                     } else {
@@ -436,7 +507,12 @@ impl IntelIgclProvider {
                                         sensor_type: SensorType::GpuChipPowerWatts,
                                         scope: "GPU".into(),
                                         provider: "Intel IGCL".into(),
-                                        value: Metric::available(watts, "W", "Intel IGCL", stamp),
+                                        value: Metric::available(
+                                            watts,
+                                            planora_core::UNIT_WATTS,
+                                            "Intel IGCL",
+                                            stamp,
+                                        ),
                                     });
                                 }
                             }
@@ -456,7 +532,7 @@ impl IntelIgclProvider {
                     let mut temp: f64 = 0.0;
                     if unsafe { ctl_temp(temp_handle, &mut temp) } == 0
                         && temp.is_finite()
-                        && temp > 0.0
+                        && (0.0..=125.0).contains(&temp)
                     {
                         let sensor_name = if t_idx == 0 {
                             "GPU Core Temperature".to_string()
@@ -471,7 +547,12 @@ impl IntelIgclProvider {
                             sensor_type: SensorType::GpuTemperatureCelsius,
                             scope: "GPU".into(),
                             provider: "Intel IGCL".into(),
-                            value: Metric::available(temp as f32, "°C", "Intel IGCL", stamp),
+                            value: Metric::available(
+                                temp as f32,
+                                planora_core::UNIT_CELSIUS,
+                                "Intel IGCL",
+                                stamp,
+                            ),
                         });
                     }
                 }
@@ -484,16 +565,17 @@ impl IntelIgclProvider {
                     let mut freq_state = CtlFreqState {
                         size: std::mem::size_of::<CtlFreqState>() as u32,
                         version: 0,
-                        freq_type: 0,
-                        reserved: 0,
-                        current_freq: 0.0,
-                        target_freq: 0.0,
-                        actual_freq: 0.0,
+                        reserved: [0; 3],
+                        current_voltage: 0.0,
+                        request: 0.0,
+                        tdp: 0.0,
+                        efficient: 0.0,
+                        actual: 0.0,
                         throttle_reasons: 0,
                     };
                     if unsafe { ctl_freq(freq_handle, &mut freq_state) } == 0
-                        && freq_state.actual_freq.is_finite()
-                        && freq_state.actual_freq > 0.0
+                        && freq_state.actual.is_finite()
+                        && (0.0..=10_000.0).contains(&freq_state.actual)
                     {
                         let sensor_name = if f_idx == 0 {
                             "GPU Core Clock".to_string()
@@ -509,8 +591,8 @@ impl IntelIgclProvider {
                             scope: "GPU".into(),
                             provider: "Intel IGCL".into(),
                             value: Metric::available(
-                                freq_state.actual_freq as f32,
-                                "MHz",
+                                freq_state.actual as f32,
+                                planora_core::UNIT_MHZ,
                                 "Intel IGCL",
                                 stamp,
                             ),
@@ -525,7 +607,9 @@ impl IntelIgclProvider {
                 for (fan_idx, &fan_handle) in dev_state.fan_handles.iter().enumerate() {
                     let mut speed: i32 = 0;
                     // Units: 1 = RPM
-                    if unsafe { ctl_fan(fan_handle, 1, &mut speed) } == 0 && speed >= 0 {
+                    if unsafe { ctl_fan(fan_handle, 1, &mut speed) } == 0
+                        && (0..=30_000).contains(&speed)
+                    {
                         readings.push(SensorReading {
                             id: format!("{dev_id}/fan/{fan_idx}"),
                             device_id: dev_id.clone(),
@@ -534,7 +618,12 @@ impl IntelIgclProvider {
                             sensor_type: SensorType::FanRpm,
                             scope: "GPU".into(),
                             provider: "Intel IGCL".into(),
-                            value: Metric::available(speed as f32, "RPM", "Intel IGCL", stamp),
+                            value: Metric::available(
+                                speed as f32,
+                                planora_core::UNIT_RPM,
+                                "Intel IGCL",
+                                stamp,
+                            ),
                         });
                     }
                 }
@@ -569,6 +658,24 @@ impl Drop for IntelIgclProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn igcl_struct_abi_layouts_match_header() {
+        assert_eq!(std::mem::size_of::<CtlInitArgs>(), 36);
+        assert_eq!(std::mem::size_of::<CtlFirmwareVersion>(), 24);
+        assert_eq!(std::mem::size_of::<CtlDeviceAdapterProperties>(), 320);
+        assert_eq!(
+            std::mem::offset_of!(CtlDeviceAdapterProperties, firmware_version),
+            40
+        );
+        assert_eq!(std::mem::offset_of!(CtlDeviceAdapterProperties, name), 88);
+        assert_eq!(
+            std::mem::offset_of!(CtlDeviceAdapterProperties, adapter_bdf),
+            200
+        );
+        assert_eq!(std::mem::size_of::<CtlPowerEnergyCounter>(), 24);
+        assert_eq!(std::mem::size_of::<CtlFreqState>(), 56);
+    }
 
     #[test]
     fn probe_intel_igcl_runtime() {

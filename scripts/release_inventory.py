@@ -15,7 +15,18 @@ def is_release_artifact(name: str, version_tokens: set[str]) -> bool:
     if not any(token in name for token in version_tokens):
         return False
     return name.endswith(
-        (".msi", ".deb", ".rpm", ".pkg", ".dmg", ".AppImage", ".zip", ".tar.gz", ".manifest.json")
+        (
+            "-Setup.exe",
+            ".msi",
+            ".deb",
+            ".rpm",
+            ".pkg",
+            ".dmg",
+            ".AppImage",
+            ".zip",
+            ".tar.gz",
+            ".manifest.json",
+        )
     )
 
 

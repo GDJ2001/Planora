@@ -112,24 +112,43 @@ impl ObservedSummary {
 impl TimeSeries {
     pub fn observed_summary(&self, now: Instant, range: HistoryRange) -> Option<ObservedSummary> {
         let duration = range.duration();
+        let expected_seconds = duration.as_secs() as usize;
         let cutoff = now.checked_sub(duration).unwrap_or(now);
+        let use_unix_seconds = self.samples.back().is_some_and(|s| s.timestamp_ms >= 1_000);
         let mut buckets: std::collections::BTreeMap<u64, (f64, u32, f32, f32)> =
             std::collections::BTreeMap::new();
         for sample in &self.samples {
-            if sample.time < cutoff || sample.time > now {
+            if sample.time < cutoff || sample.start > now {
                 continue;
             }
             if let Some(value) = sample.value.filter(|v| v.is_finite()) {
-                let second = sample.time.duration_since(cutoff).as_secs();
+                let second = if use_unix_seconds {
+                    sample.timestamp_ms / 1_000
+                } else {
+                    sample
+                        .midpoint()
+                        .saturating_duration_since(cutoff)
+                        .as_secs()
+                        .min(duration.as_secs().saturating_sub(1))
+                };
+                let sample_count = sample.count.max(1);
+                let sample_sum = if sample.count > 0 && sample.sum.is_finite() {
+                    sample.sum
+                } else {
+                    value as f64 * sample_count as f64
+                };
                 let bucket =
                     buckets
                         .entry(second)
                         .or_insert((0.0, 0, f32::INFINITY, f32::NEG_INFINITY));
-                bucket.0 += sample.sum;
-                bucket.1 += sample.count;
+                bucket.0 += sample_sum;
+                bucket.1 += sample_count;
                 bucket.2 = bucket.2.min(sample.minimum.unwrap_or(value));
                 bucket.3 = bucket.3.max(sample.maximum.unwrap_or(value));
             }
+        }
+        while buckets.len() > expected_seconds {
+            buckets.pop_first();
         }
         if buckets.is_empty() {
             return None;
@@ -147,8 +166,8 @@ impl TimeSeries {
                 .values()
                 .fold(f32::NEG_INFINITY, |current, bucket| current.max(bucket.3)),
             average: (total / values.len() as f64) as f32,
-            observed_seconds: values.len(),
-            expected_seconds: duration.as_secs() as usize,
+            observed_seconds: values.len().min(expected_seconds),
+            expected_seconds,
         })
     }
     pub fn new() -> Self {
@@ -669,26 +688,13 @@ impl ResourceHistories {
             let metric = &sensor.value;
             let instant = measurement_instant(now, wall_clock_now_ms, metric.sampled_at_ms);
             self.push_detail(
-                format!(
-                    "sensor:{}:{}:{}:{:?}",
-                    sensor.scope, sensor.provider, sensor.name, sensor.sensor_type
-                ),
+                sensor_series_key(sensor),
                 instant,
                 metric.sampled_at_ms,
                 metric.value,
                 &metric.source,
                 metric.unavailable_reason.as_ref(),
             );
-            if !sensor.id.is_empty() {
-                self.push_detail(
-                    format!("sensor:{}", sensor.id),
-                    instant,
-                    metric.sampled_at_ms,
-                    metric.value,
-                    &metric.source,
-                    metric.unavailable_reason.as_ref(),
-                );
-            }
         }
     }
     pub fn reset_if_new_session(&mut self, current_session: u64) {
@@ -794,6 +800,17 @@ impl ResourceHistories {
             source,
             unavailable_reason,
         );
+    }
+}
+
+pub fn sensor_series_key(sensor: &SensorReading) -> String {
+    if !sensor.id.is_empty() {
+        format!("sensor:{}", sensor.id)
+    } else {
+        format!(
+            "sensor:{}:{}:{}:{}:{:?}",
+            sensor.device_id, sensor.scope, sensor.provider, sensor.name, sensor.sensor_type
+        )
     }
 }
 
@@ -1131,5 +1148,56 @@ mod tests {
         histories.reset_if_new_session(42);
         assert!(histories.detail("disk:0").is_none());
         assert_eq!(histories.session_id, 42);
+    }
+
+    #[test]
+    fn continuous_ten_hz_stream_reports_full_sixty_second_coverage() {
+        let base = Instant::now();
+        let mut series = TimeSeries::new();
+        // 65 seconds of 10 Hz samples with realistic scheduling jitter
+        for tick in 0..650u64 {
+            let jitter_ms = (tick * 7) % 19;
+            let offset_ms = tick * 100 + jitter_ms;
+            series.push(
+                base + Duration::from_millis(offset_ms),
+                100_000 + offset_ms,
+                Some(42.0),
+            );
+        }
+        // Check multiple sub-second query phases inside second 64
+        for phase_ms in [64_020u64, 64_350, 64_950] {
+            let query_now = base + Duration::from_millis(phase_ms);
+            let summary = series
+                .observed_summary(query_now, HistoryRange::Sec60)
+                .unwrap();
+            assert_eq!(
+                summary.observed_seconds, 60,
+                "phase {phase_ms}ms should report 60/60 observed seconds"
+            );
+            assert_eq!(summary.expected_seconds, 60);
+            assert!((summary.coverage_percent() - 100.0).abs() < f32::EPSILON);
+        }
+    }
+
+    #[test]
+    fn sensor_series_key_prevents_multi_drive_collision() {
+        let drive0 = SensorReading {
+            id: "/nvme/0/temperature/0".into(),
+            provider: "LibreHardwareMonitor".into(),
+            scope: "Drive".into(),
+            device_id: "/nvme/0".into(),
+            device_name: "Samsung SSD 990 PRO".into(),
+            name: "Temperature".into(),
+            sensor_type: planora_core::SensorType::StorageTemperatureCelsius,
+            value: planora_core::Metric::available(41.0, "°C", "LHM", 1_000),
+        };
+        let drive1 = SensorReading {
+            id: "/nvme/1/temperature/0".into(),
+            device_id: "/nvme/1".into(),
+            device_name: "WD Black SN850X".into(),
+            value: planora_core::Metric::available(53.0, "°C", "LHM", 1_000),
+            ..drive0.clone()
+        };
+        assert_ne!(sensor_series_key(&drive0), sensor_series_key(&drive1));
     }
 }

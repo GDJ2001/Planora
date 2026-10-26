@@ -32,7 +32,7 @@ try {
         cargo build --release --bins --locked
         if ($LASTEXITCODE -ne 0) { throw 'Release build failed' }
 
-        dotnet publish (Join-Path $root 'crates\planora-sensor-broker\PlanoraSensorBroker.csproj') -c Release -r win-x64 --self-contained -p:PlanoraGitCommit=$commit -o $sourceDir
+        dotnet publish (Join-Path $root 'crates\planora-sensor-broker\PlanoraSensorBroker.csproj') -c Release -r win-x64 --self-contained -p:PlanoraVersion=$version -p:PlanoraGitCommit=$commit -o $sourceDir
         if ($LASTEXITCODE -ne 0) { throw 'Sensor broker publish failed' }
     }
 

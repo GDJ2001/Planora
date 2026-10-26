@@ -250,6 +250,25 @@ impl SensorBrokerSupervisor {
         }
     }
 
+    fn cached_readings_with_staleness(&self) -> Vec<SensorReading> {
+        let mut readings = self.last_readings.clone();
+        if let Some(last_poll) = self.last_poll {
+            let elapsed_ms = last_poll.elapsed().as_millis() as u64;
+            if elapsed_ms > 5000 {
+                let now_ms = crate::unix_ms();
+                for r in &mut readings {
+                    r.value = Metric::unavailable(
+                        &r.value.unit,
+                        &r.value.source,
+                        now_ms,
+                        AvailabilityReason::Stale(elapsed_ms),
+                    );
+                }
+            }
+        }
+        readings
+    }
+
     pub fn poll_sensors(&mut self) -> Vec<SensorReading> {
         if self
             .last_poll
@@ -260,16 +279,16 @@ impl SensorBrokerSupervisor {
 
         self.ensure_started();
         let Some(stdin) = &mut self.stdin else {
-            return self.last_readings.clone();
+            return self.cached_readings_with_staleness();
         };
 
         if writeln!(stdin, "{{\"command\":\"sample\"}}").is_err() || stdin.flush().is_err() {
             self.handle_failure();
-            return self.last_readings.clone();
+            return self.cached_readings_with_staleness();
         }
 
         let Some(rx) = &self.rx else {
-            return self.last_readings.clone();
+            return self.cached_readings_with_staleness();
         };
 
         match rx.recv_timeout(Duration::from_millis(2000)) {
@@ -285,7 +304,7 @@ impl SensorBrokerSupervisor {
                     let mut converted = Vec::with_capacity(resp.sensors.len());
                     if resp.sensors.len() > MAX_BROKER_SENSORS {
                         self.handle_failure();
-                        return self.last_readings.clone();
+                        return self.cached_readings_with_staleness();
                     }
                     for r in resp.sensors {
                         if r.id.len() > 256
@@ -305,10 +324,10 @@ impl SensorBrokerSupervisor {
                         let is_gpu = r.hardware_type.starts_with("Gpu");
                         let is_storage = r.hardware_type == "Storage";
                         let st = match r.sensor_type.as_str() {
-                            "Power" if is_cpu && r.scope == "Package" => {
-                                SensorType::CpuPackagePowerWatts
-                            }
-                            "Power" if is_gpu && r.scope == "Board" => {
+                            "Power" if is_cpu => SensorType::CpuPackagePowerWatts,
+                            "Power"
+                                if is_gpu && (r.scope == "Board" || r.name.contains("Board")) =>
+                            {
                                 SensorType::GpuBoardPowerWatts
                             }
                             "Power" if is_gpu => SensorType::GpuChipPowerWatts,
@@ -333,11 +352,26 @@ impl SensorBrokerSupervisor {
                             _ => continue,
                         };
 
+                        let canonical_unit = planora_core::canonicalize_unit(&r.unit);
                         let metric = if let Some(val) = r.value {
-                            Metric::available(val, r.unit, &r.provider, r.sampled_at_ms)
+                            if st.is_plausible_value(val)
+                                && planora_core::canonicalize_unit(canonical_unit)
+                                    == planora_core::canonicalize_unit(st.expected_unit())
+                            {
+                                Metric::available(val, canonical_unit, &r.provider, r.sampled_at_ms)
+                            } else {
+                                Metric::unavailable(
+                                    canonical_unit,
+                                    &r.provider,
+                                    r.sampled_at_ms,
+                                    AvailabilityReason::TemporarilyFailed(
+                                        "Sensor reading failed physical bounds validation".into(),
+                                    ),
+                                )
+                            }
                         } else {
                             Metric::unavailable(
-                                r.unit,
+                                canonical_unit,
                                 &r.provider,
                                 r.sampled_at_ms,
                                 AvailabilityReason::Unsupported(
@@ -370,7 +404,7 @@ impl SensorBrokerSupervisor {
             }
         }
 
-        self.last_readings.clone()
+        self.cached_readings_with_staleness()
     }
 
     pub fn probe_capability(&mut self) -> Capability {
@@ -542,5 +576,30 @@ mod tests {
             Some("abc123")
         ));
         assert!(!matches_build("0.0.0", "abc123", Some("abc123")));
+    }
+
+    #[test]
+    fn broker_cached_readings_expire_to_stale_during_restart_backoff() {
+        let mut sup = SensorBrokerSupervisor::new();
+        sup.next_restart_at = Some(Instant::now() + Duration::from_secs(60));
+        sup.last_poll = Some(Instant::now() - Duration::from_secs(6));
+        sup.last_readings = vec![SensorReading {
+            id: "cpu/0/temp".into(),
+            device_id: "cpu/0".into(),
+            device_name: "CPU".into(),
+            name: "CPU Package".into(),
+            sensor_type: SensorType::CpuTemperatureCelsius,
+            scope: "Package".into(),
+            provider: "LibreHardwareMonitor".into(),
+            value: Metric::available(62.0, "°C", "LibreHardwareMonitor", 1000),
+        }];
+
+        let polled = sup.poll_sensors();
+        assert_eq!(polled.len(), 1);
+        assert!(polled[0].value.value.is_none());
+        assert!(matches!(
+            polled[0].value.unavailable_reason,
+            Some(AvailabilityReason::Stale(ms)) if ms > 5000
+        ));
     }
 }

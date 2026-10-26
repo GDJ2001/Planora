@@ -833,14 +833,18 @@ impl App {
         }
         #[cfg(windows)]
         let live_sensors = {
-            let mut readings = frame_opt
+            let helper_sensors = frame_opt
                 .as_ref()
-                .map(|frame| frame.sensors.clone())
+                .map(|frame| frame.sensors.as_slice())
                 .unwrap_or_default();
             if !self.fixture_mode && app_state != AppState::Replay {
-                readings.extend(shared_copy.sensor_readings.iter().cloned());
+                Arc::new(merge_sensor_readings(
+                    helper_sensors,
+                    &shared_copy.sensor_readings,
+                ))
+            } else {
+                Arc::new(helper_sensors.to_vec())
             }
-            Arc::new(readings)
         };
         if app_state == AppState::Live
             && let Some(frame) = &frame_opt
@@ -1816,6 +1820,46 @@ fn main() -> eframe::Result<()> {
     result
 }
 
+fn normalize_sensor_device_name(name: &str) -> String {
+    let cleaned = name
+        .to_lowercase()
+        .replace("(r)", " ")
+        .replace("(tm)", " ")
+        .replace(['®', '™'], " ");
+    cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+pub fn merge_sensor_readings(
+    helper_sensors: &[planora_core::SensorReading],
+    vendor_sensors: &[planora_core::SensorReading],
+) -> Vec<planora_core::SensorReading> {
+    let mut result = Vec::with_capacity(vendor_sensors.len() + helper_sensors.len());
+    let mut seen_ids = std::collections::HashSet::new();
+    let mut vendor_keys = std::collections::HashSet::new();
+
+    for s in vendor_sensors {
+        if seen_ids.insert(s.id.clone()) {
+            let device_norm = normalize_sensor_device_name(&s.device_name);
+            vendor_keys.insert((device_norm, s.sensor_type, s.name.trim().to_lowercase()));
+            result.push(s.clone());
+        }
+    }
+
+    for s in helper_sensors {
+        if seen_ids.contains(&s.id) {
+            continue;
+        }
+        let device_norm = normalize_sensor_device_name(&s.device_name);
+        if vendor_keys.contains(&(device_norm, s.sensor_type, s.name.trim().to_lowercase())) {
+            continue;
+        }
+        seen_ids.insert(s.id.clone());
+        result.push(s.clone());
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2070,5 +2114,71 @@ mod tests {
         assert_eq!(app.palette(&ctx).background, Color32::BLACK);
         // Keep this fixture from saving placement/preferences during shutdown.
         app.normal_window = false;
+    }
+
+    #[test]
+    fn sensor_deduplication_prefers_direct_vendor_readings() {
+        use planora_core::{Metric, SensorReading, SensorType};
+        let vendor = vec![SensorReading {
+            id: "nvidia_gpu/0/temperature".into(),
+            device_id: "nvidia_gpu/0".into(),
+            device_name: "NVIDIA GeForce RTX 3080".into(),
+            name: "GPU Temperature".into(),
+            sensor_type: SensorType::GpuTemperatureCelsius,
+            scope: "GPU 0".into(),
+            provider: "NVIDIA NVML".into(),
+            value: Metric::available(65.0, "°C", "NVIDIA NVML", 1000),
+        }];
+        let helper = vec![
+            SensorReading {
+                id: "lhm/gpu/0/temperature".into(),
+                device_id: "lhm_gpu_0".into(),
+                device_name: "NVIDIA GeForce RTX 3080".into(),
+                name: "GPU Temperature".into(),
+                sensor_type: SensorType::GpuTemperatureCelsius,
+                scope: "GPU".into(),
+                provider: "LibreHardwareMonitor".into(),
+                value: Metric::available(64.5, "°C", "LibreHardwareMonitor", 1000),
+            },
+            SensorReading {
+                id: "lhm/cpu/power".into(),
+                device_id: "lhm_cpu_0".into(),
+                device_name: "Intel Core i9".into(),
+                name: "CPU Package".into(),
+                sensor_type: SensorType::CpuPackagePowerWatts,
+                scope: "Package".into(),
+                provider: "LibreHardwareMonitor".into(),
+                value: Metric::available(85.0, "W", "LibreHardwareMonitor", 1000),
+            },
+        ];
+        let merged = merge_sensor_readings(&helper, &vendor);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].provider, "NVIDIA NVML");
+        assert_eq!(merged[1].provider, "LibreHardwareMonitor");
+        assert_eq!(merged[1].sensor_type, SensorType::CpuPackagePowerWatts);
+
+        let igcl_vendor = vec![SensorReading {
+            id: "igcl:00:02.0:temp:0".into(),
+            device_id: "0000:00:02.0".into(),
+            device_name: "Intel(R) Iris(R) Xe Graphics".into(),
+            name: "GPU Global Temperature".into(),
+            sensor_type: SensorType::GpuTemperatureCelsius,
+            scope: "GPU".into(),
+            provider: "Intel IGCL".into(),
+            value: Metric::available(49.0, "°C", "Intel IGCL", 1000),
+        }];
+        let lhm_helper = vec![SensorReading {
+            id: "/gpu-intel-integrated/0/temperature/0".into(),
+            device_id: "/gpu-intel-integrated/0".into(),
+            device_name: "Intel Iris Xe Graphics".into(),
+            name: "GPU Global Temperature".into(),
+            sensor_type: SensorType::GpuTemperatureCelsius,
+            scope: "GPU".into(),
+            provider: "LibreHardwareMonitor".into(),
+            value: Metric::available(48.5, "°C", "LibreHardwareMonitor", 1000),
+        }];
+        let merged_trademark = merge_sensor_readings(&lhm_helper, &igcl_vendor);
+        assert_eq!(merged_trademark.len(), 1);
+        assert_eq!(merged_trademark[0].provider, "Intel IGCL");
     }
 }

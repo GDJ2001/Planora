@@ -45,8 +45,15 @@ fn metric_percent(metric: &Metric<f32>) -> String {
         .map_or_else(|| "Unavailable".into(), |value| format!("{value:.1}%"))
 }
 
-fn metric_rate(metric: &Metric<u64>) -> String {
-    format_rate(metric.value.map(|value| value as f32))
+fn metric_rate(metric: &Metric<u64>, series: &TimeSeries) -> String {
+    let value = if metric.value.is_some() {
+        series
+            .latest_stable_value()
+            .or_else(|| metric.value.map(|v| v as f32))
+    } else {
+        None
+    };
+    format_rate(value)
 }
 
 fn summary_value(value: f32, unit: &str) -> String {
@@ -319,7 +326,7 @@ fn resource_cards(
     cards.push((
         "Storage · read",
         "disk",
-        format_rate(frame.disk_read_bytes_per_sec.value.map(|v| v as f32)),
+        metric_rate(&frame.disk_read_bytes_per_sec, &histories.disk_read),
         &histories.disk_read,
         p.disk,
         None,
@@ -327,7 +334,7 @@ fn resource_cards(
     cards.push((
         "Network · rx",
         "net",
-        format_rate(frame.network_rx_bytes_per_sec.value.map(|v| v as f32)),
+        metric_rate(&frame.network_rx_bytes_per_sec, &histories.net_rx),
         &histories.net_rx,
         p.network,
         None,
@@ -543,7 +550,7 @@ pub fn render_overview_view(
             rows.extend([
                 SummaryRow {
                     label: "Disk read",
-                    current: metric_rate(&frame.disk_read_bytes_per_sec),
+                    current: metric_rate(&frame.disk_read_bytes_per_sec, &histories.disk_read),
                     series: &histories.disk_read,
                     unit: "B/s",
                     color: p.disk,
@@ -556,7 +563,7 @@ pub fn render_overview_view(
                 },
                 SummaryRow {
                     label: "Disk write",
-                    current: metric_rate(&frame.disk_write_bytes_per_sec),
+                    current: metric_rate(&frame.disk_write_bytes_per_sec, &histories.disk_write),
                     series: &histories.disk_write,
                     unit: "B/s",
                     color: p.disk,
@@ -569,7 +576,7 @@ pub fn render_overview_view(
                 },
                 SummaryRow {
                     label: "Network receive",
-                    current: metric_rate(&frame.network_rx_bytes_per_sec),
+                    current: metric_rate(&frame.network_rx_bytes_per_sec, &histories.net_rx),
                     series: &histories.net_rx,
                     unit: "B/s",
                     color: p.network,
@@ -582,7 +589,7 @@ pub fn render_overview_view(
                 },
                 SummaryRow {
                     label: "Network transmit",
-                    current: metric_rate(&frame.network_tx_bytes_per_sec),
+                    current: metric_rate(&frame.network_tx_bytes_per_sec, &histories.net_tx),
                     series: &histories.net_tx,
                     unit: "B/s",
                     color: p.network,

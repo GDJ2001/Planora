@@ -551,8 +551,24 @@ pub fn choices(
     }
 
     let mut sensor_rows: Vec<_> = sensors.iter().collect();
-    sensor_rows
-        .sort_by(|a, b| (&a.scope, &a.provider, &a.name).cmp(&(&b.scope, &b.provider, &b.name)));
+    sensor_rows.sort_by(|a, b| {
+        (
+            &a.scope,
+            &a.device_name,
+            &a.device_id,
+            &a.provider,
+            &a.name,
+            &a.id,
+        )
+            .cmp(&(
+                &b.scope,
+                &b.device_name,
+                &b.device_id,
+                &b.provider,
+                &b.name,
+                &b.id,
+            ))
+    });
     for sensor in sensor_rows {
         let age_ms = planora_telemetry::unix_ms().saturating_sub(sensor.value.sampled_at_ms);
         let is_stale = age_ms > 5_000;
@@ -564,13 +580,16 @@ pub fn choices(
         } else {
             ("Unavailable".into(), "—", p.secondary)
         };
-        let id = format!(
-            "sensor:{}:{}:{}:{:?}",
-            sensor.scope, sensor.provider, sensor.name, sensor.sensor_type
-        );
+        let id = crate::history::sensor_series_key(sensor);
+        let label = if !sensor.device_name.is_empty() && !sensor.name.contains(&sensor.device_name)
+        {
+            format!("{} · {}", sensor.device_name, sensor.name)
+        } else {
+            format!("{} ({})", sensor.name, sensor.scope)
+        };
         rows.push(Choice {
             id: id.clone(),
-            label: format!("{} ({})", sensor.name, sensor.scope),
+            label,
             value: sensor.value.value.map_or_else(
                 || "Unavailable".into(),
                 |v| format!("{v:.1} {}", sensor.value.unit),
@@ -1029,7 +1048,11 @@ fn capacity_pair(
                     let value = |bytes: Option<u64>| {
                         bytes.map_or_else(|| "Unavailable".into(), format_bytes)
                     };
-                    ui.label(format!("{} / {}", value(used), value(total)));
+                    if total == Some(0) {
+                        ui.label("Shared memory (UMA)");
+                    } else {
+                        ui.label(format!("{} / {}", value(used), value(total)));
+                    }
                     capacity_bar(ui, used, total, color, p);
                 });
         };
@@ -1147,7 +1170,7 @@ fn cpu_heatmap(
         .show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.set_max_width(ui.available_width().max(280.0));
-                for cpu in cpus {
+                for (flat_idx, cpu) in cpus.iter().enumerate() {
                     let identity = (cpu.group, cpu.cpu_index);
                     let (rect, response) =
                         ui.allocate_exact_size(Vec2::new(48.0, 48.0), egui::Sense::click());
@@ -1201,10 +1224,11 @@ fn cpu_heatmap(
                     if response.clicked() {
                         state.selected_cpu = Some(identity);
                     }
+                    let flat_cpu = u16::try_from(flat_idx).unwrap_or(cpu.cpu_index);
                     let core_class = topology.and_then(|t| {
                         t.cores
                             .iter()
-                            .find(|c| c.logical_cpus.contains(&cpu.cpu_index))
+                            .find(|c| c.logical_cpus.contains(&flat_cpu))
                             .and_then(|c| c.class.as_deref())
                     });
                     let hover_info = format!(
@@ -1368,12 +1392,7 @@ fn render_selected(
             _ => (
                 sensors
                     .iter()
-                    .find(|s| {
-                        format!(
-                            "sensor:{}:{}:{}:{:?}",
-                            s.scope, s.provider, s.name, s.sensor_type
-                        ) == item.id
-                    })
+                    .find(|s| crate::history::sensor_series_key(s) == item.id)
                     .map_or("Reading", |s| s.value.unit.as_str()),
                 None,
             ),
@@ -1491,12 +1510,7 @@ fn render_selected(
         _ => {
             let u = sensors
                 .iter()
-                .find(|s| {
-                    format!(
-                        "sensor:{}:{}:{}:{:?}",
-                        s.scope, s.provider, s.name, s.sensor_type
-                    ) == item.id
-                })
+                .find(|s| crate::history::sensor_series_key(s) == item.id)
                 .map_or("Reading", |s| s.value.unit.as_str());
             let sc = if u == "%" {
                 ValueScale::Percent { full: is_full }
@@ -1989,8 +2003,8 @@ fn render_selected(
             0 => render_cpu_tab(ui, frame, topology, histories, state.range, now, p),
             1 => render_memory_tab(ui, frame, p),
             2 => render_gpu_tab(ui, frame, p),
-            3 => render_storage_tab(ui, frame, p),
-            4 => render_network_tab(ui, frame, p),
+            3 => render_storage_tab(ui, frame, histories, p),
+            4 => render_network_tab(ui, frame, histories, p),
             5 => render_sensors_tab(
                 ui,
                 sensors,
@@ -2058,14 +2072,15 @@ fn render_cpu_tab(
                     ui.strong("Source");
                     ui.end_row();
 
-                    for core in &frame.logical_cpus {
+                    for (flat_idx, core) in frame.logical_cpus.iter().enumerate() {
                         ui.monospace(format!("CPU {}", core.cpu_index));
                         ui.monospace(format!("Group {}", core.group));
 
+                        let flat_cpu = u16::try_from(flat_idx).unwrap_or(core.cpu_index);
                         let class_str = topology.and_then(|t| {
                             t.cores
                                 .iter()
-                                .find(|c| c.logical_cpus.contains(&core.cpu_index))
+                                .find(|c| c.logical_cpus.contains(&flat_cpu))
                                 .and_then(|c| c.class.as_deref())
                         });
                         ui.label(class_str.unwrap_or("Standard"));
@@ -2221,6 +2236,7 @@ fn render_gpu_tab(ui: &mut egui::Ui, frame: &TelemetryFrame, p: Palette) {
                                 (Some(u), Some(t)) if t > 0 => {
                                     format!("{} / {}", format_bytes(u), format_bytes(t))
                                 }
+                                (_, Some(0)) => "Shared memory (UMA)".into(),
                                 (Some(u), _) => format_bytes(u),
                                 _ => "—".into(),
                             };
@@ -2302,11 +2318,16 @@ fn render_gpu_tab(ui: &mut egui::Ui, frame: &TelemetryFrame, p: Palette) {
     }
 }
 
-fn render_storage_tab(ui: &mut egui::Ui, frame: &TelemetryFrame, p: Palette) {
+fn render_storage_tab(
+    ui: &mut egui::Ui,
+    frame: &TelemetryFrame,
+    histories: &ResourceHistories,
+    p: Palette,
+) {
     ui.heading("Physical Disks & Block Storage");
     ui.label(
         egui::RichText::new(
-            "Throughput, response time latency, and queue depth per physical disk.",
+            "Throughput (1-second rolling window), response time latency, and queue depth per physical disk.",
         )
         .size(11.5 * crate::appearance::text_scale(ui.ctx()))
         .color(p.secondary),
@@ -2328,18 +2349,32 @@ fn render_storage_tab(ui: &mut egui::Ui, frame: &TelemetryFrame, p: Palette) {
                 .min_row_height(32.0)
                 .show(ui, |ui| {
                     ui.strong("Device Label");
-                    ui.strong("Read Rate");
-                    ui.strong("Write Rate");
+                    ui.strong("Read Rate (1s)");
+                    ui.strong("Write Rate (1s)");
                     ui.strong("Avg Latency");
                     ui.strong("Queue Depth");
                     ui.end_row();
 
                     for disk in &frame.disks {
                         ui.label(&disk.label);
-                        ui.monospace(format_rate(disk.read_bytes_per_sec.value.map(|v| v as f32)));
-                        ui.monospace(format_rate(
-                            disk.write_bytes_per_sec.value.map(|v| v as f32),
-                        ));
+                        let read_rate = if disk.read_bytes_per_sec.value.is_some() {
+                            histories
+                                .detail(&format!("disk:{}:read", disk.id))
+                                .and_then(|ts| ts.latest_stable_value())
+                                .or_else(|| disk.read_bytes_per_sec.value.map(|v| v as f32))
+                        } else {
+                            None
+                        };
+                        let write_rate = if disk.write_bytes_per_sec.value.is_some() {
+                            histories
+                                .detail(&format!("disk:{}:write", disk.id))
+                                .and_then(|ts| ts.latest_stable_value())
+                                .or_else(|| disk.write_bytes_per_sec.value.map(|v| v as f32))
+                        } else {
+                            None
+                        };
+                        ui.monospace(format_rate(read_rate));
+                        ui.monospace(format_rate(write_rate));
 
                         let lat_str = disk
                             .latency_ms
@@ -2360,11 +2395,16 @@ fn render_storage_tab(ui: &mut egui::Ui, frame: &TelemetryFrame, p: Palette) {
         });
 }
 
-fn render_network_tab(ui: &mut egui::Ui, frame: &TelemetryFrame, p: Palette) {
+fn render_network_tab(
+    ui: &mut egui::Ui,
+    frame: &TelemetryFrame,
+    histories: &ResourceHistories,
+    p: Palette,
+) {
     ui.heading("Network Adapters & Interfaces");
     ui.label(
         egui::RichText::new(
-            "Network interface bandwidth, link connection status, and theoretical link speed.",
+            "Network interface bandwidth (1-second rolling window), link connection status, and theoretical link speed.",
         )
         .size(11.5 * crate::appearance::text_scale(ui.ctx()))
         .color(p.secondary),
@@ -2386,20 +2426,32 @@ fn render_network_tab(ui: &mut egui::Ui, frame: &TelemetryFrame, p: Palette) {
                 .min_row_height(32.0)
                 .show(ui, |ui| {
                     ui.strong("Interface");
-                    ui.strong("Receive Rate");
-                    ui.strong("Transmit Rate");
+                    ui.strong("Receive Rate (1s)");
+                    ui.strong("Transmit Rate (1s)");
                     ui.strong("Link State");
                     ui.strong("Link Speed");
                     ui.end_row();
 
                     for iface in &frame.network_interfaces {
                         ui.label(&iface.label);
-                        ui.monospace(format_rate(
-                            iface.read_bytes_per_sec.value.map(|v| v as f32),
-                        ));
-                        ui.monospace(format_rate(
-                            iface.write_bytes_per_sec.value.map(|v| v as f32),
-                        ));
+                        let rx_rate = if iface.read_bytes_per_sec.value.is_some() {
+                            histories
+                                .detail(&format!("net:{}:rx", iface.id))
+                                .and_then(|ts| ts.latest_stable_value())
+                                .or_else(|| iface.read_bytes_per_sec.value.map(|v| v as f32))
+                        } else {
+                            None
+                        };
+                        let tx_rate = if iface.write_bytes_per_sec.value.is_some() {
+                            histories
+                                .detail(&format!("net:{}:tx", iface.id))
+                                .and_then(|ts| ts.latest_stable_value())
+                                .or_else(|| iface.write_bytes_per_sec.value.map(|v| v as f32))
+                        } else {
+                            None
+                        };
+                        ui.monospace(format_rate(rx_rate));
+                        ui.monospace(format_rate(tx_rate));
 
                         let is_conn = iface.link_state.as_deref() != Some("Disconnected");
                         let state_str = iface.link_state.as_deref().unwrap_or("Connected");
@@ -2510,23 +2562,35 @@ fn render_sensors_tab(
             let colors = [
                 p.accent, p.cpu, p.gpu, p.memory, p.disk, p.network, p.warning, p.success,
             ];
+            let mut name_counts: std::collections::HashMap<&str, usize> =
+                std::collections::HashMap::new();
+            for sensor in &matching_sensors {
+                *name_counts.entry(sensor.name.as_str()).or_insert(0) += 1;
+            }
+            let series_labels: Vec<String> = matching_sensors
+                .iter()
+                .map(|sensor| {
+                    if name_counts.get(sensor.name.as_str()).copied().unwrap_or(0) > 1 {
+                        let dev = if !sensor.device_name.is_empty() {
+                            sensor.device_name.as_str()
+                        } else if !sensor.device_id.is_empty() {
+                            sensor.device_id.as_str()
+                        } else {
+                            sensor.scope.as_str()
+                        };
+                        format!("{dev} · {}", sensor.name)
+                    } else {
+                        sensor.name.clone()
+                    }
+                })
+                .collect();
             let mut plot_series: Vec<PlotSeries<'_>> = Vec::new();
             for (idx, sensor) in matching_sensors.iter().enumerate() {
-                let id = format!(
-                    "sensor:{}:{}:{}:{:?}",
-                    sensor.scope, sensor.provider, sensor.name, sensor.sensor_type
-                );
-                let series = histories.detail(&id).or_else(|| {
-                    if !sensor.id.is_empty() {
-                        histories.detail(&format!("sensor:{}", sensor.id))
-                    } else {
-                        None
-                    }
-                });
-                if let Some(s) = series {
+                let key = crate::history::sensor_series_key(sensor);
+                if let Some(s) = histories.detail(&key) {
                     let color = colors[idx % colors.len()];
                     plot_series.push(PlotSeries {
-                        name: &sensor.name,
+                        name: &series_labels[idx],
                         samples: s,
                         color,
                         dashed: idx >= colors.len(),
@@ -2579,7 +2643,7 @@ fn render_sensors_tab(
     }
 
     // 2. Device-Grouped Sensor Tables
-    let mut groups: BTreeMap<String, Vec<&SensorReading>> = BTreeMap::new();
+    let mut groups: BTreeMap<(String, String), Vec<&SensorReading>> = BTreeMap::new();
     for sensor in sensors {
         let device_name = if !sensor.device_name.is_empty() {
             sensor.device_name.clone()
@@ -2588,13 +2652,37 @@ fn render_sensors_tab(
         } else {
             format!("{} Device", sensor.scope)
         };
-        groups.entry(device_name).or_default().push(sensor);
+        let group_id = if !sensor.device_id.is_empty() {
+            sensor.device_id.clone()
+        } else {
+            device_name.clone()
+        };
+        groups
+            .entry((device_name, group_id))
+            .or_default()
+            .push(sensor);
     }
 
-    for (device_name, device_sensors) in groups {
+    let mut device_name_counts: std::collections::HashMap<&str, usize> =
+        std::collections::HashMap::new();
+    for (device_name, _) in groups.keys() {
+        *device_name_counts.entry(device_name.as_str()).or_insert(0) += 1;
+    }
+
+    for ((device_name, group_id), device_sensors) in &groups {
+        let heading_text = if device_name_counts
+            .get(device_name.as_str())
+            .copied()
+            .unwrap_or(0)
+            > 1
+        {
+            format!("{device_name} ({group_id})")
+        } else {
+            device_name.clone()
+        };
         ui.add_space(8.0);
         ui.label(
-            egui::RichText::new(&device_name)
+            egui::RichText::new(&heading_text)
                 .size(14.0 * crate::appearance::text_scale(ui.ctx()))
                 .strong()
                 .color(p.text),
@@ -2602,9 +2690,9 @@ fn render_sensors_tab(
         ui.add_space(2.0);
 
         egui::ScrollArea::horizontal()
-            .id_salt(format!("performance_sensors_{}", device_name))
+            .id_salt(format!("performance_sensors_{group_id}"))
             .show(ui, |ui| {
-                egui::Grid::new(format!("grid_sensors_{}", device_name))
+                egui::Grid::new(format!("grid_sensors_{group_id}"))
                     .striped(true)
                     .num_columns(9)
                     .spacing([18.0, 6.0])
@@ -2626,19 +2714,9 @@ fn render_sensors_tab(
                             ui.label(&sensor.name);
 
                             // Lookup summary for min/max/avg
-                            let key = format!(
-                                "sensor:{}:{}:{}:{:?}",
-                                sensor.scope, sensor.provider, sensor.name, sensor.sensor_type
-                            );
+                            let key = crate::history::sensor_series_key(sensor);
                             let summary = histories
                                 .detail(&key)
-                                .or_else(|| {
-                                    if !sensor.id.is_empty() {
-                                        histories.detail(&format!("sensor:{}", sensor.id))
-                                    } else {
-                                        None
-                                    }
-                                })
                                 .and_then(|s| s.observed_summary(now, state.range));
 
                             // 2. Current

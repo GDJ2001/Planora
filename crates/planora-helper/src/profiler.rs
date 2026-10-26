@@ -1,13 +1,12 @@
 //! ETW Disk I/O and PMU profiling collector for Windows.
-use planora_core::{
-    DiskIoProfileRecord, ErrorCode, IdentitySource, ProcessIdentity, ProfileResult, ProfileTarget,
-};
+#[cfg(windows)]
+use planora_core::{DiskIoProfileRecord, IdentitySource};
+use planora_core::{ErrorCode, ProcessIdentity, ProfileResult, ProfileTarget};
+use std::sync::{Arc, atomic::AtomicBool};
+#[cfg(windows)]
 use std::{
     collections::HashMap,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Mutex, atomic::Ordering},
     time::{Duration, Instant},
 };
 
@@ -96,6 +95,7 @@ pub fn enumerate_pmu_sources() -> Vec<PmuSourceInfo> {
     Vec::new()
 }
 
+#[cfg(windows)]
 #[derive(Default)]
 struct ProcessAttributionMap {
     threads: HashMap<u32, (u32, String, u64, u64)>, // tid -> (pid, name, process FILETIME, thread FILETIME)
