@@ -15,4 +15,16 @@ Beta.24 fixes history loss under detail-series pressure and improves range switc
 - `cargo fmt --all --check`, strict workspace Clippy, and workspace tests passed on Windows x86-64. Two pre-existing hardware-dependent tests remained ignored.
 - Native long-running installed verification is pending. The previous installed package remains the rollback baseline until installation and observation complete.
 
+## Package identity
+
+The Windows package was built from commit `bdfa77d` with MSI ProductVersion `0.2.1024`. WiX validation and PE GUI-subsystem checks passed. Manifest comparisons were repeated independently:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `Planora-0.3.0-beta.24-x64-Setup.exe` | `A2FE264C17D7ECE8F238CD4C3AD855491F76C0DA748DA0F33914BE7168B0CE09` |
+| `Planora-0.3.0-beta.24-x64.msi` | `F2345237B29DC63BE1E5B3AE64EAD2F27AD5C7B4BC078EE522A6F5EFAC3A7BD2` |
+| `planora.exe` | `DC3B5EFD3AD7B8AEB3544E938EB87F1BA56BE364BD233F91C64CD2BD578D782B` |
+| `planora-helper.exe` | `ECA6DCDEB79503CAF74DCE099F927EA24FD5E7BB0981C16A7B6E899B2D0492C7` |
+| `planora-sensor-broker.exe` | `F32C71AD5B89E1AE87C41E54975F1CF7C348C403C52B298E970B7A0D70F5B89E` |
+
 The helper protocol and recording format are unchanged. This is an unsigned internal build.
