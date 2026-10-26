@@ -1,5 +1,6 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
-     xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal">
+     xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
   <Bundle Name="Planora" Manufacturer="Planora"
           Version="$(var.BundleVersion)"
           UpgradeCode="13B50E2D-BB95-4458-8244-C1E60187216E"
@@ -18,10 +19,22 @@
     </BootstrapperApplication>
     <Variable Name="PlanoraInstallLocation" Type="formatted" Value="[ProgramFiles64Folder]Planora" />
     <Variable Name="PlanoraDisplayVersion" Type="string" Value="$(var.AppVersion)" />
+    <Variable Name="PlanoraAdvancedSensors" Type="numeric" Value="0" Persisted="yes" />
+    <util:RegistrySearch Id="FindPawnIOService" Variable="PawnIOInstalled" Root="HKLM"
+                         Key="SYSTEM\CurrentControlSet\Services\PawnIO" Result="exists" />
     <Chain>
+      <ExePackage Id="PawnIOSetup"
+                  SourceFile="$(var.ProjectDir)\packaging\windows\deps\PawnIO_setup.exe"
+                  InstallArguments="-install -silent"
+                  DetectCondition="PawnIOInstalled"
+                  InstallCondition="PlanoraAdvancedSensors = 1"
+                  Permanent="yes"
+                  Vital="yes"
+                  Compressed="yes" />
       <MsiPackage SourceFile="$(var.MsiPath)" Visible="no" Vital="yes">
         <!-- The bundle is the sole Installed Apps entry; direct MSI deployments remain manageable. -->
         <MsiProperty Name="ARPSYSTEMCOMPONENT" Value="1" />
+        <MsiProperty Name="PLANORA_ADVANCED_SENSORS" Value="[PlanoraAdvancedSensors]" />
       </MsiPackage>
     </Chain>
   </Bundle>

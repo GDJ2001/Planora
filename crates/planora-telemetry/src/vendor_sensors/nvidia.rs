@@ -6,9 +6,18 @@ unsafe extern "system" {
     fn FreeLibrary(hLibModule: *mut std::ffi::c_void) -> i32;
 }
 
+#[repr(C)]
+struct NvmlFanSpeedInfo {
+    version: u32,
+    fan: u32,
+    speed: u32,
+}
+
+const NVML_FAN_SPEED_INFO_V1: u32 = (std::mem::size_of::<NvmlFanSpeedInfo>() as u32) | (1 << 24);
+
 pub struct NvidiaNvmlProvider {
     h_module: *mut std::ffi::c_void,
-    device_count: u32,
+    _device_count: u32,
     devices: Vec<*mut std::ffi::c_void>,
     device_names: Vec<String>,
 }
@@ -18,6 +27,14 @@ unsafe impl Sync for NvidiaNvmlProvider {}
 
 impl NvidiaNvmlProvider {
     pub fn try_init() -> Result<Self, (planora_core::CapabilityState, String)> {
+        #[cfg(windows)]
+        if !crate::has_pci_vendor_gpu(0x10DE) {
+            return Err((
+                planora_core::CapabilityState::NotApplicable,
+                "No NVIDIA graphics adapter present on this system".into(),
+            ));
+        }
+
         let dll_path = super::trusted_system_dll("nvml.dll").ok_or((
             planora_core::CapabilityState::TemporarilyFailed,
             "Could not resolve the Windows system directory".into(),
@@ -119,7 +136,7 @@ impl NvidiaNvmlProvider {
                             if unsafe { get_name(dev, buf.as_mut_ptr(), buf.len() as u32) } == 0 {
                                 let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
                                 if let Ok(s) = std::str::from_utf8(&buf[..len]) {
-                                    name = s.to_string();
+                                    name = s.trim().to_string();
                                 }
                             }
                         }
@@ -130,10 +147,30 @@ impl NvidiaNvmlProvider {
             }
         }
 
+        if devices.is_empty() {
+            let shutdown_ptr = unsafe {
+                windows_sys::Win32::System::LibraryLoader::GetProcAddress(
+                    h_module,
+                    c"nvmlShutdown".as_ptr() as *const u8,
+                )
+            };
+            if let Some(shutdown_fn) = shutdown_ptr {
+                type NvmlShutdownFn = unsafe extern "system" fn() -> i32;
+                let nvml_shutdown: NvmlShutdownFn = unsafe { std::mem::transmute(shutdown_fn) };
+                unsafe { nvml_shutdown() };
+            }
+            unsafe { FreeLibrary(h_module) };
+            return Err((
+                planora_core::CapabilityState::NotApplicable,
+                "No NVIDIA GPU devices found via NVML".into(),
+            ));
+        }
+
         let device_count = devices.len() as u32;
+
         Ok(Self {
             h_module,
-            device_count,
+            _device_count: device_count,
             devices,
             device_names,
         })
@@ -141,9 +178,6 @@ impl NvidiaNvmlProvider {
 
     pub fn sample(&self, stamp: u64) -> Vec<SensorReading> {
         let mut readings = Vec::new();
-        if self.device_count == 0 {
-            return readings;
-        }
 
         let power_ptr = unsafe {
             windows_sys::Win32::System::LibraryLoader::GetProcAddress(
@@ -163,22 +197,27 @@ impl NvidiaNvmlProvider {
                 c"nvmlDeviceGetClockInfo".as_ptr() as *const u8,
             )
         };
-        let fan_ptr = unsafe {
+        let fan_speed_ptr = unsafe {
             windows_sys::Win32::System::LibraryLoader::GetProcAddress(
                 self.h_module,
                 c"nvmlDeviceGetFanSpeed".as_ptr() as *const u8,
             )
         };
+        let fan_rpm_ptr = unsafe {
+            windows_sys::Win32::System::LibraryLoader::GetProcAddress(
+                self.h_module,
+                c"nvmlDeviceGetFanSpeedRPM".as_ptr() as *const u8,
+            )
+        };
 
         for (idx, &dev) in self.devices.iter().enumerate() {
-            let scope = format!(
-                "GPU {} ({})",
-                idx,
-                self.device_names
-                    .get(idx)
-                    .map(|s| s.as_str())
-                    .unwrap_or("NVIDIA")
-            );
+            let dev_id = format!("nvidia_gpu/{idx}");
+            let dev_name = self
+                .device_names
+                .get(idx)
+                .cloned()
+                .unwrap_or_else(|| format!("NVIDIA GPU {idx}"));
+            let scope = format!("GPU {} ({})", idx, dev_name);
 
             // 1. Power (milliwatts -> watts)
             if let Some(pfn) = power_ptr {
@@ -186,13 +225,24 @@ impl NvidiaNvmlProvider {
                 let get_power: PowerFn = unsafe { std::mem::transmute(pfn) };
                 let mut mw = 0u32;
                 if unsafe { get_power(dev, &mut mw) } == 0 {
-                    readings.push(SensorReading {
-                        name: "GPU Board Power".into(),
-                        sensor_type: SensorType::GpuBoardPowerWatts,
-                        scope: scope.clone(),
-                        provider: "NVIDIA NVML".into(),
-                        value: Metric::available(mw as f32 / 1000.0, "W", "NVIDIA NVML", stamp),
-                    });
+                    let w = mw as f32 / 1000.0;
+                    if (0.0..=1000.0).contains(&w) {
+                        readings.push(SensorReading {
+                            id: format!("{dev_id}/power"),
+                            device_id: dev_id.clone(),
+                            device_name: dev_name.clone(),
+                            name: "GPU Board Power".into(),
+                            sensor_type: SensorType::GpuBoardPowerWatts,
+                            scope: scope.clone(),
+                            provider: "NVIDIA NVML".into(),
+                            value: Metric::available(
+                                w,
+                                planora_core::UNIT_WATTS,
+                                "NVIDIA NVML",
+                                stamp,
+                            ),
+                        });
+                    }
                 }
             }
 
@@ -202,13 +252,21 @@ impl NvidiaNvmlProvider {
                     unsafe extern "system" fn(*mut std::ffi::c_void, u32, *mut u32) -> i32;
                 let get_temp: TempFn = unsafe { std::mem::transmute(tfn) };
                 let mut temp = 0u32;
-                if unsafe { get_temp(dev, 0, &mut temp) } == 0 {
+                if unsafe { get_temp(dev, 0, &mut temp) } == 0 && (0..=125).contains(&temp) {
                     readings.push(SensorReading {
+                        id: format!("{dev_id}/temperature"),
+                        device_id: dev_id.clone(),
+                        device_name: dev_name.clone(),
                         name: "GPU Temperature".into(),
                         sensor_type: SensorType::GpuTemperatureCelsius,
                         scope: scope.clone(),
                         provider: "NVIDIA NVML".into(),
-                        value: Metric::available(temp as f32, "°C", "NVIDIA NVML", stamp),
+                        value: Metric::available(
+                            temp as f32,
+                            planora_core::UNIT_CELSIUS,
+                            "NVIDIA NVML",
+                            stamp,
+                        ),
                     });
                 }
             }
@@ -219,29 +277,76 @@ impl NvidiaNvmlProvider {
                     unsafe extern "system" fn(*mut std::ffi::c_void, u32, *mut u32) -> i32;
                 let get_clock: ClockFn = unsafe { std::mem::transmute(cfn) };
                 let mut mhz = 0u32;
-                if unsafe { get_clock(dev, 0, &mut mhz) } == 0 {
+                if unsafe { get_clock(dev, 0, &mut mhz) } == 0 && (0..=10_000).contains(&mhz) {
                     readings.push(SensorReading {
+                        id: format!("{dev_id}/clock"),
+                        device_id: dev_id.clone(),
+                        device_name: dev_name.clone(),
                         name: "GPU Graphics Clock".into(),
                         sensor_type: SensorType::ClockMhz,
                         scope: scope.clone(),
                         provider: "NVIDIA NVML".into(),
-                        value: Metric::available(mhz as f32, "MHz", "NVIDIA NVML", stamp),
+                        value: Metric::available(
+                            mhz as f32,
+                            planora_core::UNIT_MHZ,
+                            "NVIDIA NVML",
+                            stamp,
+                        ),
                     });
                 }
             }
 
-            // 4. Fan speed percent
-            if let Some(ffn) = fan_ptr {
+            // 4. Tachometer Fan RPM (nvmlDeviceGetFanSpeedRPM takes nvmlFanSpeedInfo_t*)
+            if let Some(rpm_fn) = fan_rpm_ptr {
+                type FanRpmFn =
+                    unsafe extern "C" fn(*mut std::ffi::c_void, *mut NvmlFanSpeedInfo) -> i32;
+                let get_fan_rpm: FanRpmFn = unsafe { std::mem::transmute(rpm_fn) };
+                let mut fan_info = NvmlFanSpeedInfo {
+                    version: NVML_FAN_SPEED_INFO_V1,
+                    fan: 0,
+                    speed: 0,
+                };
+                if unsafe { get_fan_rpm(dev, &mut fan_info) } == 0
+                    && (0..=30_000).contains(&fan_info.speed)
+                {
+                    readings.push(SensorReading {
+                        id: format!("{dev_id}/fan_rpm"),
+                        device_id: dev_id.clone(),
+                        device_name: dev_name.clone(),
+                        name: "GPU Fan Speed".into(),
+                        sensor_type: SensorType::FanRpm,
+                        scope: "Cooling".into(),
+                        provider: "NVIDIA NVML".into(),
+                        value: Metric::available(
+                            fan_info.speed as f32,
+                            planora_core::UNIT_RPM,
+                            "NVIDIA NVML",
+                            stamp,
+                        ),
+                    });
+                }
+            }
+
+            // 5. Fan speed percent (Duty cycle)
+            if let Some(ffn) = fan_speed_ptr {
                 type FanFn = unsafe extern "system" fn(*mut std::ffi::c_void, *mut u32) -> i32;
                 let get_fan: FanFn = unsafe { std::mem::transmute(ffn) };
                 let mut pct = 0u32;
-                if unsafe { get_fan(dev, &mut pct) } == 0 {
+                if unsafe { get_fan(dev, &mut pct) } == 0 && (0..=100).contains(&pct) {
                     readings.push(SensorReading {
-                        name: "GPU Fan Speed".into(),
-                        sensor_type: SensorType::FanRpm,
-                        scope: scope.clone(),
+                        id: format!("{dev_id}/fan_duty"),
+                        device_id: dev_id.clone(),
+                        device_name: dev_name.clone(),
+                        name: "GPU Fan Duty".into(),
+                        sensor_type: SensorType::LoadPercent,
+                        scope: "Cooling".into(),
                         provider: "NVIDIA NVML".into(),
-                        value: Metric::available(pct as f32, "%", "NVIDIA NVML", stamp),
+                        value: Metric::available(
+                            pct as f32,
+                            planora_core::UNIT_PERCENT,
+                            "NVIDIA NVML",
+                            stamp,
+                        ),
                     });
                 }
             }
@@ -271,6 +376,12 @@ impl Drop for NvidiaNvmlProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nvml_fan_speed_info_v1_abi_layout() {
+        assert_eq!(std::mem::size_of::<NvmlFanSpeedInfo>(), 12);
+        assert_eq!(NVML_FAN_SPEED_INFO_V1, 0x0100_000c);
+    }
 
     #[test]
     fn probe_nvidia_nvml_runtime() {

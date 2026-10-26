@@ -12,23 +12,29 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: '10.0.x'
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # pinned 2026-10-20
         with:
           toolchain: '1.95.0'
           components: clippy, rustfmt
+      - run: cargo fmt --all -- --check
       - run: cargo test --workspace --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo build --release --bins --locked
       - shell: pwsh
         run: |
           dotnet tool install --global wix --version 5.0.2
-          ./packaging/windows/Build-Planora.ps1 -SkipBuild
+          $env:PATH = "$HOME\.dotnet\tools;$env:PATH"
+          wix extension add -g WixToolset.BootstrapperApplications.wixext/5.0.2 WixToolset.Util.wixext/5.0.2
+          ./packaging/windows/Build-Planora.ps1
       - run: python scripts/release_inventory.py
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: planora-windows-x64
           path: |
             dist/*.msi
+            dist/*-Setup.exe
             dist/*.manifest.json
             dist/dependency-inventory.json
             dist/SHA256SUMS.txt
@@ -44,6 +50,7 @@ jobs:
         with:
           toolchain: '1.95.0'
           components: clippy, rustfmt
+      - run: cargo fmt --all -- --check
       - run: cargo test --workspace --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo build --release --bins --locked
@@ -65,9 +72,10 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - run: dnf install -y gcc clang cmake pkgconf-pkg-config libX11-devel libxkbcommon-devel wayland-devel rpm-build curl tar gzip python3
-      - run: curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain 1.95.0
+      - run: curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain 1.95.0 -c clippy,rustfmt
       - run: |
           . "$HOME/.cargo/env"
+          cargo fmt --all -- --check
           cargo test --workspace --locked
           cargo clippy --workspace --all-targets --locked -- -D warnings
           cargo build --release --bins --locked
@@ -91,6 +99,7 @@ jobs:
           toolchain: '1.95.0'
           targets: aarch64-apple-darwin
           components: clippy, rustfmt
+      - run: cargo fmt --all -- --check
       - run: cargo test --workspace --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: bash packaging/macos/build-package.sh

@@ -1,6 +1,17 @@
 use std::{env, fs, path::PathBuf};
 
 fn main() {
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        println!("cargo:rerun-if-changed=../../assets/brand/platforms/windows/planora.ico");
+        println!("cargo:rerun-if-changed=src/planora.manifest");
+        winresource::WindowsResource::new()
+            .set_icon("../../assets/brand/platforms/windows/planora.ico")
+            .set_manifest_file("src/planora.manifest")
+            .set("FileDescription", "Planora hardware visualizer")
+            .set("ProductName", "Planora")
+            .compile()
+            .expect("failed to embed Planora Windows icon and manifest");
+    }
     #[cfg(target_os = "macos")]
     {
         cc::Build::new()

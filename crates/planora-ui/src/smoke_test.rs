@@ -8,8 +8,9 @@ use eframe::egui::{
     epaint::{ClippedShape, ColorMode, Shape},
 };
 use planora_core::{
-    AvailabilityReason, CacheDescriptor, CacheType, Capability, CoreDescriptor, Metric,
-    PROTOCOL_VERSION, ProcessIdentity, ProcessRecord, TelemetryFrame, Topology,
+    AvailabilityReason, CacheDescriptor, CacheType, Capability, CoreDescriptor, GpuAdapterSample,
+    GpuEngineSample, LogicalCpuSample, Metric, PROTOCOL_VERSION, ProcessIdentity, ProcessRecord,
+    ResourceDeviceSample, SensorReading, SensorType, TelemetryFrame, Topology,
 };
 use std::{
     fs,
@@ -272,17 +273,22 @@ pub fn create_test_app(theme: Theme, page: Page) -> App {
         shared,
         tx,
         poll_ms: Arc::new(AtomicU64::new(100)),
+        client_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        client_worker: None,
         #[cfg(windows)]
         sensor_stop: None,
         #[cfg(windows)]
         sensor_refresh: None,
         #[cfg(windows)]
         sensor_worker: None,
+        appearance: crate::appearance::AppearanceMonitor::default(),
+        applied_appearance: None,
         settings,
         settings_error: None,
         recorder: crate::recording::Recorder::default(),
         exporter: crate::export::ExportManager::default(),
         replay: crate::recording::Replay::default(),
+        replay_anchor: None,
         replay_input: String::new(),
         record_selected_process: false,
         recording_error: None,
@@ -294,7 +300,10 @@ pub fn create_test_app(theme: Theme, page: Page) -> App {
         selected: None,
         display_pause: DisplayPause::default(),
         logo_cache: crate::components::logo::LogoCache::new(),
-        histories: crate::history::ResourceHistories::default(),
+        histories: Arc::new(crate::history::ResourceHistories::default()),
+        history_worker: crate::history_worker::HistoryWorker::start(),
+        history_epoch: 0,
+        history_last_enqueued: None,
         overview_state: crate::views::overview::OverviewViewState::default(),
         resources_state: crate::views::resources::ResourcesViewState::default(),
         processes_state: crate::views::processes::ProcessesViewState::default(),
@@ -307,7 +316,242 @@ pub fn create_test_app(theme: Theme, page: Page) -> App {
         screenshot_out: None,
         screenshot_pending: false,
         frames_rendered: 0,
+        fixture_mode: false,
+        window_placement: crate::window_placement::Placement::default(),
+        window_work_area: crate::window_placement::current_work_area(),
+        #[cfg(windows)]
+        native_handle: 0,
+        last_monitor_geometry: None,
+        normal_window: false,
+        window_recovered: false,
+        startup_connected_logged: false,
+        lifecycle: crate::LifecycleState::Running,
+        shutdown_started: None,
+        shutdown_completed: false,
     }
+}
+
+/// Native egui preview with explicit fictional data. It never connects to the helper.
+pub fn create_native_fixture_app(theme: Theme, page: Page) -> App {
+    let mut app = create_test_app(theme, page);
+    app.fixture_mode = true;
+    let timestamp = planora_telemetry::unix_ms();
+    let mut frame = test_frame();
+    frame.sampled_at_ms = timestamp;
+    frame.cpu_percent = Metric::available(34.8, "%", "Fixture data", timestamp);
+    frame.memory_used_bytes = Metric::available(11_811_160_064, "bytes", "Fixture data", timestamp);
+    frame.memory_total_bytes =
+        Metric::available(17_179_869_184, "bytes", "Fixture data", timestamp);
+    frame.disk_read_bytes_per_sec = Metric::available(4_500_000, "B/s", "Fixture data", timestamp);
+    frame.disk_write_bytes_per_sec = Metric::available(1_200_000, "B/s", "Fixture data", timestamp);
+    frame.network_rx_bytes_per_sec = Metric::available(850_000, "B/s", "Fixture data", timestamp);
+    frame.network_tx_bytes_per_sec = Metric::available(120_000, "B/s", "Fixture data", timestamp);
+    frame.logical_cpus = (0..8)
+        .map(|index| LogicalCpuSample {
+            cpu_index: index,
+            group: 0,
+            utilization_percent: Metric::available(
+                18.0 + index as f32 * 7.2,
+                "%",
+                "Fixture data",
+                timestamp,
+            ),
+        })
+        .collect();
+    frame.gpu_adapters = vec![GpuAdapterSample {
+        adapter_luid: 1,
+        physical_adapter: None,
+        name: "Intel Iris Xe Graphics".into(),
+        busiest_engine_percent: Metric::available(22.5, "%", "Fixture data", timestamp),
+        dedicated_used_bytes: Metric::unavailable(
+            "bytes",
+            "Fixture data",
+            timestamp,
+            AvailabilityReason::Unsupported("No dedicated memory reported".into()),
+        ),
+        dedicated_total_bytes: Metric::unavailable(
+            "bytes",
+            "Fixture data",
+            timestamp,
+            AvailabilityReason::Unsupported("No dedicated memory reported".into()),
+        ),
+        shared_used_bytes: Metric::available(1_200_000_000, "bytes", "Fixture data", timestamp),
+        shared_total_bytes: Metric::available(8_000_000_000, "bytes", "Fixture data", timestamp),
+        budget_bytes: None,
+    }];
+    frame.gpu_engines = vec![GpuEngineSample {
+        instance: "fixture-luid-1-engine-3d".into(),
+        engine_type: "3D".into(),
+        adapter_luid: Some(1),
+        physical_adapter: None,
+        engine_id: Some(0),
+        process_pid: None,
+        utilization_percent: Metric::available(22.5, "%", "Fixture data", timestamp),
+    }];
+    frame.gpu_engine_unavailable_reason = None;
+    frame.disks = vec![ResourceDeviceSample {
+        id: "fixture-disk-0".into(),
+        label: "Disk 0 · NVMe SSD".into(),
+        read_bytes_per_sec: Metric::available(4_500_000, "B/s", "Fixture data", timestamp),
+        write_bytes_per_sec: Metric::available(1_200_000, "B/s", "Fixture data", timestamp),
+        latency_ms: Some(Metric::available(1.8, "ms", "Fixture data", timestamp)),
+        queue_depth: Some(Metric::available(0.8, "depth", "Fixture data", timestamp)),
+        link_speed_bps: None,
+        link_state: None,
+    }];
+    frame.network_interfaces = vec![ResourceDeviceSample {
+        id: "fixture-ethernet".into(),
+        label: "Ethernet".into(),
+        read_bytes_per_sec: Metric::available(850_000, "B/s", "Fixture data", timestamp),
+        write_bytes_per_sec: Metric::available(120_000, "B/s", "Fixture data", timestamp),
+        latency_ms: None,
+        queue_depth: None,
+        link_speed_bps: Some(Metric::available(
+            1_000_000_000,
+            "bps",
+            "Fixture data",
+            timestamp,
+        )),
+        link_state: Some("Up".into()),
+    }];
+    frame.sensors = vec![SensorReading {
+        id: "gpu/temperature/0".into(),
+        device_id: "gpu:0".into(),
+        device_name: "Intel Iris Xe Graphics".into(),
+        name: "GPU temperature".into(),
+        sensor_type: SensorType::GpuTemperatureCelsius,
+        scope: "Intel Iris Xe Graphics".into(),
+        provider: "Fixture data".into(),
+        value: Metric::available(57.0, "°C", "Fixture data", timestamp),
+    }];
+    frame.validate().expect("native fixture frame is valid");
+    let mut histories = crate::history::ResourceHistories {
+        session_id: frame.session_id,
+        last_sequence: frame.sequence,
+        last_cpu_sampled_at_ms: timestamp,
+        ..Default::default()
+    };
+    let now = Instant::now();
+    for index in 0..60u64 {
+        if (29..=32).contains(&index) {
+            continue;
+        } // visible missing-data gap
+        let age = 59 - index;
+        let base_time = now - std::time::Duration::from_secs(age);
+        let base_ms = timestamp - age * 1_000;
+        let cpu = if index == 47 {
+            88.0
+        } else {
+            32.0 + 12.0 * (index as f32 * 0.27).sin()
+        };
+        let mem = 68.0 + index as f32 * 0.02;
+
+        // Sub-samples across the second to exercise aggregate midpoint, min..max band, and bursty telemetry
+        for sub in 0..5 {
+            let sample_time = base_time + std::time::Duration::from_millis(sub * 180);
+            let sample_ms = base_ms + sub * 180;
+            let sub_cpu = if index == 47 && sub == 2 {
+                95.0
+            } else if sub == 0 {
+                (cpu * 0.85).max(1.0)
+            } else if sub == 4 {
+                (cpu * 1.15).min(100.0)
+            } else {
+                cpu
+            };
+            histories.cpu.push_with_metadata(
+                sample_time,
+                sample_ms,
+                Some(sub_cpu),
+                "Fixture data",
+                None,
+            );
+            let sub_net_rx = if index == 38 && sub == 3 {
+                1_800_000.0 // bursty spike
+            } else if sub % 2 == 0 {
+                0.0 // intermittent packet arrival
+            } else {
+                350_000.0 + 500_000.0 * (index as f32 * 0.31).sin().abs()
+            };
+            histories.net_rx.push_with_metadata(
+                sample_time,
+                sample_ms,
+                Some(sub_net_rx),
+                "Fixture data",
+                None,
+            );
+            histories.push_detail(
+                "net:fixture-ethernet:rx".into(),
+                sample_time,
+                sample_ms,
+                Some(sub_net_rx),
+                "Fixture data",
+                None,
+            );
+        }
+
+        let sample_time = base_time;
+        let sample_ms = base_ms;
+        histories.memory_pct.push_with_metadata(
+            sample_time,
+            sample_ms,
+            Some(mem),
+            "Fixture data",
+            None,
+        );
+        histories.disk_read.push_with_metadata(
+            sample_time,
+            sample_ms,
+            Some(3_000_000.0 + 1_500_000.0 * (index as f32 * 0.19).sin().abs()),
+            "Fixture data",
+            None,
+        );
+        histories.disk_write.push_with_metadata(
+            sample_time,
+            sample_ms,
+            Some(900_000.0 + 400_000.0 * (index as f32 * 0.15).cos().abs()),
+            "Fixture data",
+            None,
+        );
+        histories.net_tx.push_with_metadata(
+            sample_time,
+            sample_ms,
+            Some(80_000.0 + 60_000.0 * (index as f32 * 0.21).cos().abs()),
+            "Fixture data",
+            None,
+        );
+        for (key, value) in [
+            (
+                "gpu:1:None:busiest",
+                16.0 + 8.0 * (index as f32 * 0.35).sin().abs(),
+            ),
+            (
+                "disk:fixture-disk-0:read",
+                3_000_000.0 + 1_500_000.0 * (index as f32 * 0.19).sin().abs(),
+            ),
+            (
+                "disk:fixture-disk-0:write",
+                900_000.0 + 400_000.0 * (index as f32 * 0.15).cos().abs(),
+            ),
+            (
+                "net:fixture-ethernet:tx",
+                80_000.0 + 60_000.0 * (index as f32 * 0.21).cos().abs(),
+            ),
+        ] {
+            histories.push_detail(
+                key.into(),
+                sample_time,
+                sample_ms,
+                Some(value),
+                "Fixture data",
+                None,
+            );
+        }
+    }
+    app.history_last_enqueued = Some((frame.session_id, frame.sequence, None));
+    app.histories = Arc::new(histories);
+    app.shared.lock().unwrap().frame = Some(Arc::new(frame));
+    app
 }
 
 pub fn render_to_svg(app: &mut App, width: f32, height: f32) -> String {
@@ -522,6 +766,7 @@ pub fn run_smoke_fast_check() -> Result<(), String> {
         (1920, 1080),
     ];
     let views = [
+        (Page::Performance, "performance"),
         (Page::Overview, "overview"),
         (Page::Processes, "processes"),
         (Page::Hardware, "hardware"),
@@ -704,6 +949,7 @@ pub fn run_smoke_suite(out_dir: &Path, capture_png: bool) -> Result<(), String> 
 
     // View-specific screenshots at 1180x790 (Processes, Hardware, Benchmarks, Capabilities, Settings)
     let views = [
+        (Page::Performance, "performance"),
         (Page::Processes, "processes"),
         (Page::Hardware, "hardware"),
         (Page::Benchmarks, "benchmarks"),

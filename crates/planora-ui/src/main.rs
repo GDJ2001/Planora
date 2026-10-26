@@ -1,32 +1,39 @@
 #![allow(clippy::too_many_arguments)]
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
+pub mod appearance;
 pub mod components;
 pub mod export;
 pub mod formatting;
 pub mod history;
+pub mod history_worker;
+pub mod instance;
 pub mod recording;
 pub mod smoke_test;
+pub mod startup;
 pub mod state;
 pub mod theme;
 pub mod views;
+pub mod window_placement;
 
 use components::{badge::render_compact_sidebar_status, icons, logo::LogoCache};
 use eframe::egui::{self, Color32, CornerRadius, Pos2, Rect, Stroke, Vec2};
 use export::ExportManager;
-use history::{ResourceHistories, measurement_instant};
+use history::ResourceHistories;
+use history_worker::{HistoryInput, HistoryWorker};
 use planora_core::{Command, PROTOCOL_VERSION, ProcessIdentity};
 use recording::{Recorder, Replay};
 use state::{AppState, DisplayPause, Page, Shared, UserSettings, background_worker, is_data_stale};
 use std::{
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, SyncSender},
     },
     thread,
     time::Instant,
 };
-use theme::{Palette, SIDEBAR_WIDTH, apply_egui_theme, get_palette, theme_is_dark};
+use theme::{Palette, SIDEBAR_WIDTH, accessible_palette, configure_theme, theme_is_dark};
 use views::{
     benchmarks::{BenchmarksViewState, render_benchmarks_view},
     capabilities::{CapabilitiesViewState, render_capabilities_view},
@@ -37,6 +44,7 @@ use views::{
     resources::{ResourcesViewState, render_resources_view},
     settings::{SettingsViewState, render_settings_view},
 };
+use window_placement::{Placement, WorkArea};
 
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
@@ -48,17 +56,22 @@ pub struct App {
     shared: Arc<Mutex<Shared>>,
     tx: SyncSender<Command>,
     poll_ms: Arc<AtomicU64>,
+    client_stop: Arc<AtomicBool>,
+    client_worker: Option<std::thread::JoinHandle<()>>,
     #[cfg(windows)]
     sensor_stop: Option<Arc<std::sync::atomic::AtomicBool>>,
     #[cfg(windows)]
     sensor_refresh: Option<Arc<std::sync::atomic::AtomicBool>>,
     #[cfg(windows)]
     sensor_worker: Option<std::thread::JoinHandle<()>>,
+    appearance: appearance::AppearanceMonitor,
+    applied_appearance: Option<appearance::SystemAppearance>,
     settings: UserSettings,
     settings_error: Option<String>,
     recorder: Recorder,
     exporter: ExportManager,
     replay: Replay,
+    replay_anchor: Option<(u64, Instant)>,
     replay_input: String,
     record_selected_process: bool,
     recording_error: Option<String>,
@@ -73,7 +86,10 @@ pub struct App {
     display_pause: DisplayPause,
 
     logo_cache: LogoCache,
-    histories: ResourceHistories,
+    histories: Arc<ResourceHistories>,
+    history_worker: HistoryWorker,
+    history_epoch: u64,
+    history_last_enqueued: Option<(u64, u64, Option<ProcessIdentity>)>,
 
     // View specific state
     overview_state: OverviewViewState,
@@ -88,9 +104,34 @@ pub struct App {
     screenshot_out: Option<std::path::PathBuf>,
     screenshot_pending: bool,
     frames_rendered: usize,
+    fixture_mode: bool,
+    window_placement: Placement,
+    window_work_area: WorkArea,
+    #[cfg(windows)]
+    native_handle: isize,
+    last_monitor_geometry: Option<(Option<Rect>, Option<f32>)>,
+    normal_window: bool,
+    window_recovered: bool,
+    startup_connected_logged: bool,
+    pub lifecycle: LifecycleState,
+    shutdown_started: Option<Instant>,
+    shutdown_completed: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LifecycleState {
+    Starting,
+    Running,
+    Stopping,
 }
 
 impl App {
+    fn reset_history(&mut self) {
+        self.history_epoch = self.history_epoch.wrapping_add(1);
+        self.history_last_enqueued = None;
+        self.histories = Arc::new(ResourceHistories::default());
+    }
+
     #[cfg(windows)]
     fn launch_helper_script(&mut self, script_name: &str) {
         if self.authorization_child.is_some() {
@@ -105,11 +146,21 @@ impl App {
             ));
             return;
         };
-        match std::process::Command::new("powershell.exe")
-            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+        let mut command = std::process::Command::new("powershell.exe");
+        command
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+            ])
             .arg(script)
-            .spawn()
-        {
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW; UAC remains an OS dialog.
+        match command.spawn() {
             Ok(child) => {
                 self.authorization_child = Some(child);
                 self.authorization_error = None;
@@ -123,12 +174,25 @@ impl App {
     }
 
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        if let Some(rs) = cc.wgpu_render_state.as_ref() {
+            startup::record(&format!(
+                "renderer-init backend={:?} adapter={}",
+                rs.adapter.get_info().backend,
+                rs.adapter.get_info().name,
+            ));
+        } else {
+            startup::record("renderer-init backend=default");
+        }
         let (tx, rx) = mpsc::sync_channel(64);
         let settings = UserSettings::load();
         let mut processes_state = ProcessesViewState::default();
         processes_state.table_state.columns = settings.process_columns;
         processes_state.table_state.sort_column = settings.process_sort_column;
         processes_state.table_state.sort_descending = settings.process_sort_descending;
+        let mut resources_state = ResourcesViewState::default();
+        resources_state.selected_resource = settings.performance_resource.clone();
+        resources_state.range = settings.performance_range;
+        resources_state.selected_engines = settings.performance_engines.iter().cloned().collect();
         let poll_ms = Arc::new(AtomicU64::new(settings.poll_interval_ms));
         let shared = Arc::new(Mutex::new(Shared::default()));
 
@@ -136,10 +200,12 @@ impl App {
         let worker_poll = poll_ms.clone();
         let context = cc.egui_ctx.clone();
 
-        thread::Builder::new()
+        let client_stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = client_stop.clone();
+        let client_worker = thread::Builder::new()
             .name("planora-client".into())
             .spawn(move || {
-                background_worker(worker_shared, rx, worker_poll, context);
+                background_worker(worker_shared, rx, worker_poll, context, worker_stop);
             })
             .expect("failed to spawn client worker thread");
 
@@ -183,21 +249,38 @@ impl App {
                 .ok()
         };
 
+        #[cfg(windows)]
+        let native_handle = {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            cc.window_handle()
+                .ok()
+                .and_then(|handle| match handle.as_raw() {
+                    RawWindowHandle::Win32(handle) => Some(handle.hwnd.get()),
+                    _ => None,
+                })
+                .unwrap_or(0)
+        };
+        let (placement, work_area) = window_placement::startup_placement();
         Self {
             shared,
             tx,
             poll_ms,
+            client_stop,
+            client_worker: Some(client_worker),
             #[cfg(windows)]
             sensor_stop: Some(sensor_stop),
             #[cfg(windows)]
             sensor_refresh: Some(sensor_refresh),
             #[cfg(windows)]
             sensor_worker,
+            appearance: appearance::AppearanceMonitor::start(cc.egui_ctx.clone()),
+            applied_appearance: None,
             settings,
             settings_error: None,
             recorder: Recorder::default(),
             exporter: ExportManager::default(),
             replay: Replay::default(),
+            replay_anchor: None,
             replay_input: String::new(),
             record_selected_process: false,
             recording_error: None,
@@ -205,13 +288,16 @@ impl App {
             authorization_child: None,
             #[cfg(windows)]
             authorization_error: None,
-            page: Page::Overview,
+            page: Page::Performance,
             selected: None,
             display_pause: DisplayPause::default(),
             logo_cache: LogoCache::new(),
-            histories: ResourceHistories::default(),
+            histories: Arc::new(ResourceHistories::default()),
+            history_worker: HistoryWorker::start(),
+            history_epoch: 0,
+            history_last_enqueued: None,
             overview_state: OverviewViewState::default(),
-            resources_state: ResourcesViewState::default(),
+            resources_state,
             processes_state,
             history_state: HistoryViewState::default(),
             hardware_state: HardwareViewState::default(),
@@ -222,17 +308,63 @@ impl App {
             screenshot_out: None,
             screenshot_pending: false,
             frames_rendered: 0,
+            fixture_mode: false,
+            window_placement: placement,
+            window_work_area: work_area,
+            #[cfg(windows)]
+            native_handle,
+            last_monitor_geometry: None,
+            normal_window: true,
+            window_recovered: false,
+            startup_connected_logged: false,
+            lifecycle: LifecycleState::Starting,
+            shutdown_started: None,
+            shutdown_completed: false,
         }
     }
 
     fn palette(&self, ctx: &egui::Context) -> Palette {
-        let is_dark = theme_is_dark(self.settings.theme, Some(ctx.theme()));
-        get_palette(is_dark)
+        let preference = if self.normal_window {
+            theme::Theme::System
+        } else {
+            self.settings.theme
+        };
+        let is_dark = theme_is_dark(preference, ctx.system_theme());
+        accessible_palette(
+            is_dark,
+            self.applied_appearance.unwrap_or_default().contrast,
+        )
     }
 
-    fn apply_theme(&self, ctx: &egui::Context) {
-        let is_dark = theme_is_dark(self.settings.theme, Some(ctx.theme()));
-        apply_egui_theme(ctx, is_dark, self.settings.density);
+    fn apply_theme(&mut self, ctx: &egui::Context) {
+        let preference = if self.normal_window {
+            theme::Theme::System
+        } else {
+            self.settings.theme
+        };
+        ctx.set_theme(match preference {
+            theme::Theme::System => egui::ThemePreference::System,
+            theme::Theme::Dark => egui::ThemePreference::Dark,
+            theme::Theme::Light => egui::ThemePreference::Light,
+        });
+        let snapshot = self.appearance.snapshot();
+        if self.applied_appearance != Some(snapshot) {
+            ctx.set_zoom_factor(1.0); // OS DPI is supplied by winit; discard stored app zoom.
+            ctx.options_mut(|options| options.zoom_with_keyboard = false);
+            ctx.data_mut(|data| {
+                data.insert_temp(egui::Id::unique("system_text_scale"), snapshot.text_scale)
+            });
+            for dark in [false, true] {
+                configure_theme(
+                    ctx,
+                    accessible_palette(dark, snapshot.contrast),
+                    theme::Density::Normal,
+                    snapshot.text_scale,
+                    snapshot.animations,
+                );
+            }
+            self.applied_appearance = Some(snapshot);
+        }
     }
 
     fn render_recordings_page(
@@ -288,10 +420,11 @@ impl App {
                             ui.ctx().clone(),
                         ) {
                             Ok(()) => {
-                                self.histories = ResourceHistories::default();
+                                self.reset_history();
+                                self.replay_anchor = None;
                                 self.display_pause = DisplayPause::default();
                                 self.recording_error = None;
-                                self.page = Page::Overview;
+                                self.page = Page::Performance;
                             }
                             Err(e) => {
                                 self.recording_error =
@@ -301,7 +434,8 @@ impl App {
                     }
                     if self.replay.is_active() && ui.button("Return to Live").clicked() {
                         self.replay.stop();
-                        self.histories = ResourceHistories::default();
+                        self.reset_history();
+                        self.replay_anchor = None;
                     }
                 });
                 ui.label(&self.replay.message);
@@ -342,7 +476,7 @@ impl App {
                 }
                 if ui.button("Export Visible History CSV").clicked() {
                     let ranges = [self.overview_state.range; 4];
-                    if let Err(error) = self.exporter.charts(self.histories.clone(), ranges, Instant::now()) {
+                    if let Err(error) = self.exporter.charts(self.histories.as_ref().clone(), ranges, Instant::now()) {
                         self.recording_error = Some(format!("History export failed: {error}"));
                     }
                 }
@@ -364,7 +498,222 @@ impl App {
         });
     }
 
+    pub fn begin_shutdown(&mut self, ctx: &egui::Context) {
+        if self.lifecycle == LifecycleState::Stopping {
+            return;
+        }
+        self.lifecycle = LifecycleState::Stopping;
+        self.shutdown_started = Some(Instant::now());
+        startup::record("shutdown-begin");
+
+        if let Ok(guard) = self.shared.lock() {
+            if let Some(planora_core::BenchmarkState::Running { job_id, .. }) =
+                guard.benchmark_state
+            {
+                let _ = self.tx.send(Command::CancelBenchmark { job_id });
+            }
+            if let Some(planora_core::ProfileState::Running { job_id, .. }) = guard.profile_state {
+                let _ = self.tx.send(Command::CancelProfile { job_id });
+            }
+        }
+        self.client_stop.store(true, Ordering::Release);
+        if let Some(worker) = &self.client_worker {
+            worker.thread().unpark();
+        }
+        #[cfg(windows)]
+        {
+            if let Some(stop) = &self.sensor_stop {
+                stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            if let Some(worker) = &self.sensor_worker {
+                worker.thread().unpark();
+            }
+        }
+        self.history_worker.stop();
+        self.appearance.request_stop();
+        self.recorder.request_stop();
+        self.exporter.request_cancel();
+        self.replay.stop();
+        #[cfg(windows)]
+        if let Some(mut child) = self.authorization_child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+
+        if self.normal_window {
+            if let Err(error) = window_placement::save(&self.window_placement) {
+                startup::record(&format!("placement-save-error {error}"));
+            }
+            self.settings_error = self
+                .settings
+                .save()
+                .err()
+                .map(|e| format!("Could not save preferences: {e}"));
+            if let Some(error) = &self.settings_error {
+                startup::record(&format!("settings-save-error {error}"));
+            }
+        }
+
+        ctx.request_repaint();
+    }
+
+    pub fn update_shutdown(&mut self, ctx: &egui::Context) {
+        let client_done = self.client_worker.as_ref().is_none_or(|w| w.is_finished());
+        let history_done = self.history_worker.is_finished();
+        #[cfg(windows)]
+        let sensor_done = self.sensor_worker.as_ref().is_none_or(|w| w.is_finished());
+        #[cfg(not(windows))]
+        let sensor_done = true;
+        let recording_done = self.recorder.is_finished();
+        let export_done = self.exporter.is_finished();
+
+        let all_done = client_done
+            && history_done
+            && sensor_done
+            && recording_done
+            && export_done
+            && self.appearance.is_finished();
+        if all_done {
+            self.appearance.join();
+            if let Some(worker) = self.client_worker.take() {
+                let _ = worker.join();
+            }
+            self.history_worker.join();
+            #[cfg(windows)]
+            if let Some(worker) = self.sensor_worker.take() {
+                let _ = worker.join();
+            }
+            self.recorder.join();
+            self.exporter.cancel();
+            self.shutdown_completed = true;
+            startup::record("shutdown-complete");
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        ctx.request_repaint_after(std::time::Duration::from_millis(50));
+
+        let elapsed = self
+            .shutdown_started
+            .map_or(std::time::Duration::ZERO, |t| t.elapsed());
+        if elapsed >= std::time::Duration::from_secs(5) {
+            egui::Window::new("Planora Shutdown")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.heading("Waiting for operations to complete...");
+                    ui.add_space(8.0);
+                    if !recording_done {
+                        ui.label("• Finalizing recording output to disk...");
+                    }
+                    if !export_done {
+                        ui.label("• Finalizing export file...");
+                    }
+                    if !client_done {
+                        ui.label("• Closing telemetry connection...");
+                    }
+                    if !history_done {
+                        ui.label("• Finalizing history buffer...");
+                    }
+                    #[cfg(windows)]
+                    if !sensor_done {
+                        ui.label("• Stopping sensor worker...");
+                    }
+                    ui.add_space(14.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Keep waiting").clicked() {
+                            self.shutdown_started = Some(Instant::now());
+                        }
+                        if ui
+                            .button("Exit without completing pending writes")
+                            .clicked()
+                        {
+                            startup::record("shutdown-abandon-pending-writes");
+                            self.client_worker.take();
+                            #[cfg(windows)]
+                            self.sensor_worker.take();
+                            self.shutdown_completed = true;
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                    });
+                });
+        }
+    }
+
     pub fn render_ui(&mut self, root: &mut egui::Ui) {
+        if self.lifecycle == LifecycleState::Starting {
+            self.lifecycle = LifecycleState::Running;
+        }
+
+        let close_requested = root.ctx().input(|i| i.viewport().close_requested());
+        if close_requested && self.lifecycle == LifecycleState::Running {
+            self.begin_shutdown(root.ctx());
+        }
+
+        if self.lifecycle == LifecycleState::Stopping {
+            self.update_shutdown(root.ctx());
+            return;
+        }
+
+        if let Some((start, duration)) = self.auto_close
+            && start.elapsed() >= duration
+        {
+            self.begin_shutdown(root.ctx());
+            return;
+        }
+
+        if self.normal_window && self.frames_rendered == 0 {
+            let viewport = root.ctx().input(|input| input.viewport().clone());
+            startup::record(&format!(
+                "first-painted-frame inner={:?} outer={:?} scale={:?} maximized={:?}",
+                viewport.inner_rect.map(|r| r.size()),
+                viewport.outer_rect.map(|r| r.size()),
+                viewport.native_pixels_per_point,
+                viewport.maximized,
+            ));
+        }
+        if self.normal_window {
+            let viewport = root.ctx().input(|input| input.viewport().clone());
+            let geometry = (viewport.outer_rect, viewport.native_pixels_per_point);
+            if self.last_monitor_geometry != Some(geometry) {
+                #[cfg(windows)]
+                if self.native_handle != 0 {
+                    self.window_work_area = window_placement::window_work_area(self.native_handle);
+                    let width = self.window_work_area.max[0] - self.window_work_area.min[0];
+                    let height = self.window_work_area.max[1] - self.window_work_area.min[1];
+                    root.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::MinInnerSize(Vec2::new(
+                            window_placement::MIN_SIZE[0].min(width),
+                            window_placement::MIN_SIZE[1].min(height),
+                        )));
+                }
+                self.last_monitor_geometry = Some(geometry);
+            }
+            if self.frames_rendered >= 2
+                && !self.window_recovered
+                && viewport.minimized != Some(true)
+                && let Some(rect) = viewport.inner_rect
+                && (rect.width() < self.window_placement.normal_size[0] * 0.70
+                    || rect.height() < self.window_placement.normal_size[1] * 0.70)
+            {
+                startup::record(&format!(
+                    "window-recovery inner={:?} expected={:?}",
+                    rect.size(),
+                    self.window_placement.normal_size,
+                ));
+                root.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::InnerSize(
+                        self.window_placement.expected_size(),
+                    ));
+                self.window_recovered = true;
+            }
+            if self.frames_rendered >= 3 {
+                self.window_placement
+                    .observe(&viewport, self.window_work_area);
+            }
+        }
         #[cfg(windows)]
         if let Some(child) = self.authorization_child.as_mut() {
             match child.try_wait() {
@@ -481,168 +830,125 @@ impl App {
             app_state = AppState::Replay;
             frame_opt = self.replay.frame.clone();
             topo_opt = self.replay.topology.clone();
-        } else if app_state == AppState::Live
+        }
+        #[cfg(windows)]
+        let live_sensors = {
+            let helper_sensors = frame_opt
+                .as_ref()
+                .map(|frame| frame.sensors.as_slice())
+                .unwrap_or_default();
+            if !self.fixture_mode && app_state != AppState::Replay {
+                Arc::new(merge_sensor_readings(
+                    helper_sensors,
+                    &shared_copy.sensor_readings,
+                ))
+            } else {
+                Arc::new(helper_sensors.to_vec())
+            }
+        };
+        if app_state == AppState::Live
             && let Some(frame) = &frame_opt
         {
             #[cfg(windows)]
-            let recording_sensors = shared_copy.sensor_readings.as_ref();
+            let recording_sensors = live_sensors.as_ref();
             #[cfg(not(windows))]
             let recording_sensors = &frame.sensors;
             self.recorder
                 .record(frame, self.selected.as_ref(), recording_sensors);
         }
+        if self.normal_window && !self.startup_connected_logged {
+            match &app_state {
+                AppState::Live => {
+                    startup::record("helper-connection result=connected");
+                    self.startup_connected_logged = true;
+                }
+                AppState::AwaitingAuthorization => {
+                    startup::record("helper-connection result=awaiting-authorization");
+                    self.startup_connected_logged = true;
+                }
+                AppState::IncompatibleVersion { helper_version } => {
+                    startup::record(&format!(
+                        "helper-connection result=incompatible-version helper_version={helper_version}"
+                    ));
+                    self.startup_connected_logged = true;
+                }
+                AppState::Failed(msg) => {
+                    startup::record(&format!("helper-connection result=failed message={msg}"));
+                    self.startup_connected_logged = true;
+                }
+                _ => {}
+            }
+        }
 
         // Evaluate staleness if in Live state
         let current_poll = self.poll_ms.load(Ordering::Relaxed);
-        if app_state == AppState::Live
+        if !self.fixture_mode
+            && app_state == AppState::Live
             && let Some(elapsed) = is_data_stale(shared_copy.last_frame_received, current_poll)
         {
             app_state = AppState::Stale(elapsed);
         }
 
-        // Ingest new frame into histories
+        // The history worker owns aggregation and publishes a bounded immutable snapshot.
         let now = Instant::now();
-        let wall_clock_now_ms = if app_state == AppState::Replay {
-            frame_opt
-                .as_ref()
-                .map_or_else(planora_telemetry::unix_ms, |f| f.sampled_at_ms)
+        let visual_now = if app_state == AppState::Replay {
+            frame_opt.as_ref().map_or(now, |frame| {
+                let anchor = self.replay_anchor.get_or_insert((frame.sampled_at_ms, now));
+                if frame.sampled_at_ms < anchor.0 {
+                    *anchor = (frame.sampled_at_ms, now);
+                }
+                anchor
+                    .1
+                    .checked_add(std::time::Duration::from_millis(
+                        frame.sampled_at_ms.saturating_sub(anchor.0),
+                    ))
+                    .unwrap_or(now)
+            })
         } else {
-            planora_telemetry::unix_ms()
+            now
         };
         if let Some(frame) = &frame_opt {
-            self.histories.reset_if_new_session(frame.session_id);
-
-            if frame.sequence != self.histories.last_sequence {
-                self.histories.last_sequence = frame.sequence;
-
-                // CPU (sample time preserved)
-                if frame.cpu_percent.sampled_at_ms != self.histories.last_cpu_sampled_at_ms {
-                    self.histories.last_cpu_sampled_at_ms = frame.cpu_percent.sampled_at_ms;
-                    let measured_at = measurement_instant(
-                        now,
-                        wall_clock_now_ms,
-                        frame.cpu_percent.sampled_at_ms,
-                    );
-                    self.histories.cpu.push_with_metadata(
-                        measured_at,
-                        frame.cpu_percent.sampled_at_ms,
-                        frame.cpu_percent.value,
-                        &frame.cpu_percent.source,
-                        frame.cpu_percent.unavailable_reason.as_ref(),
-                    );
-                }
-
-                // Memory %
-                let mem_pct = match (
-                    frame.memory_used_bytes.value,
-                    frame.memory_total_bytes.value,
-                ) {
-                    (Some(u), Some(t)) if t > 0 => Some(((u as f64 / t as f64) * 100.0) as f32),
-                    _ => None,
-                };
-                let measured_at = measurement_instant(
-                    now,
-                    wall_clock_now_ms,
-                    frame.memory_used_bytes.sampled_at_ms,
-                );
-                self.histories.memory_pct.push_with_metadata(
-                    measured_at,
-                    frame.memory_used_bytes.sampled_at_ms,
-                    mem_pct,
-                    &frame.memory_used_bytes.source,
-                    frame
-                        .memory_used_bytes
-                        .unavailable_reason
-                        .as_ref()
-                        .or(frame.memory_total_bytes.unavailable_reason.as_ref()),
-                );
-
-                // Disk
-                let disk_r = frame.disk_read_bytes_per_sec.value.map(|v| v as f32);
-                let disk_w = frame.disk_write_bytes_per_sec.value.map(|v| v as f32);
-                self.histories.disk_read.push_with_metadata(
-                    measurement_instant(
-                        now,
-                        wall_clock_now_ms,
-                        frame.disk_read_bytes_per_sec.sampled_at_ms,
-                    ),
-                    frame.disk_read_bytes_per_sec.sampled_at_ms,
-                    disk_r,
-                    &frame.disk_read_bytes_per_sec.source,
-                    frame.disk_read_bytes_per_sec.unavailable_reason.as_ref(),
-                );
-                self.histories.disk_write.push_with_metadata(
-                    measurement_instant(
-                        now,
-                        wall_clock_now_ms,
-                        frame.disk_write_bytes_per_sec.sampled_at_ms,
-                    ),
-                    frame.disk_write_bytes_per_sec.sampled_at_ms,
-                    disk_w,
-                    &frame.disk_write_bytes_per_sec.source,
-                    frame.disk_write_bytes_per_sec.unavailable_reason.as_ref(),
-                );
-
-                // Network
-                let net_rx = frame.network_rx_bytes_per_sec.value.map(|v| v as f32);
-                let net_tx = frame.network_tx_bytes_per_sec.value.map(|v| v as f32);
-                self.histories.net_rx.push_with_metadata(
-                    measurement_instant(
-                        now,
-                        wall_clock_now_ms,
-                        frame.network_rx_bytes_per_sec.sampled_at_ms,
-                    ),
-                    frame.network_rx_bytes_per_sec.sampled_at_ms,
-                    net_rx,
-                    &frame.network_rx_bytes_per_sec.source,
-                    frame.network_rx_bytes_per_sec.unavailable_reason.as_ref(),
-                );
-                self.histories.net_tx.push_with_metadata(
-                    measurement_instant(
-                        now,
-                        wall_clock_now_ms,
-                        frame.network_tx_bytes_per_sec.sampled_at_ms,
-                    ),
-                    frame.network_tx_bytes_per_sec.sampled_at_ms,
-                    net_tx,
-                    &frame.network_tx_bytes_per_sec.source,
-                    frame.network_tx_bytes_per_sec.unavailable_reason.as_ref(),
-                );
-
-                // Selected Process trends (only recorded while observed!)
-                self.histories.set_selected_process(self.selected.as_ref());
-                if let Some(identity) = self.selected.as_ref()
-                    && let Some(proc) = frame.processes.iter().find(|pr| &pr.identity == identity)
-                {
-                    self.histories.selected_cpu.push(
-                        measurement_instant(now, wall_clock_now_ms, proc.cpu_percent.sampled_at_ms),
-                        proc.cpu_percent.sampled_at_ms,
-                        proc.cpu_percent.value,
-                    );
-                    self.histories.selected_memory.push(
-                        measurement_instant(
-                            now,
-                            wall_clock_now_ms,
-                            proc.memory_bytes.sampled_at_ms,
-                        ),
-                        proc.memory_bytes.sampled_at_ms,
-                        proc.memory_bytes.value.map(|b| b as f32),
-                    );
-                }
+            let key = (frame.session_id, frame.sequence, self.selected.clone());
+            if self.history_last_enqueued.as_ref() != Some(&key) {
+                #[cfg(windows)]
+                let sensors = live_sensors.clone();
+                #[cfg(not(windows))]
+                let sensors = Arc::new(frame.sensors.clone());
+                self.history_worker.submit(HistoryInput {
+                    frame: frame.clone(),
+                    sensors,
+                    selected: self.selected.clone(),
+                    received_at: visual_now,
+                    wall_clock_at_receipt_ms: if app_state == AppState::Replay {
+                        frame.sampled_at_ms
+                    } else {
+                        planora_telemetry::unix_ms()
+                    },
+                    epoch: self.history_epoch,
+                });
+                self.history_last_enqueued = Some(key);
             }
+        }
+        if let Some(snapshot) = self.history_worker.latest(self.history_epoch) {
+            self.histories = snapshot;
         }
 
         // Display Pause handling
         if self.display_pause.is_paused {
             if self.display_pause.frozen_frame.is_none() {
                 self.display_pause.frozen_frame = frame_opt.clone();
-                self.display_pause.frozen_instant = Some(now);
-                self.display_pause.frozen_histories = Some(Arc::new(self.histories.clone()));
+                self.display_pause.frozen_instant = Some(visual_now);
+                self.display_pause.frozen_histories = Some(self.histories.clone());
+                #[cfg(windows)]
+                {
+                    self.display_pause.frozen_sensors = Some(live_sensors.clone());
+                }
             }
         } else {
             self.display_pause.frozen_frame = None;
             self.display_pause.frozen_instant = None;
             self.display_pause.frozen_histories = None;
+            self.display_pause.frozen_sensors = None;
         }
 
         let render_frame: Option<Arc<planora_core::TelemetryFrame>> =
@@ -656,25 +962,33 @@ impl App {
             };
 
         let render_now = if self.display_pause.is_paused {
-            self.display_pause.frozen_instant.unwrap_or(now)
+            self.display_pause.frozen_instant.unwrap_or(visual_now)
         } else {
-            now
+            visual_now
         };
         // Snapshot the chart buffers as well as the table frame when paused.
         // Live collection continues in self.histories without mutating the display.
         // Clone only the Arc handle so page controls can mutably borrow pause state.
         let frozen_histories = self.display_pause.frozen_histories.clone();
+        #[cfg(windows)]
+        let frozen_sensors = self.display_pause.frozen_sensors.clone();
 
-        // 1. Sidebar (208 px)
+        // At compact widths, preserve the full content area with an icon rail.
+        let compact_nav = root.available_width() < 1180.0;
         egui::Panel::left("nav_sidebar")
-            .exact_size(SIDEBAR_WIDTH)
+            .exact_size(if compact_nav { 64.0 } else { SIDEBAR_WIDTH })
             .show(root, |ui| {
                 ui.add_space(14.0);
 
                 // Official Planora Logo
                 ui.horizontal(|ui| {
-                    ui.add_space(12.0);
-                    self.logo_cache.render(ui, p.is_dark, 168.0);
+                    if compact_nav {
+                        ui.add_space(8.0);
+                        self.logo_cache.render_mark(ui, 36.0);
+                    } else {
+                        ui.add_space(12.0);
+                        self.logo_cache.render(ui, p.is_dark, 168.0);
+                    }
                 });
 
                 ui.add_space(16.0);
@@ -684,11 +998,15 @@ impl App {
                 // Navigation items with clean icons
                 let nav_items = [
                     (
+                        Page::Performance,
+                        "Performance",
+                        icons::draw_resources as fn(&egui::Painter, Rect, Color32),
+                    ),
+                    (
                         Page::Overview,
                         "Overview",
                         icons::draw_overview as fn(&egui::Painter, Rect, Color32),
                     ),
-                    (Page::Resources, "Resources", icons::draw_resources),
                     (Page::Processes, "Processes", icons::draw_processes),
                     (Page::History, "History", icons::draw_history),
                     (Page::Hardware, "Hardware", icons::draw_hardware),
@@ -718,21 +1036,35 @@ impl App {
                         painter.rect_filled(rect, CornerRadius::same(6), p.hover);
                     }
 
-                    let icon_rect =
-                        Rect::from_min_size(rect.min + Vec2::new(12.0, 9.0), Vec2::new(18.0, 18.0));
+                    let icon_rect = Rect::from_min_size(
+                        rect.min
+                            + Vec2::new(
+                                if compact_nav {
+                                    (rect.width() - 18.0) / 2.0
+                                } else {
+                                    12.0
+                                },
+                                9.0,
+                            ),
+                        Vec2::new(18.0, 18.0),
+                    );
                     draw_icon(
                         painter,
                         icon_rect,
                         if is_active { p.primary } else { p.secondary },
                     );
 
-                    painter.text(
-                        Pos2::new(rect.min.x + 38.0, rect.center().y),
-                        egui::Align2::LEFT_CENTER,
-                        label,
-                        egui::FontId::proportional(13.5),
-                        if is_active { p.text } else { p.secondary },
-                    );
+                    if compact_nav {
+                        resp.clone().on_hover_text(label);
+                    } else {
+                        painter.text(
+                            Pos2::new(rect.min.x + 38.0, rect.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            label,
+                            egui::FontId::proportional(13.5),
+                            if is_active { p.text } else { p.secondary },
+                        );
+                    }
 
                     if resp.clicked() {
                         self.page = page;
@@ -741,20 +1073,56 @@ impl App {
 
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                     ui.add_space(12.0);
-                    render_compact_sidebar_status(ui, &app_state, self.display_pause.is_paused, p);
+                    if compact_nav {
+                        let (rect, response) =
+                            ui.allocate_exact_size(Vec2::new(36.0, 30.0), egui::Sense::hover());
+                        ui.painter().circle_filled(
+                            rect.center(),
+                            5.0,
+                            if app_state == AppState::Live {
+                                p.success
+                            } else {
+                                p.warning
+                            },
+                        );
+                        response.on_hover_text(format!(
+                            "{}{:?}",
+                            if self.display_pause.is_paused {
+                                "Display paused · "
+                            } else {
+                                ""
+                            },
+                            app_state
+                        ));
+                    } else {
+                        render_compact_sidebar_status(
+                            ui,
+                            &app_state,
+                            self.display_pause.is_paused,
+                            p,
+                        );
+                    }
                     ui.separator();
                 });
             });
 
         // 2. Central Panel
         egui::CentralPanel::default().show(root, |ui| {
+            if self.fixture_mode {
+                ui.colored_label(p.warning, "Fixture preview · simulated sample data");
+            }
             if self.page == Page::Recordings {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     self.render_recordings_page(ui, frame_opt.clone(), topo_opt.as_ref(), shared_copy.benchmark_state.as_ref(), &shared_copy.diagnostic_logs, &app_state, p);
                 });
                 return;
             }
-            let render_histories = frozen_histories.as_deref().unwrap_or(&self.histories);
+            let render_histories = frozen_histories.as_deref().unwrap_or(self.histories.as_ref());
+            if matches!(self.page, Page::Performance | Page::History)
+                && self.history_worker.dropped() > 0
+            {
+                ui.colored_label(p.warning, format!("History worker skipped {} delivery frames; coverage uses only observed samples.", self.history_worker.dropped()));
+            }
             // Action error banner
             if let Some(err_msg) = &shared_copy.action_error {
                 egui::Frame::group(ui.style())
@@ -913,8 +1281,10 @@ impl App {
                     // Overview has multiple stacked charts and a process table;
                     // always make the whole page scroll at the minimum window size.
                     egui::ScrollArea::vertical()
+                        .id_salt("overview_page_scroll")
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
+                            let previous_selected = self.resources_state.selected_resource.clone();
                             render_overview_view(
                                 ui,
                                 frame,
@@ -924,32 +1294,58 @@ impl App {
                                 &mut self.display_pause,
                                 current_poll,
                                 &mut self.selected,
+                                &mut self.resources_state.selected_resource,
                                 &mut self.page,
                                 render_now,
                                 p,
                             );
+                            if self.resources_state.selected_resource != previous_selected {
+                                self.resources_state.reveal_selected_resource = true;
+                                self.settings.performance_resource =
+                                    self.resources_state.selected_resource.clone();
+                                self.settings_error = self
+                                    .settings
+                                    .save()
+                                    .err()
+                                    .map(|error| format!("Could not save preferences: {error}"));
+                            }
                         });
                 },
-                Page::Resources => {
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
+                Page::Performance => {
+                    let previous_graph_modes = self.settings.resource_graphs;
+                    let previous_legends = self.settings.resource_legends;
+                    let previous_scale = self.settings.percent_scale;
                             render_resources_view(
                                 ui,
                                 frame,
+                                render_histories,
                                 {
                                     #[cfg(windows)]
-                                    { if app_state == AppState::Replay { &frame.sensors } else { shared_copy.sensor_readings.as_ref() } }
+                                    { frozen_sensors.as_deref().unwrap_or(live_sensors.as_ref()) }
                                     #[cfg(not(windows))]
                                     { &frame.sensors }
                                 },
+                                topo_opt.as_ref(),
+                                Some(&mut self.exporter),
                                 &mut self.resources_state,
+                                &mut self.settings.percent_scale,
                                 &app_state,
                                 &mut self.display_pause,
                                 current_poll,
+                                &mut self.settings.resource_graphs,
+                                &mut self.settings.resource_legends,
+                                render_now,
                                 p,
                             );
-                        });
+                    let selection_changed = self.settings.performance_resource != self.resources_state.selected_resource
+                        || self.settings.performance_range != self.resources_state.range
+                        || self.settings.performance_engines.iter().cloned().collect::<std::collections::BTreeSet<_>>() != self.resources_state.selected_engines;
+                    if self.settings.resource_graphs != previous_graph_modes || self.settings.resource_legends != previous_legends || self.settings.percent_scale != previous_scale || selection_changed {
+                        self.settings.performance_resource = self.resources_state.selected_resource.clone();
+                        self.settings.performance_range = self.resources_state.range;
+                        self.settings.performance_engines = self.resources_state.selected_engines.iter().take(4).cloned().collect();
+                        self.settings_error = self.settings.save().err().map(|error| format!("Could not save preferences: {error}"));
+                    }
                 },
                 Page::Processes => {
                     render_processes_view(
@@ -979,13 +1375,16 @@ impl App {
                     }
                 },
                 Page::History => {
+                    let previous_scale = self.settings.percent_scale;
                     egui::ScrollArea::vertical()
+                        .id_salt("history_page_scroll")
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             render_history_view(
                                 ui,
                                 render_histories,
                                 &mut self.history_state,
+                                &mut self.settings.percent_scale,
                                 &app_state,
                                 &mut self.display_pause,
                                 current_poll,
@@ -993,14 +1392,19 @@ impl App {
                                 p,
                             );
                         });
+                    if self.settings.percent_scale != previous_scale {
+                        self.settings_error = self.settings.save().err().map(|e| format!("Could not save preferences: {e}"));
+                    }
                 },
                 Page::Hardware => {
                     egui::ScrollArea::vertical()
+                        .id_salt("hardware_page_scroll")
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             render_hardware_view(
                                 ui,
                                 topo_opt.as_ref(),
+                                render_frame.as_deref(),
                                 &mut self.hardware_state,
                                 &app_state,
                                 &mut self.display_pause,
@@ -1011,12 +1415,14 @@ impl App {
                 }
                 Page::Benchmarks => {
                     egui::ScrollArea::vertical()
+                        .id_salt("benchmarks_page_scroll")
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             render_benchmarks_view(
                                 ui,
                                 shared_copy.benchmark_state.as_ref(),
                                 shared_copy.profile_state.as_ref(),
+                                self.selected.as_ref(),
                                 &mut self.benchmarks_state,
                                 &app_state,
                                 &mut self.display_pause,
@@ -1043,7 +1449,7 @@ impl App {
                     p,
                 ),
                 Page::Settings => {
-                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    egui::ScrollArea::vertical().id_salt("settings_outer_page_scroll").auto_shrink([false, false]).show(ui, |ui| {
                         render_settings_view(
                             ui, &mut self.settings, &mut self.settings_error, &mut self.settings_state, &self.poll_ms,
                             shared_copy.sampling_effective_ms, &shared_copy.diagnostic_logs,
@@ -1064,6 +1470,25 @@ impl App {
                 Page::Recordings => unreachable!("recordings page rendered before frame selection"),
             }
         });
+        if self.normal_window && self.settings_state.reset_window_requested {
+            self.settings_state.reset_window_requested = false;
+            self.window_placement = Placement::default().validate(self.window_work_area);
+            if let Some(path) = window_placement::path() {
+                let _ = std::fs::remove_file(path);
+            }
+            let size = self.window_placement.expected_size();
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(Pos2::new(
+                self.window_work_area.min[0]
+                    + ((self.window_work_area.max[0] - self.window_work_area.min[0] - size.x)
+                        / 2.0)
+                        .max(0.0),
+                self.window_work_area.min[1]
+                    + ((self.window_work_area.max[1] - self.window_work_area.min[1] - size.y)
+                        / 2.0)
+                        .max(0.0),
+            )));
+        }
     }
 }
 
@@ -1071,18 +1496,49 @@ impl eframe::App for App {
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.render_ui(root);
     }
+
+    fn on_exit(&mut self) {
+        if self.normal_window {
+            if let Err(error) = window_placement::save(&self.window_placement) {
+                startup::record(&format!("placement-save-error {error}"));
+            }
+            self.settings_error = self
+                .settings
+                .save()
+                .err()
+                .map(|e| format!("Could not save preferences: {e}"));
+            if let Some(error) = &self.settings_error {
+                startup::record(&format!("settings-save-error {error}"));
+            }
+        }
+    }
 }
 
 impl Drop for App {
     fn drop(&mut self) {
-        #[cfg(windows)]
-        {
-            if let Some(stop) = &self.sensor_stop {
-                stop.store(true, std::sync::atomic::Ordering::SeqCst);
-            }
-            if let Some(worker) = self.sensor_worker.take() {
+        if !self.shutdown_completed {
+            self.client_stop.store(true, Ordering::Release);
+            self.recorder.stop();
+            self.replay.stop();
+            self.exporter.cancel();
+            if let Some(worker) = self.client_worker.take() {
                 worker.thread().unpark();
                 let _ = worker.join();
+            }
+            self.history_worker.join();
+            #[cfg(windows)]
+            {
+                if let Some(stop) = &self.sensor_stop {
+                    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                if let Some(worker) = self.sensor_worker.take() {
+                    worker.thread().unpark();
+                    let _ = worker.join();
+                }
+                if let Some(mut child) = self.authorization_child.take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
             }
         }
     }
@@ -1099,17 +1555,56 @@ fn main() -> eframe::Result<()> {
     }
 
     if std::env::args().any(|a| a == "--build-info") {
+        #[cfg(windows)]
+        unsafe {
+            use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+            let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+        }
         let info = state::BUILD_INFO;
-        println!(
-            "{}",
-            serde_json::json!({
-                "version": info.version,
-                "protocolVersion": info.protocol_version,
-                "gitCommit": info.git_commit,
-                "target": info.target,
-                "profile": info.profile,
-            })
-        );
+        let val = serde_json::json!({
+            "version": info.version,
+            "protocolVersion": info.protocol_version,
+            "gitCommit": info.git_commit,
+            "target": info.target,
+            "profile": info.profile,
+        });
+        let text = serde_json::to_string_pretty(&val).unwrap_or_else(|_| "{}".into());
+        println!("{text}");
+        if let Some(out_path) = std::env::args()
+            .position(|a| a == "--output" || a == "-o")
+            .and_then(|idx| std::env::args().nth(idx + 1))
+        {
+            let _ = std::fs::write(out_path, &text);
+        }
+        return Ok(());
+    }
+
+    if std::env::args().any(|a| a == "--diagnostics") {
+        #[cfg(windows)]
+        unsafe {
+            use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+            let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+        }
+        let info = state::BUILD_INFO;
+        let log_content = startup::log_path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .unwrap_or_else(|| "No startup log recorded".into());
+        let diag = serde_json::json!({
+            "version": info.version,
+            "protocolVersion": info.protocol_version,
+            "gitCommit": info.git_commit,
+            "target": info.target,
+            "profile": info.profile,
+            "startupLog": log_content,
+        });
+        let text = serde_json::to_string_pretty(&diag).unwrap_or_else(|_| "{}".into());
+        println!("{text}");
+        if let Some(out_path) = std::env::args()
+            .position(|a| a == "--output" || a == "-o")
+            .and_then(|idx| std::env::args().nth(idx + 1))
+        {
+            let _ = std::fs::write(out_path, &text);
+        }
         return Ok(());
     }
     if std::env::args().any(|a| a == "--headless-smoke-test") {
@@ -1123,21 +1618,35 @@ fn main() -> eframe::Result<()> {
         return Ok(());
     }
 
-    let mut initial_page = Page::Overview;
+    #[cfg(windows)]
+    {
+        let main_thread = std::thread::current().id();
+        std::panic::set_hook(Box::new(move |info| {
+            startup::record(&format!("panic {info}"));
+            if std::thread::current().id() == main_thread {
+                startup::show_fatal("An unexpected error occurred while opening Planora.");
+            }
+        }));
+    }
+
+    let mut initial_page = Page::Performance;
     let mut initial_theme = None;
     let mut width = 1180.0;
-    let mut height = 760.0;
+    let mut height = 790.0;
     let mut auto_close_ms = None;
     let mut screenshot_out = None;
-
     let args: Vec<String> = std::env::args().collect();
+    let native_fixture = args.iter().any(|arg| arg == "--native-fixture");
+    let fixture_tables_only = args.iter().any(|arg| arg == "--tables-only");
+    let mut fixture_resource = None;
+
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
             "--view" if i + 1 < args.len() => {
                 initial_page = match args[i + 1].to_lowercase().as_str() {
+                    "performance" | "resources" => Page::Performance,
                     "overview" => Page::Overview,
-                    "resources" => Page::Resources,
                     "processes" => Page::Processes,
                     "history" => Page::History,
                     "hardware" => Page::Hardware,
@@ -1179,6 +1688,10 @@ fn main() -> eframe::Result<()> {
                 screenshot_out = Some(std::path::PathBuf::from(&args[i + 1]));
                 i += 2;
             }
+            "--resource" if i + 1 < args.len() => {
+                fixture_resource = Some(args[i + 1].clone());
+                i += 2;
+            }
             _ => {
                 i += 1;
             }
@@ -1186,28 +1699,110 @@ fn main() -> eframe::Result<()> {
     }
 
     let capture_mode = screenshot_out.is_some();
+    #[cfg(windows)]
+    let _instance_guard = if capture_mode || native_fixture {
+        None
+    } else {
+        match instance::InstanceGuard::acquire() {
+            Ok(Some(guard)) => Some(guard),
+            Ok(None) => return Ok(()),
+            Err(error) => {
+                startup::record(&format!("instance-lock-error {error}"));
+                startup::show_fatal(&format!("Could not open the application window: {error}"));
+                return Ok(());
+            }
+        }
+    };
     // Native capture must honor the requested size, independent of the user's
     // saved window geometry. Give every image an isolated, empty state file.
     let capture_state_path = screenshot_out
         .as_ref()
         .map(|path| path.with_extension("capture.ron"));
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
+    let (placement, work_area) = window_placement::startup_placement();
+    let mut viewport = if capture_mode || !cfg!(windows) {
+        egui::ViewportBuilder::default()
             .with_inner_size([width, height])
             .with_min_inner_size([1024.0, 640.0])
-            .with_clamp_size_to_monitor_size(!capture_mode)
-            .with_title("Planora"),
-        persist_window: !capture_mode,
-        persistence_path: capture_state_path,
+            .with_title("Planora")
+    } else {
+        placement.viewport(work_area)
+    };
+    if let Ok(icon) = image::load_from_memory(include_bytes!(
+        "../../../assets/brand/platforms/windows/planora-64.png"
+    )) {
+        let rgba = icon.to_rgba8();
+        viewport = viewport.with_icon(egui::IconData {
+            width: rgba.width(),
+            height: rgba.height(),
+            rgba: rgba.into_raw(),
+        });
+    }
+    // Eframe reads its old geometry even with persist_window=false. Isolate its
+    // other UI state from the legacy app.ron that caused miniature launches.
+    let persistence_path = if cfg!(windows) {
+        capture_state_path.or_else(|| {
+            state::UserSettings::file_path().map(|p| p.with_file_name("egui-state-v2.ron"))
+        })
+    } else {
+        capture_state_path
+    };
+    #[cfg(windows)]
+    let dpi_scale =
+        (unsafe { windows_sys::Win32::UI::HiDpi::GetDpiForSystem() }.max(96) as f32) / 96.0;
+    #[cfg(not(windows))]
+    let dpi_scale = 1.0f32;
+
+    if !capture_mode && !native_fixture {
+        startup::record(&format!(
+            "build-identity version={} commit={} protocol={} target={} profile={}",
+            state::BUILD_INFO.version,
+            state::BUILD_INFO.git_commit,
+            PROTOCOL_VERSION,
+            state::BUILD_INFO.target,
+            state::BUILD_INFO.profile,
+        ));
+        startup::record("launch-mode normal");
+        startup::record(&format!(
+            "monitor-dpi work_area={:.1}x{:.1} dpi_scale={:.2}",
+            work_area.max[0] - work_area.min[0],
+            work_area.max[1] - work_area.min[1],
+            dpi_scale,
+        ));
+        startup::record(&format!(
+            "restored-geometry requested={:.1}x{:.1} maximized={}",
+            placement.normal_size[0], placement.normal_size[1], placement.maximized,
+        ));
+    }
+    let options = eframe::NativeOptions {
+        viewport,
+        persist_window: !cfg!(windows) && !capture_mode,
+        persistence_path,
         ..Default::default()
     };
-    eframe::run_native(
+    let result = eframe::run_native(
         "Planora",
         options,
         Box::new(move |cc| {
-            let mut app = App::new(cc);
+            let mut app = if native_fixture {
+                smoke_test::create_native_fixture_app(
+                    initial_theme.unwrap_or(theme::Theme::Dark),
+                    initial_page,
+                )
+            } else {
+                App::new(cc)
+            };
+            app.normal_window = cfg!(windows) && !capture_mode && !native_fixture;
             app.page = initial_page;
-            if let Some(th) = initial_theme {
+            if let Some(resource) = fixture_resource.as_ref() {
+                app.resources_state.selected_resource = Some(resource.clone());
+            }
+            if native_fixture && fixture_tables_only {
+                app.settings.resource_graphs = [false; 6];
+                app.history_state.show_graphs = false;
+            }
+            if (capture_mode || native_fixture)
+                && let Some(th) = initial_theme
+            {
                 app.settings.theme = th;
             }
             if let Some(ms) = auto_close_ms {
@@ -1216,7 +1811,53 @@ fn main() -> eframe::Result<()> {
             app.screenshot_out = screenshot_out;
             Ok(Box::new(app))
         }),
-    )
+    );
+    if let Err(error) = &result {
+        startup::record(&format!("native-startup-error {error}"));
+        #[cfg(windows)]
+        startup::show_fatal(&error.to_string());
+    }
+    result
+}
+
+fn normalize_sensor_device_name(name: &str) -> String {
+    let cleaned = name
+        .to_lowercase()
+        .replace("(r)", " ")
+        .replace("(tm)", " ")
+        .replace(['®', '™'], " ");
+    cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+pub fn merge_sensor_readings(
+    helper_sensors: &[planora_core::SensorReading],
+    vendor_sensors: &[planora_core::SensorReading],
+) -> Vec<planora_core::SensorReading> {
+    let mut result = Vec::with_capacity(vendor_sensors.len() + helper_sensors.len());
+    let mut seen_ids = std::collections::HashSet::new();
+    let mut vendor_keys = std::collections::HashSet::new();
+
+    for s in vendor_sensors {
+        if seen_ids.insert(s.id.clone()) {
+            let device_norm = normalize_sensor_device_name(&s.device_name);
+            vendor_keys.insert((device_norm, s.sensor_type, s.name.trim().to_lowercase()));
+            result.push(s.clone());
+        }
+    }
+
+    for s in helper_sensors {
+        if seen_ids.contains(&s.id) {
+            continue;
+        }
+        let device_norm = normalize_sensor_device_name(&s.device_name);
+        if vendor_keys.contains(&(device_norm, s.sensor_type, s.name.trim().to_lowercase())) {
+            continue;
+        }
+        seen_ids.insert(s.id.clone());
+        result.push(s.clone());
+    }
+
+    result
 }
 
 #[cfg(test)]
@@ -1380,21 +2021,27 @@ mod tests {
             poll_interval_ms: 250,
             hardware_view_mode: state::HardwareViewMode::Tree,
             reduced_motion: true,
+            percent_scale: state::PercentScale::Fit,
             default_history_range: history::HistoryRange::Min5,
             process_columns: components::table::TableColumnsConfig::default(),
             process_sort_column: components::table::SortColumn::Cpu,
             process_sort_descending: true,
+            resource_graphs: [true; 6],
+            resource_legends: [true; 6],
+            performance_resource: None,
+            performance_range: history::HistoryRange::Sec60,
+            performance_engines: Vec::new(),
         };
         let serialized = serde_json::to_string(&s).unwrap();
         let deserialized: UserSettings = serde_json::from_str(&serialized).unwrap();
-        assert_eq!(deserialized.theme, Theme::Dark);
+        assert_eq!(deserialized.theme, Theme::System);
         assert_eq!(deserialized.poll_interval_ms, 250);
-        assert_eq!(deserialized.density, theme::Density::Compact);
+        assert_eq!(deserialized.density, theme::Density::Normal);
         assert_eq!(
             deserialized.hardware_view_mode,
             state::HardwareViewMode::Tree
         );
-        assert!(deserialized.reduced_motion);
+        assert!(!deserialized.reduced_motion);
         assert_eq!(
             deserialized.default_history_range,
             history::HistoryRange::Min5
@@ -1404,5 +2051,134 @@ mod tests {
     #[test]
     fn test_headless_smoke_suite_executes() {
         smoke_test::run_smoke_fast_check().expect("Headless smoke fast check should pass");
+    }
+
+    #[test]
+    fn test_lifecycle_and_coordinated_shutdown() {
+        let mut app = smoke_test::create_test_app(Theme::Dark, Page::Performance);
+        assert_eq!(app.lifecycle, LifecycleState::Running);
+        assert!(app.shutdown_started.is_none());
+        assert!(!app.shutdown_completed);
+
+        // Simulate active benchmark
+        {
+            let mut shared = app.shared.lock().unwrap();
+            shared.benchmark_state = Some(planora_core::BenchmarkState::Running {
+                job_id: 42,
+                elapsed_ms: 100,
+            });
+        }
+
+        let ctx = egui::Context::default();
+        app.begin_shutdown(&ctx);
+        assert_eq!(app.lifecycle, LifecycleState::Stopping);
+        assert!(app.shutdown_started.is_some());
+        assert!(app.client_stop.load(Ordering::Acquire));
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        app.update_shutdown(&ctx);
+        assert!(app.shutdown_completed);
+    }
+
+    #[test]
+    fn system_appearance_changes_replace_overrides_and_scale_controls() {
+        let mut app = smoke_test::create_test_app(Theme::Dark, Page::Performance);
+        app.normal_window = true;
+        let ctx = egui::Context::default();
+        ctx.set_zoom_factor(1.7);
+        for theme in [egui::Theme::Light, egui::Theme::Dark, egui::Theme::Light] {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    system_theme: Some(theme),
+                    ..Default::default()
+                },
+                |_ui| {
+                    app.apply_theme(&ctx);
+                    assert_eq!(app.palette(&ctx).is_dark, theme == egui::Theme::Dark);
+                },
+            );
+            output.textures_delta.clear();
+        }
+        app.appearance
+            .set_test_snapshot(appearance::SystemAppearance {
+                text_scale: 1.5,
+                animations: false,
+                contrast: Some((Color32::WHITE, Color32::BLACK)),
+            });
+        app.apply_theme(&ctx);
+        assert_eq!(ctx.zoom_factor(), 1.0);
+        assert!(!ctx.options(|o| o.zoom_with_keyboard));
+        assert_eq!(ctx.style_of(ctx.theme()).spacing.interact_size.y, 36.0);
+        assert_eq!(ctx.style_of(ctx.theme()).animation_time, 0.0);
+        assert_eq!(app.palette(&ctx).text, Color32::WHITE);
+        assert_eq!(app.palette(&ctx).background, Color32::BLACK);
+        // Keep this fixture from saving placement/preferences during shutdown.
+        app.normal_window = false;
+    }
+
+    #[test]
+    fn sensor_deduplication_prefers_direct_vendor_readings() {
+        use planora_core::{Metric, SensorReading, SensorType};
+        let vendor = vec![SensorReading {
+            id: "nvidia_gpu/0/temperature".into(),
+            device_id: "nvidia_gpu/0".into(),
+            device_name: "NVIDIA GeForce RTX 3080".into(),
+            name: "GPU Temperature".into(),
+            sensor_type: SensorType::GpuTemperatureCelsius,
+            scope: "GPU 0".into(),
+            provider: "NVIDIA NVML".into(),
+            value: Metric::available(65.0, "°C", "NVIDIA NVML", 1000),
+        }];
+        let helper = vec![
+            SensorReading {
+                id: "lhm/gpu/0/temperature".into(),
+                device_id: "lhm_gpu_0".into(),
+                device_name: "NVIDIA GeForce RTX 3080".into(),
+                name: "GPU Temperature".into(),
+                sensor_type: SensorType::GpuTemperatureCelsius,
+                scope: "GPU".into(),
+                provider: "LibreHardwareMonitor".into(),
+                value: Metric::available(64.5, "°C", "LibreHardwareMonitor", 1000),
+            },
+            SensorReading {
+                id: "lhm/cpu/power".into(),
+                device_id: "lhm_cpu_0".into(),
+                device_name: "Intel Core i9".into(),
+                name: "CPU Package".into(),
+                sensor_type: SensorType::CpuPackagePowerWatts,
+                scope: "Package".into(),
+                provider: "LibreHardwareMonitor".into(),
+                value: Metric::available(85.0, "W", "LibreHardwareMonitor", 1000),
+            },
+        ];
+        let merged = merge_sensor_readings(&helper, &vendor);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].provider, "NVIDIA NVML");
+        assert_eq!(merged[1].provider, "LibreHardwareMonitor");
+        assert_eq!(merged[1].sensor_type, SensorType::CpuPackagePowerWatts);
+
+        let igcl_vendor = vec![SensorReading {
+            id: "igcl:00:02.0:temp:0".into(),
+            device_id: "0000:00:02.0".into(),
+            device_name: "Intel(R) Iris(R) Xe Graphics".into(),
+            name: "GPU Global Temperature".into(),
+            sensor_type: SensorType::GpuTemperatureCelsius,
+            scope: "GPU".into(),
+            provider: "Intel IGCL".into(),
+            value: Metric::available(49.0, "°C", "Intel IGCL", 1000),
+        }];
+        let lhm_helper = vec![SensorReading {
+            id: "/gpu-intel-integrated/0/temperature/0".into(),
+            device_id: "/gpu-intel-integrated/0".into(),
+            device_name: "Intel Iris Xe Graphics".into(),
+            name: "GPU Global Temperature".into(),
+            sensor_type: SensorType::GpuTemperatureCelsius,
+            scope: "GPU".into(),
+            provider: "LibreHardwareMonitor".into(),
+            value: Metric::available(48.5, "°C", "LibreHardwareMonitor", 1000),
+        }];
+        let merged_trademark = merge_sensor_readings(&lhm_helper, &igcl_vendor);
+        assert_eq!(merged_trademark.len(), 1);
+        assert_eq!(merged_trademark[0].provider, "Intel IGCL");
     }
 }

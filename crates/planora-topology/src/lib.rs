@@ -236,12 +236,24 @@ fn discover_windows(t: &mut Topology) {
             .push("Windows logical processor query failed".into());
         return;
     }
+    let mut group_base = Vec::new();
+    let mut sum = 0usize;
+    let group_count =
+        unsafe { windows_sys::Win32::System::Threading::GetActiveProcessorGroupCount() };
+    for g in 0..group_count {
+        group_base.push(sum);
+        let count =
+            unsafe { windows_sys::Win32::System::Threading::GetActiveProcessorCount(g) } as usize;
+        sum += count;
+    }
+
     fn cpus(
         buffer: &[u8],
         record_offset: usize,
         record_size: usize,
         mask_offset: usize,
         count: usize,
+        group_base: &[usize],
     ) -> Vec<u16> {
         let mut out = Vec::new();
         let available =
@@ -251,11 +263,14 @@ fn discover_windows(t: &mut Topology) {
             let mask =
                 unsafe { (buffer.as_ptr().add(at) as *const GROUP_AFFINITY).read_unaligned() };
             for bit in 0..usize::BITS {
-                if mask.Mask & (1usize << bit) != 0
-                    && let Ok(id) =
-                        u16::try_from(mask.Group as usize * usize::BITS as usize + bit as usize)
-                {
-                    out.push(id);
+                if mask.Mask & (1usize << bit) != 0 {
+                    let base = group_base
+                        .get(mask.Group as usize)
+                        .copied()
+                        .unwrap_or(mask.Group as usize * usize::BITS as usize);
+                    if let Ok(id) = u16::try_from(base + bit as usize) {
+                        out.push(id);
+                    }
                 }
             }
         }
@@ -290,6 +305,7 @@ fn discover_windows(t: &mut Topology) {
                         size,
                         8 + std::mem::offset_of!(PROCESSOR_RELATIONSHIP, GroupMask),
                         item.GroupCount as usize,
+                        &group_base,
                     );
                     if relationship == RELATION_PROCESSOR_CORE {
                         t.cores.push(CoreDescriptor {
@@ -316,6 +332,7 @@ fn discover_windows(t: &mut Topology) {
                         size,
                         8 + std::mem::offset_of!(NUMA_NODE_RELATIONSHIP, Anonymous),
                         item.GroupCount.max(1) as usize,
+                        &group_base,
                     );
                     numas.push((item.NodeNumber as u16, logical));
                 }
@@ -332,6 +349,7 @@ fn discover_windows(t: &mut Topology) {
                         size,
                         8 + std::mem::offset_of!(CACHE_RELATIONSHIP, Anonymous),
                         item.GroupCount.max(1) as usize,
+                        &group_base,
                     );
                     let cache_type = match item.Type {
                         1 => planora_core::CacheType::Instruction,

@@ -32,7 +32,8 @@
       <Label X="22" Y="144" Width="525" Height="40" FontId="0" DisablePrefix="yes">See how processes use your computer's resources. Setup installs the desktop app, a local telemetry helper, and Start menu shortcuts.</Label>
       <Label X="22" Y="205" Width="525" Height="20" FontId="3" DisablePrefix="yes">INSTALL LOCATION</Label>
       <Label X="22" Y="230" Width="525" Height="25" FontId="0" DisablePrefix="yes">[PlanoraInstallLocation]</Label>
-      <Label X="22" Y="264" Width="525" Height="38" FontId="4" DisablePrefix="yes">The helper is installed in an administrator-protected folder. Windows will request approval before making changes.</Label>
+      <Checkbox Name="PlanoraAdvancedSensors" X="22" Y="267" Width="525" Height="22" TabStop="yes" FontId="0">Advanced sensors (installs the signed PawnIO driver)</Checkbox>
+      <Label X="22" Y="293" Width="525" Height="32" FontId="4" DisablePrefix="yes">Optional. Core monitoring works without it. PawnIO is retained on uninstall because other apps may use it.</Label>
       <Hypertext Name="EulaHyperlink" X="22" Y="326" Width="525" Height="24" TabStop="yes" FontId="0" HideWhenDisabled="yes">#(loc.InstallLicenseLinkText)</Hypertext>
       <Checkbox Name="EulaAcceptCheckbox" X="22" Y="354" Width="525" Height="22" TabStop="yes" FontId="0" HideWhenDisabled="yes">#(loc.InstallAcceptCheckbox)</Checkbox>
       <Button Name="InstallUpdateButton" X="22" Y="-18" Width="215" Height="30" TabStop="yes" FontId="0" EnableCondition="WixStdBAUpdateAvailable" HideWhenDisabled="yes">#(loc.UpdateButton)</Button>

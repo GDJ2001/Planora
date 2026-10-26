@@ -110,30 +110,44 @@ pub fn run_worker(expected_build_id: Option<&str>) {
                             None,
                         ));
                     }
-                    Err((state, reason)) => caps.push(make(
-                        "NVIDIA NVML telemetry",
-                        "NVIDIA NVML (Experimental)",
-                        *state,
-                        Some(reason.clone()),
-                        Some("Install NVIDIA GPU driver".into()),
-                    )),
+                    Err((state, reason)) => {
+                        let recovery = if *state == CapabilityState::NotApplicable {
+                            None
+                        } else {
+                            Some("Install NVIDIA GPU driver".into())
+                        };
+                        caps.push(make(
+                            "NVIDIA NVML telemetry",
+                            "NVIDIA NVML (Experimental)",
+                            *state,
+                            Some(reason.clone()),
+                            recovery,
+                        ));
+                    }
                 }
 
                 match &amd {
                     Ok(_) => caps.push(make(
                         "AMD ADLX telemetry",
                         "AMD ADLX (Experimental)",
-                        CapabilityState::Unsupported,
+                        CapabilityState::NotImplemented,
                         Some("ADLX runtime initialized, but metric interface sampling is not implemented in this build".into()),
                         None,
                     )),
-                    Err((state, reason)) => caps.push(make(
-                        "AMD ADLX telemetry",
-                        "AMD ADLX (Experimental)",
-                        *state,
-                        Some(reason.clone()),
-                        Some("Install AMD Software: Adrenalin Edition".into()),
-                    )),
+                    Err((state, reason)) => {
+                        let recovery = if *state == CapabilityState::NotApplicable {
+                            None
+                        } else {
+                            Some("Install AMD Software: Adrenalin Edition".into())
+                        };
+                        caps.push(make(
+                            "AMD ADLX telemetry",
+                            "AMD ADLX (Experimental)",
+                            *state,
+                            Some(reason.clone()),
+                            recovery,
+                        ));
+                    }
                 }
 
                 let resp = WorkerResponse::Capabilities { capabilities: caps };

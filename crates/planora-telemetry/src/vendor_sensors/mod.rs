@@ -2,10 +2,12 @@
 //! executed in an unelevated child worker process.
 
 pub mod amd;
+pub mod broker;
 pub mod intel;
 pub mod nvidia;
 pub mod worker;
 
+use planora_core::{AvailabilityReason, Metric};
 pub use worker::{WorkerCommand, WorkerResponse, run_worker};
 
 #[cfg(windows)]
@@ -106,12 +108,14 @@ pub struct VendorSensorSupervisor {
     child: Option<Child>,
     stdin: Option<ChildStdin>,
     rx: Option<mpsc::Receiver<String>>,
+    reader: Option<std::thread::JoinHandle<()>>,
     job_handle: usize,
     last_poll: Option<Instant>,
     last_readings: Vec<SensorReading>,
     consecutive_failures: u32,
     next_restart_at: Option<Instant>,
     build_id: String,
+    broker: Option<broker::SensorBrokerSupervisor>,
 }
 
 impl VendorSensorSupervisor {
@@ -120,12 +124,16 @@ impl VendorSensorSupervisor {
             child: None,
             stdin: None,
             rx: None,
+            reader: None,
             job_handle: 0,
             last_poll: None,
             last_readings: Vec::new(),
             consecutive_failures: 0,
             next_restart_at: None,
             build_id: build_id.into(),
+            // The advanced broker is owned by the authorized helper. This
+            // unelevated worker only loads vendor user-mode sensor libraries.
+            broker: None,
         };
         sup.ensure_worker_started();
         sup
@@ -191,6 +199,11 @@ impl VendorSensorSupervisor {
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
 
         let Ok(mut child) = cmd.spawn() else {
             self.consecutive_failures += 1;
@@ -216,7 +229,7 @@ impl VendorSensorSupervisor {
 
         if let (Some(stdin), Some(stdout)) = (stdin, stdout) {
             let (tx, rx) = mpsc::sync_channel(4);
-            std::thread::Builder::new()
+            let reader = std::thread::Builder::new()
                 .name("sensor-worker-reader".into())
                 .spawn(move || {
                     let mut reader = BufReader::new(stdout);
@@ -231,17 +244,45 @@ impl VendorSensorSupervisor {
             self.child = Some(child);
             self.stdin = Some(stdin);
             self.rx = Some(rx);
+            self.reader = reader;
             self.next_restart_at = None;
             self.consecutive_failures = 0;
         }
     }
 
+    fn cached_readings_with_staleness(&self) -> Vec<SensorReading> {
+        let mut readings = self.last_readings.clone();
+        if let Some(last_poll) = self.last_poll {
+            let elapsed_ms = last_poll.elapsed().as_millis() as u64;
+            if elapsed_ms > 5000 {
+                let now_ms = crate::unix_ms();
+                for r in &mut readings {
+                    r.value = Metric::unavailable(
+                        &r.value.unit,
+                        &r.value.source,
+                        now_ms,
+                        AvailabilityReason::Stale(elapsed_ms),
+                    );
+                }
+            }
+        }
+        readings
+    }
+
     pub fn poll_sensors(&mut self) -> Vec<SensorReading> {
+        let broker_readings = self
+            .broker
+            .as_mut()
+            .map(|b| b.poll_sensors())
+            .unwrap_or_default();
+
         if self
             .last_poll
             .is_some_and(|t| t.elapsed() < Duration::from_millis(950))
         {
-            return self.last_readings.clone();
+            let mut combined = self.last_readings.clone();
+            combined.extend(broker_readings);
+            return combined;
         }
 
         self.ensure_worker_started();
@@ -251,11 +292,15 @@ impl VendorSensorSupervisor {
 
         if !success {
             self.handle_failure();
-            return self.last_readings.clone();
+            let mut combined = self.cached_readings_with_staleness();
+            combined.extend(broker_readings);
+            return combined;
         }
 
         let Some(rx) = &self.rx else {
-            return self.last_readings.clone();
+            let mut combined = self.cached_readings_with_staleness();
+            combined.extend(broker_readings);
+            return combined;
         };
 
         // 2-second response deadline
@@ -265,7 +310,9 @@ impl VendorSensorSupervisor {
                     self.last_readings = sensors.clone();
                     self.last_poll = Some(Instant::now());
                     self.consecutive_failures = 0;
-                    return sensors;
+                    let mut combined = sensors;
+                    combined.extend(broker_readings);
+                    return combined;
                 }
                 self.handle_failure();
             }
@@ -274,10 +321,17 @@ impl VendorSensorSupervisor {
             }
         }
 
-        self.last_readings.clone()
+        let mut combined = self.cached_readings_with_staleness();
+        combined.extend(broker_readings);
+        combined
     }
 
     pub fn probe_capabilities(&mut self) -> Vec<Capability> {
+        let mut caps = Vec::new();
+        if let Some(broker) = &mut self.broker {
+            caps.push(broker.probe_capability());
+        }
+
         self.ensure_worker_started();
         let req = serde_json::to_string(&WorkerCommand::Probe).unwrap();
         if self.send_request(&req)
@@ -285,7 +339,8 @@ impl VendorSensorSupervisor {
             && let Ok(line) = rx.recv_timeout(Duration::from_millis(2000))
             && let Ok(WorkerResponse::Capabilities { capabilities }) = serde_json::from_str(&line)
         {
-            return capabilities;
+            caps.extend(capabilities);
+            return caps;
         }
 
         // Fallback capability reporting
@@ -299,7 +354,7 @@ impl VendorSensorSupervisor {
             reason: Some(reason.into()),
             recovery_action: Some("Restart Planora or retry sensor worker".into()),
         };
-        vec![
+        caps.extend(vec![
             make(
                 "Intel IGCL telemetry",
                 "Intel IGCL (Experimental)",
@@ -318,7 +373,8 @@ impl VendorSensorSupervisor {
                 CapabilityState::MissingRuntime,
                 "amdadlx64.dll not found in system path",
             ),
-        ]
+        ]);
+        caps
     }
 
     fn send_request(&mut self, data: &str) -> bool {
@@ -345,6 +401,9 @@ impl VendorSensorSupervisor {
         }
         self.stdin = None;
         self.rx = None;
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
         self.consecutive_failures += 1;
         let backoff_secs = (1 << self.consecutive_failures.min(4)).min(16);
         self.next_restart_at = Some(Instant::now() + Duration::from_secs(backoff_secs));
@@ -364,6 +423,9 @@ impl VendorSensorSupervisor {
         }
         self.stdin = None;
         self.rx = None;
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
         self.next_restart_at = None;
         self.consecutive_failures = 0;
         self.ensure_worker_started();
@@ -390,6 +452,11 @@ impl Drop for VendorSensorSupervisor {
             }
             let _ = child.kill();
             let _ = child.wait();
+        }
+        self.stdin = None;
+        self.rx = None;
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
         }
         #[cfg(windows)]
         if self.job_handle != 0 {

@@ -25,7 +25,11 @@ pub fn render_page_header(
                 ui.add_space(2.0);
                 ui.heading(title);
                 ui.add_space(2.0);
-                ui.label(egui::RichText::new(subtitle).color(p.secondary).size(12.0));
+                ui.label(
+                    egui::RichText::new(subtitle)
+                        .color(p.secondary)
+                        .size(12.0 * crate::appearance::text_scale(ui.ctx())),
+                );
             },
         );
 
@@ -55,7 +59,7 @@ pub fn render_page_header(
                 egui::RichText::new(format!("{poll_interval_ms} ms"))
                     .color(p.secondary)
                     .monospace()
-                    .size(11.0),
+                    .size(11.0 * crate::appearance::text_scale(ui.ctx())),
             );
         });
     });

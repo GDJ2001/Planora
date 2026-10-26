@@ -3,8 +3,8 @@ use crate::{
     theme::{Density, Theme},
 };
 use planora_core::{
-    BenchmarkState, Capability, Command, DiagnosticEntry, ErrorCode, PROTOCOL_VERSION, Request,
-    Response, ResponseEnvelope, TelemetryFrame, Topology,
+    BenchmarkState, Capability, Command, DiagnosticEntry, ErrorCode, PROTOCOL_VERSION,
+    ProfileState, Request, Response, ResponseEnvelope, TelemetryFrame, Topology,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -12,7 +12,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::Receiver,
     },
     thread,
@@ -22,8 +22,9 @@ use std::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Page {
     #[default]
+    #[serde(alias = "Resources")]
+    Performance,
     Overview,
-    Resources,
     Processes,
     History,
     Hardware,
@@ -40,16 +41,32 @@ pub enum HardwareViewMode {
     Canvas,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum PercentScale {
+    #[default]
+    Fit,
+    Full,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UserSettings {
     pub schema_version: u32,
+    #[serde(skip)] // Runtime fixture override only; normal UI follows the OS.
     pub theme: Theme,
+    #[serde(skip)]
     pub density: Density,
     pub poll_interval_ms: u64,
     pub hardware_view_mode: HardwareViewMode,
+    #[serde(skip)]
     pub reduced_motion: bool,
+    pub percent_scale: PercentScale,
     pub default_history_range: HistoryRange,
+    pub resource_graphs: [bool; 6],
+    pub resource_legends: [bool; 6],
+    pub performance_resource: Option<String>,
+    pub performance_range: HistoryRange,
+    pub performance_engines: Vec<String>,
     pub process_columns: crate::components::table::TableColumnsConfig,
     pub process_sort_column: crate::components::table::SortColumn,
     pub process_sort_descending: bool,
@@ -58,13 +75,19 @@ pub struct UserSettings {
 impl Default for UserSettings {
     fn default() -> Self {
         Self {
-            schema_version: 3,
+            schema_version: 6,
             theme: Theme::System,
             density: Density::Normal,
             poll_interval_ms: 100,
             hardware_view_mode: HardwareViewMode::Canvas,
             reduced_motion: false,
+            percent_scale: PercentScale::Fit,
             default_history_range: HistoryRange::Sec60,
+            resource_graphs: [true; 6],
+            resource_legends: [true; 6],
+            performance_resource: None,
+            performance_range: HistoryRange::Sec60,
+            performance_engines: Vec::new(),
             process_columns: crate::components::table::TableColumnsConfig::default(),
             process_sort_column: crate::components::table::SortColumn::Cpu,
             process_sort_descending: true,
@@ -104,7 +127,10 @@ impl UserSettings {
                 if let Ok(data) = std::fs::read_to_string(path)
                     && let Ok(mut settings) = serde_json::from_str::<Self>(&data)
                 {
-                    settings.schema_version = 3;
+                    settings.schema_version = 6;
+                    settings.performance_engines.truncate(4);
+                    settings.performance_resource =
+                        settings.performance_resource.filter(|id| id.len() <= 256);
                     settings.poll_interval_ms = match settings.poll_interval_ms {
                         50 => 100,
                         200 => 250,
@@ -159,12 +185,18 @@ impl UserSettings {
 }
 
 #[cfg(not(windows))]
-fn replace_settings_file(temp: &std::path::Path, target: &std::path::Path) -> io::Result<()> {
+pub(crate) fn replace_settings_file(
+    temp: &std::path::Path,
+    target: &std::path::Path,
+) -> io::Result<()> {
     std::fs::rename(temp, target)
 }
 
 #[cfg(windows)]
-fn replace_settings_file(temp: &std::path::Path, target: &std::path::Path) -> io::Result<()> {
+pub(crate) fn replace_settings_file(
+    temp: &std::path::Path,
+    target: &std::path::Path,
+) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{
         MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
@@ -211,6 +243,7 @@ pub struct DisplayPause {
     pub frozen_frame: Option<Arc<TelemetryFrame>>,
     pub frozen_instant: Option<Instant>,
     pub frozen_histories: Option<Arc<crate::history::ResourceHistories>>,
+    pub frozen_sensors: Option<Arc<Vec<planora_core::SensorReading>>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -358,11 +391,24 @@ fn connection_failure_state(
     }
 }
 
+fn wait_or_stop(stop: &AtomicBool, duration: Duration) -> bool {
+    let deadline = Instant::now() + duration;
+    while !stop.load(Ordering::Acquire) {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        thread::park_timeout(remaining.min(Duration::from_millis(100)));
+    }
+    true
+}
+
 pub fn background_worker(
     state: Arc<Mutex<Shared>>,
     rx: Receiver<Command>,
     poll_ms: Arc<AtomicU64>,
     context: eframe::egui::Context,
+    stop: Arc<AtomicBool>,
 ) {
     let mut next_request_id = 1u64;
     let mut _current_session_id: Option<u64> = None;
@@ -370,6 +416,9 @@ pub fn background_worker(
     let mut first_connection_failure: Option<Instant> = None;
 
     loop {
+        if stop.load(Ordering::Acquire) {
+            return;
+        }
         let mut stream = match planora_helper::connect() {
             Ok(s) => s,
             Err(error) => {
@@ -383,7 +432,9 @@ pub fn background_worker(
                     ));
                 }
                 context.request_repaint();
-                thread::sleep(reconnect_backoff);
+                if wait_or_stop(&stop, reconnect_backoff) {
+                    return;
+                }
                 reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_millis(2000));
                 continue;
             }
@@ -419,14 +470,18 @@ pub fn background_worker(
                         helper_version: version,
                     });
                     context.request_repaint();
-                    thread::sleep(Duration::from_secs(2));
+                    if wait_or_stop(&stop, Duration::from_secs(2)) {
+                        return;
+                    }
                     continue;
                 }
                 if !helper_authorized {
                     let mut shared = state.lock().unwrap();
                     shared.state = Some(AppState::AwaitingAuthorization);
                     context.request_repaint();
-                    thread::sleep(Duration::from_secs(1));
+                    if wait_or_stop(&stop, Duration::from_secs(1)) {
+                        return;
+                    }
                     continue;
                 }
                 _current_session_id = Some(session_id);
@@ -449,7 +504,9 @@ pub fn background_worker(
                     }),
                 );
                 context.request_repaint();
-                thread::sleep(Duration::from_secs(1));
+                if wait_or_stop(&stop, Duration::from_secs(1)) {
+                    return;
+                }
                 continue;
             }
             _ => {
@@ -459,7 +516,9 @@ pub fn background_worker(
                     shared.state = Some(AppState::Reconnecting);
                 }
                 context.request_repaint();
-                thread::sleep(reconnect_backoff);
+                if wait_or_stop(&stop, reconnect_backoff) {
+                    return;
+                }
                 reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_millis(2000));
                 continue;
             }
@@ -516,7 +575,9 @@ pub fn background_worker(
             _ => {
                 state.lock().unwrap().state = Some(AppState::Reconnecting);
                 context.request_repaint();
-                thread::sleep(reconnect_backoff);
+                if wait_or_stop(&stop, reconnect_backoff) {
+                    return;
+                }
                 reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_millis(2000));
                 continue;
             }
@@ -541,7 +602,9 @@ pub fn background_worker(
             _ => {
                 state.lock().unwrap().state = Some(AppState::Reconnecting);
                 context.request_repaint();
-                thread::sleep(reconnect_backoff);
+                if wait_or_stop(&stop, reconnect_backoff) {
+                    return;
+                }
                 reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_millis(2000));
                 continue;
             }
@@ -573,16 +636,22 @@ pub fn background_worker(
             _ => {
                 state.lock().unwrap().state = Some(AppState::Reconnecting);
                 context.request_repaint();
-                thread::sleep(reconnect_backoff);
+                if wait_or_stop(&stop, reconnect_backoff) {
+                    return;
+                }
                 reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_millis(2000));
                 continue;
             }
         }
         let mut last_sample_request = Instant::now();
+        let mut last_activity_status_poll = Instant::now() - Duration::from_secs(1);
         context.request_repaint();
 
         // Main command/sample loop with strict request-response pairing and deadlines
         loop {
+            if stop.load(Ordering::Acquire) {
+                return;
+            }
             let desired_poll_ms = poll_ms.load(Ordering::Relaxed);
             if desired_poll_ms != configured_poll_ms {
                 next_request_id = next_request_id.wrapping_add(1);
@@ -647,6 +716,56 @@ pub fn background_worker(
                 context.request_repaint();
             }
 
+            // Long-running actions complete asynchronously in the helper.
+            // Poll only while active so the UI receives completion and
+            // cancellation acknowledgements without spending an IPC round
+            // trip on every telemetry frame.
+            if connection_healthy && last_activity_status_poll.elapsed() >= Duration::from_secs(1) {
+                let (benchmark_active, profile_active) = {
+                    let shared = state.lock().unwrap();
+                    (
+                        matches!(
+                            shared.benchmark_state.as_ref(),
+                            Some(
+                                BenchmarkState::Running { .. } | BenchmarkState::Cancelling { .. }
+                            )
+                        ),
+                        matches!(
+                            shared.profile_state.as_ref(),
+                            Some(ProfileState::Running { .. } | ProfileState::Cancelling { .. })
+                        ),
+                    )
+                };
+                for command in [
+                    benchmark_active.then_some(Command::BenchmarkStatus),
+                    profile_active.then_some(Command::ProfileStatus),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    next_request_id = next_request_id.wrapping_add(1);
+                    let request = Request {
+                        request_id: next_request_id,
+                        command,
+                    };
+                    let status_ok = match planora_helper::exchange_request_timeout(
+                        &mut stream,
+                        &request,
+                        planora_helper::REQUEST_TIMEOUT,
+                    ) {
+                        Ok(response) => handle_response(response.response, &state),
+                        Err(_) => false,
+                    };
+                    if status_ok {
+                        context.request_repaint();
+                    } else {
+                        connection_healthy = false;
+                        break;
+                    }
+                }
+                last_activity_status_poll = Instant::now();
+            }
+
             if !connection_healthy {
                 let mut shared = state.lock().unwrap();
                 let had_frame = shared.frame.is_some();
@@ -665,7 +784,7 @@ pub fn background_worker(
 
             // 3. Wait on rx for user commands until next sample is due
             if time_until_sample > Duration::from_millis(5) {
-                match rx.recv_timeout(time_until_sample) {
+                match rx.recv_timeout(time_until_sample.min(Duration::from_millis(100))) {
                     Ok(cmd) => {
                         next_request_id = next_request_id.wrapping_add(1);
                         let cur_req_id = next_request_id;
@@ -691,7 +810,12 @@ pub fn background_worker(
                         continue;
                     }
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                        // Timeout reached, proceed to sample snapshot
+                        if stop.load(Ordering::Acquire) {
+                            return;
+                        }
+                        if last_sample_request.elapsed() < interval {
+                            continue;
+                        }
                     }
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                         return; // UI shutdown
@@ -741,13 +865,37 @@ pub fn background_worker(
             context.request_repaint();
         }
 
-        thread::sleep(reconnect_backoff);
+        if wait_or_stop(&stop, reconnect_backoff) {
+            return;
+        }
         reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_millis(2000));
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn legacy_appearance_is_discarded_without_losing_monitoring_preferences() {
+        let settings: super::UserSettings = serde_json::from_str(
+            r#"{
+            "schema_version":5,"theme":"Dark","density":"Compact",
+            "reduced_motion":true,"poll_interval_ms":500,
+            "performance_resource":"memory","performance_range":"Min15"
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(settings.theme, crate::theme::Theme::System);
+        assert_eq!(settings.density, crate::theme::Density::Normal);
+        assert!(!settings.reduced_motion);
+        assert_eq!(settings.poll_interval_ms, 500);
+        assert_eq!(settings.performance_resource.as_deref(), Some("memory"));
+        assert_eq!(
+            settings.performance_range,
+            crate::history::HistoryRange::Min15
+        );
+        let saved = serde_json::to_value(settings).unwrap();
+        assert!(saved.get("theme").is_none());
+    }
     #[test]
     fn fresh_install_without_running_helper_prompts_for_authorization() {
         use super::{AppState, connection_failure_state};
@@ -986,5 +1134,61 @@ mod tests {
         assert_eq!(state.lock().unwrap().state, Some(AppState::Reconnecting));
 
         server.join().unwrap();
+    }
+
+    #[test]
+    fn settings_migration_v3_and_v4_to_v6_preserves_monitoring_preferences() {
+        let v3_json = r#"{
+            "schema_version": 3,
+            "theme": "Dark",
+            "density": "Compact",
+            "poll_interval_ms": 250,
+            "hardware_view_mode": "Tree",
+            "reduced_motion": true,
+            "default_history_range": "Min5",
+            "process_columns": {
+                "show_pid": true,
+                "show_cpu": true,
+                "show_memory": true,
+                "show_io_read": true,
+                "show_io_write": false,
+                "show_disk_read": false,
+                "show_disk_write": false,
+                "show_gpu": true
+            },
+            "process_sort_column": "Memory",
+            "process_sort_descending": false
+        }"#;
+
+        let mut settings: UserSettings = serde_json::from_str(v3_json).expect("v3 json parse");
+        settings.schema_version = 6;
+        assert_eq!(settings.schema_version, 6);
+        assert_eq!(settings.theme, Theme::System);
+        assert_eq!(settings.density, Density::Normal);
+        assert_eq!(settings.poll_interval_ms, 250);
+        assert_eq!(settings.hardware_view_mode, HardwareViewMode::Tree);
+        assert!(!settings.reduced_motion);
+        assert_eq!(settings.default_history_range, HistoryRange::Min5);
+        assert_eq!(
+            settings.process_sort_column,
+            crate::components::table::SortColumn::Memory
+        );
+        assert!(!settings.process_sort_descending);
+        assert!(settings.process_columns.show_io_read);
+        assert!(settings.process_columns.show_gpu);
+        assert_eq!(settings.resource_graphs, [true; 6]);
+        assert_eq!(settings.performance_range, HistoryRange::Sec60);
+
+        let v4_json = r#"{
+            "schema_version": 4,
+            "theme": "Light",
+            "density": "Normal",
+            "poll_interval_ms": 100
+        }"#;
+        let mut settings_v4: UserSettings = serde_json::from_str(v4_json).expect("v4 json parse");
+        settings_v4.schema_version = 6;
+        assert_eq!(settings_v4.schema_version, 6);
+        assert_eq!(settings_v4.theme, Theme::System);
+        assert_eq!(settings_v4.poll_interval_ms, 100);
     }
 }

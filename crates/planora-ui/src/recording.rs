@@ -17,7 +17,7 @@ use std::{
     time::Duration,
 };
 
-const FORMAT_VERSION: u32 = 3;
+const FORMAT_VERSION: u32 = 4;
 const MAX_RECORDING_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_RECORDING_MS: u64 = 2 * 60 * 60 * 1_000;
 const MAX_LINE_BYTES: u64 = 8 * 1024 * 1024;
@@ -155,6 +155,7 @@ pub struct RecordingStatus {
 
 pub struct Recorder {
     tx: Option<SyncSender<RecordLine>>,
+    worker: Option<thread::JoinHandle<()>>,
     status: Arc<Mutex<RecordingStatus>>,
     dropped_pending: AtomicU64,
     last_sampled_at_ms: u64,
@@ -165,6 +166,7 @@ impl Default for Recorder {
     fn default() -> Self {
         Self {
             tx: None,
+            worker: None,
             status: Arc::new(Mutex::new(RecordingStatus::default())),
             dropped_pending: AtomicU64::new(0),
             last_sampled_at_ms: 0,
@@ -218,6 +220,7 @@ impl Recorder {
                 "recording already active",
             ));
         }
+        self.stop();
         let created_at_ms = planora_telemetry::unix_ms();
         let path = recordings_dir()?.join(format!("planora-{created_at_ms}.planora.jsonl"));
         let (tx, rx) = mpsc::sync_channel::<RecordLine>(64);
@@ -237,7 +240,7 @@ impl Recorder {
             dropped: 0,
             message: "Starting recording".into(),
         };
-        if let Err(error) = thread::Builder::new()
+        let worker = thread::Builder::new()
             .name("planora-recording".into())
             .spawn(move || {
                 let result = write_recording(&worker_path, header, rx, &status, created_at_ms);
@@ -247,11 +250,15 @@ impl Recorder {
                     Ok(()) => "Recording saved".into(),
                     Err(e) => format!("Recording stopped: {e}"),
                 };
-            })
-        {
-            self.status.lock().unwrap().active = false;
-            return Err(error);
-        }
+            });
+        let worker = match worker {
+            Ok(worker) => worker,
+            Err(error) => {
+                self.status.lock().unwrap().active = false;
+                return Err(error);
+            }
+        };
+        self.worker = Some(worker);
         self.tx = Some(tx);
         self.record_selected = record_selected;
         self.last_sampled_at_ms = 0;
@@ -259,8 +266,23 @@ impl Recorder {
         Ok(path)
     }
 
-    pub fn stop(&mut self) {
+    pub fn request_stop(&mut self) {
         self.tx = None;
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.worker.as_ref().is_none_or(|w| w.is_finished())
+    }
+
+    pub fn join(&mut self) {
+        self.request_stop();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+
+    pub fn stop(&mut self) {
+        self.join();
     }
 
     pub fn record(
@@ -352,6 +374,7 @@ enum ReplayMessage {
 #[derive(Default)]
 pub struct Replay {
     receiver: Option<Receiver<ReplayMessage>>,
+    worker: Option<thread::JoinHandle<()>>,
     stop: Arc<AtomicBool>,
     pub frame: Option<Arc<TelemetryFrame>>,
     pub topology: Option<Topology>,
@@ -366,6 +389,9 @@ impl Replay {
     pub fn stop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         self.receiver = None;
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
         self.frame = None;
         self.topology = None;
         self.path = None;
@@ -384,7 +410,7 @@ impl Replay {
         let stop = self.stop.clone();
         let (tx, rx) = mpsc::sync_channel(32);
         let source = path.clone();
-        thread::Builder::new()
+        let worker = thread::Builder::new()
             .name("planora-replay".into())
             .spawn(move || {
                 let result = read_recording(&source, &tx, &stop, &ctx);
@@ -394,6 +420,7 @@ impl Replay {
                 }));
                 ctx.request_repaint();
             })?;
+        self.worker = Some(worker);
         self.path = Some(path);
         self.receiver = Some(rx);
         self.message = "Opening recording".into();
@@ -495,7 +522,8 @@ fn read_recording(
                     }
                 }
                 previous_ms = Some(snapshot.sampled_at_ms);
-                let frame = (*snapshot).into_frame();
+                let mut frame = (*snapshot).into_frame();
+                frame.sanitize_provider_anomalies();
                 frame.validate().map_err(io::Error::other)?;
                 tx.send(ReplayMessage::Sample(Box::new(frame)))
                     .map_err(io::Error::other)?;
@@ -570,6 +598,57 @@ mod tests {
             matches!(&events[1], ReplayMessage::Sample(replayed) if replayed.sequence == frame.sequence)
         );
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn legacy_v2_and_v3_recordings_import_cleanly() {
+        let frame = crate::smoke_test::test_frame();
+        let sample = RecordedSnapshot::from_frame(&frame, None);
+
+        for version in [2, 3] {
+            let path = std::env::temp_dir().join(format!(
+                "planora-recording-v{}-{}-{}.jsonl",
+                version,
+                std::process::id(),
+                planora_telemetry::unix_ms()
+            ));
+            let mut file = File::create(&path).unwrap();
+            writeln!(
+                file,
+                "{}",
+                serde_json::to_string(&RecordLine::Header {
+                    format_version: version,
+                    created_at_ms: frame.sampled_at_ms,
+                    build_version: "test-legacy".into(),
+                    build_commit: "test-commit".into(),
+                    topology: Box::new(None),
+                })
+                .unwrap()
+            )
+            .unwrap();
+            writeln!(
+                file,
+                "{}",
+                serde_json::to_string(&RecordLine::Sample {
+                    snapshot: Box::new(sample.clone()),
+                    dropped_before: 0
+                })
+                .unwrap()
+            )
+            .unwrap();
+            drop(file);
+
+            let (tx, rx) = mpsc::sync_channel(8);
+            let ctx = egui::Context::default();
+            read_recording(&path, &tx, &AtomicBool::new(false), &ctx).unwrap();
+            let events: Vec<_> = rx.try_iter().collect();
+            assert_eq!(events.len(), 2);
+            assert!(matches!(events[0], ReplayMessage::Header(_)));
+            assert!(
+                matches!(&events[1], ReplayMessage::Sample(replayed) if replayed.sequence == frame.sequence)
+            );
+            fs::remove_file(path).unwrap();
+        }
     }
 
     #[test]

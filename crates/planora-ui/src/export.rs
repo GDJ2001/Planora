@@ -1,11 +1,16 @@
 use crate::components::table::{SortColumn, sort_processes};
 use crate::history::{HistoryRange, ResourceHistories, TimeSeries};
-use planora_core::{BenchmarkState, DiagnosticEntry, Metric, TelemetryFrame, Topology};
+use planora_core::{
+    BenchmarkState, DiagnosticEntry, Metric, SensorReading, TelemetryFrame, Topology,
+};
 use std::{
     fs::{self, OpenOptions},
     io::{self, BufWriter, Write},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
     time::Instant,
 };
@@ -20,6 +25,8 @@ pub struct ExportStatus {
 #[derive(Default)]
 pub struct ExportManager {
     status: Arc<Mutex<ExportStatus>>,
+    worker: Option<thread::JoinHandle<()>>,
+    cancel: Arc<AtomicBool>,
 }
 
 fn export_dir() -> io::Result<PathBuf> {
@@ -45,7 +52,7 @@ fn csv_metric<T: ToString>(metric: &Metric<T>) -> [String; 5] {
             .value
             .as_ref()
             .map_or_else(String::new, ToString::to_string),
-        metric.unit.clone(),
+        planora_core::canonicalize_unit(&metric.unit).to_string(),
         metric.source.clone(),
         metric.sampled_at_ms.to_string(),
         metric
@@ -73,7 +80,7 @@ impl ExportManager {
         &mut self,
         label: &str,
         extension: &str,
-        task: impl FnOnce(PathBuf) -> io::Result<()> + Send + 'static,
+        task: impl FnOnce(PathBuf, &AtomicBool) -> io::Result<()> + Send + 'static,
     ) -> io::Result<()> {
         if self.status.lock().unwrap().active {
             return Err(io::Error::new(
@@ -81,6 +88,10 @@ impl ExportManager {
                 "another export is running",
             ));
         }
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+        self.cancel.store(false, Ordering::Release);
         let path = export_dir()?.join(format!(
             "planora-{label}-{}.{}",
             planora_telemetry::unix_ms(),
@@ -92,22 +103,44 @@ impl ExportManager {
             path: Some(path.clone()),
         };
         let status = self.status.clone();
-        if let Err(error) = thread::Builder::new()
+        let cancel = self.cancel.clone();
+        let worker = thread::Builder::new()
             .name("planora-export".into())
             .spawn(move || {
-                let result = task(path);
+                let result = task(path.clone(), &cancel);
+                if result.is_err() {
+                    let _ = fs::remove_file(path);
+                }
                 let mut status = status.lock().unwrap();
                 status.active = false;
                 status.message = match result {
                     Ok(()) => "Export complete".into(),
                     Err(e) => format!("Export failed: {e}"),
                 };
-            })
-        {
-            self.status.lock().unwrap().active = false;
-            return Err(error);
-        }
+            });
+        self.worker = Some(match worker {
+            Ok(worker) => worker,
+            Err(error) => {
+                self.status.lock().unwrap().active = false;
+                return Err(error);
+            }
+        });
         Ok(())
+    }
+
+    pub fn request_cancel(&mut self) {
+        self.cancel.store(true, Ordering::Release);
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.worker.as_ref().is_none_or(|w| w.is_finished())
+    }
+
+    pub fn cancel(&mut self) {
+        self.request_cancel();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
     }
 
     pub fn processes(
@@ -117,7 +150,7 @@ impl ExportManager {
         sort: SortColumn,
         descending: bool,
     ) -> io::Result<()> {
-        self.start("processes", "csv", move |path| {
+        self.start("processes", "csv", move |path, cancel| {
             fs::create_dir_all(path.parent().unwrap())?;
             let mut writer =
                 BufWriter::new(OpenOptions::new().create_new(true).write(true).open(path)?);
@@ -148,6 +181,12 @@ impl ExportManager {
             }
             csv_line(&mut writer, &header)?;
             for p in sort_processes(&frame.processes, &query, sort, descending) {
+                if cancel.load(Ordering::Acquire) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "export cancelled",
+                    ));
+                }
                 let mut row = vec![
                     p.name.clone(),
                     p.identity.pid.to_string(),
@@ -173,7 +212,7 @@ impl ExportManager {
         ranges: [HistoryRange; 4],
         now: Instant,
     ) -> io::Result<()> {
-        self.start("charts", "csv", move |path| {
+        self.start("charts", "csv", move |path, cancel| {
             fs::create_dir_all(path.parent().unwrap())?;
             let mut writer =
                 BufWriter::new(OpenOptions::new().create_new(true).write(true).open(path)?);
@@ -192,12 +231,18 @@ impl ExportManager {
             let all: [(&str, &TimeSeries, &str, HistoryRange); 6] = [
                 ("CPU", &histories.cpu, "%", ranges[0]),
                 ("Memory", &histories.memory_pct, "%", ranges[1]),
-                ("Disk read", &histories.disk_read, "bytes/s", ranges[2]),
-                ("Disk write", &histories.disk_write, "bytes/s", ranges[2]),
-                ("Network receive", &histories.net_rx, "bytes/s", ranges[3]),
-                ("Network transmit", &histories.net_tx, "bytes/s", ranges[3]),
+                ("Disk read", &histories.disk_read, "B/s", ranges[2]),
+                ("Disk write", &histories.disk_write, "B/s", ranges[2]),
+                ("Network receive", &histories.net_rx, "B/s", ranges[3]),
+                ("Network transmit", &histories.net_tx, "B/s", ranges[3]),
             ];
             for (name, series, unit, range) in all {
+                if cancel.load(Ordering::Acquire) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "export cancelled",
+                    ));
+                }
                 let cutoff = now.checked_sub(range.duration()).unwrap_or(now);
                 for sample in &series.samples {
                     if sample.time < cutoff || sample.time > now {
@@ -224,12 +269,83 @@ impl ExportManager {
         })
     }
 
+    pub fn resource_series(
+        &mut self,
+        resource_label: String,
+        series_list: Vec<(String, TimeSeries, String)>,
+        range: HistoryRange,
+        now: Instant,
+    ) -> io::Result<()> {
+        let label = resource_label.to_lowercase().replace([' ', ':', '/'], "-");
+        self.start(&label, "csv", move |path, cancel| {
+            fs::create_dir_all(path.parent().unwrap())?;
+            let mut writer =
+                BufWriter::new(OpenOptions::new().create_new(true).write(true).open(path)?);
+            csv_line(
+                &mut writer,
+                &[
+                    "resource".into(),
+                    "series_name".into(),
+                    "aggregation_interval".into(),
+                    "timestamp_ms".into(),
+                    "value".into(),
+                    "minimum".into(),
+                    "maximum".into(),
+                    "unit".into(),
+                    "source".into(),
+                    "observation_count".into(),
+                    "unavailable_reason".into(),
+                ],
+            )?;
+            let cutoff = now.checked_sub(range.duration()).unwrap_or(now);
+            for (name, series, unit) in &series_list {
+                if cancel.load(Ordering::Acquire) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "export cancelled",
+                    ));
+                }
+                for sample in &series.samples {
+                    if sample.time < cutoff || sample.time > now {
+                        continue;
+                    }
+                    csv_line(
+                        &mut writer,
+                        &[
+                            resource_label.clone(),
+                            name.clone(),
+                            "1s".into(),
+                            sample.timestamp_ms.to_string(),
+                            sample.value.map_or_else(String::new, |v| v.to_string()),
+                            sample.minimum.map_or_else(String::new, |v| v.to_string()),
+                            sample.maximum.map_or_else(String::new, |v| v.to_string()),
+                            planora_core::canonicalize_unit(unit).to_string(),
+                            sample.source.clone(),
+                            sample.count.to_string(),
+                            sample
+                                .unavailable_reason
+                                .as_ref()
+                                .map_or_else(String::new, ToString::to_string),
+                        ],
+                    )?;
+                }
+            }
+            writer.flush()
+        })
+    }
+
     pub fn benchmark(
         &mut self,
         state: BenchmarkState,
         topology: Option<Topology>,
     ) -> io::Result<()> {
-        self.start("benchmark", "json", move |path| {
+        self.start("benchmark", "json", move |path, cancel| {
+            if cancel.load(Ordering::Acquire) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "export cancelled",
+                ));
+            }
             fs::create_dir_all(path.parent().unwrap())?;
             let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
             let document = serde_json::json!({
@@ -247,7 +363,13 @@ impl ExportManager {
     }
 
     pub fn diagnostics(&mut self, entries: Vec<DiagnosticEntry>) -> io::Result<()> {
-        self.start("diagnostics", "json", move |path| {
+        self.start("diagnostics", "json", move |path, cancel| {
+            if cancel.load(Ordering::Acquire) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "export cancelled",
+                ));
+            }
             fs::create_dir_all(path.parent().unwrap())?;
             let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
             let redacted: Vec<_> = entries
@@ -259,6 +381,86 @@ impl ExportManager {
                 })
                 .collect();
             serde_json::to_writer_pretty(&mut file, &redacted).map_err(io::Error::other)?;
+            file.sync_all()
+        })
+    }
+
+    pub fn sensors(&mut self, sensors: Vec<SensorReading>) -> io::Result<()> {
+        self.start("sensors", "csv", move |path, cancel| {
+            fs::create_dir_all(path.parent().unwrap())?;
+            let mut writer =
+                BufWriter::new(OpenOptions::new().create_new(true).write(true).open(path)?);
+            csv_line(
+                &mut writer,
+                &[
+                    "device_id".into(),
+                    "device_name".into(),
+                    "scope".into(),
+                    "sensor_id".into(),
+                    "sensor_name".into(),
+                    "sensor_type".into(),
+                    "value".into(),
+                    "unit".into(),
+                    "source".into(),
+                    "sampled_at_ms".into(),
+                    "unavailable_reason".into(),
+                ],
+            )?;
+            for s in &sensors {
+                if cancel.load(Ordering::Acquire) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "export cancelled",
+                    ));
+                }
+                csv_line(
+                    &mut writer,
+                    &[
+                        s.device_id.clone(),
+                        s.device_name.clone(),
+                        s.scope.clone(),
+                        s.id.clone(),
+                        s.name.clone(),
+                        format!("{:?}", s.sensor_type),
+                        s.value.value.map_or_else(String::new, |v| v.to_string()),
+                        planora_core::canonicalize_unit(&s.value.unit).to_string(),
+                        s.provider.clone(),
+                        s.value.sampled_at_ms.to_string(),
+                        s.value
+                            .unavailable_reason
+                            .as_ref()
+                            .map_or_else(String::new, ToString::to_string),
+                    ],
+                )?;
+            }
+            writer.flush()
+        })
+    }
+
+    pub fn snapshot_json(
+        &mut self,
+        frame: Arc<TelemetryFrame>,
+        sensors: Vec<SensorReading>,
+    ) -> io::Result<()> {
+        self.start("snapshot", "json", move |path, cancel| {
+            if cancel.load(Ordering::Acquire) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "export cancelled",
+                ));
+            }
+            fs::create_dir_all(path.parent().unwrap())?;
+            let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
+            let document = serde_json::json!({
+                "format_version": 1,
+                "application_version": crate::state::BUILD_INFO.version,
+                "source_commit": crate::state::BUILD_INFO.git_commit,
+                "target": crate::state::BUILD_INFO.target,
+                "captured_at_ms": planora_telemetry::unix_ms(),
+                "frame": &*frame,
+                "sensors": sensors,
+            });
+            serde_json::to_writer_pretty(&mut file, &document).map_err(io::Error::other)?;
             file.sync_all()
         })
     }

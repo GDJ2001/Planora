@@ -23,6 +23,22 @@ struct Guid {
     data4: [u8; 8],
 }
 
+// Values from the Windows SDK DXGI headers. Keep the interface identities in
+// one place; an incorrect IID makes CreateDXGIFactory1 return E_NOINTERFACE.
+const IID_IDXGI_FACTORY1: Guid = Guid {
+    data1: 0x770aae78,
+    data2: 0xf26f,
+    data3: 0x4dba,
+    data4: [0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0x87],
+};
+const IID_IDXGI_ADAPTER3: Guid = Guid {
+    data1: 0x645967a4,
+    data2: 0x1392,
+    data3: 0x4310,
+    data4: [0xa7, 0x98, 0x80, 0x53, 0xce, 0x3e, 0x93, 0xfd],
+};
+const DXGI_ADAPTER_FLAG_SOFTWARE: u32 = 0x2;
+
 #[repr(C)]
 struct Luid {
     low_part: u32,
@@ -54,6 +70,7 @@ struct DxgiQueryVideoMemoryInfo {
 #[derive(Clone, Debug)]
 pub struct DxgiAdapterInfo {
     pub luid: u64,
+    pub vendor_id: u32,
     pub name: String,
     pub dedicated_video_bytes: u64,
     pub _dedicated_system_bytes: u64,
@@ -65,8 +82,11 @@ pub struct DxgiAdapterInfo {
 pub fn query_dxgi_adapters() -> Vec<DxgiAdapterInfo> {
     let mut results = Vec::new();
     unsafe {
-        let dxgi =
-            windows_sys::Win32::System::LibraryLoader::LoadLibraryA(c"dxgi.dll".as_ptr().cast());
+        let dxgi = windows_sys::Win32::System::LibraryLoader::LoadLibraryExA(
+            c"dxgi.dll".as_ptr().cast(),
+            ptr::null_mut(),
+            windows_sys::Win32::System::LibraryLoader::LOAD_LIBRARY_SEARCH_SYSTEM32,
+        );
         if dxgi.is_null() {
             return results;
         }
@@ -82,14 +102,8 @@ pub fn query_dxgi_adapters() -> Vec<DxgiAdapterInfo> {
             unsafe extern "system" fn(*const Guid, *mut *mut std::ffi::c_void) -> i32;
         let create_factory: CreateFactoryFn = std::mem::transmute(create_factory);
 
-        let iid_factory1 = Guid {
-            data1: 0x770aae78,
-            data2: 0xf26f,
-            data3: 0x4dba,
-            data4: [0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0xee],
-        };
         let mut factory: *mut std::ffi::c_void = ptr::null_mut();
-        if create_factory(&iid_factory1, &mut factory) != 0 || factory.is_null() {
+        if create_factory(&IID_IDXGI_FACTORY1, &mut factory) != 0 || factory.is_null() {
             FreeLibrary(dxgi);
             return results;
         }
@@ -125,7 +139,7 @@ pub fn query_dxgi_adapters() -> Vec<DxgiAdapterInfo> {
             let release_adapter: ReleaseFn = std::mem::transmute(*adapter_vtbl.add(2));
 
             let mut desc = std::mem::zeroed::<DxgiAdapterDesc1>();
-            if get_desc1(adapter, &mut desc) == 0 {
+            if get_desc1(adapter, &mut desc) == 0 && desc.flags & DXGI_ADAPTER_FLAG_SOFTWARE == 0 {
                 let name_len = desc
                     .description
                     .iter()
@@ -138,14 +152,8 @@ pub fn query_dxgi_adapters() -> Vec<DxgiAdapterInfo> {
                 let mut budget_bytes = None;
                 let mut current_usage_bytes = None;
 
-                let iid_adapter3 = Guid {
-                    data1: 0x6459677d,
-                    data2: 0x49e2,
-                    data3: 0x486c,
-                    data4: [0xba, 0xa2, 0xdc, 0x52, 0x96, 0xcc, 0xbe, 0x9e],
-                };
                 let mut adapter3: *mut std::ffi::c_void = ptr::null_mut();
-                if query_interface(adapter, &iid_adapter3, &mut adapter3) == 0
+                if query_interface(adapter, &IID_IDXGI_ADAPTER3, &mut adapter3) == 0
                     && !adapter3.is_null()
                 {
                     let adapter3_vtbl = *(adapter3 as *mut *mut usize);
@@ -170,6 +178,7 @@ pub fn query_dxgi_adapters() -> Vec<DxgiAdapterInfo> {
 
                 results.push(DxgiAdapterInfo {
                     luid,
+                    vendor_id: desc.vendor_id,
                     name,
                     dedicated_video_bytes: desc.dedicated_video_memory as u64,
                     _dedicated_system_bytes: desc.dedicated_system_memory as u64,
@@ -186,17 +195,40 @@ pub fn query_dxgi_adapters() -> Vec<DxgiAdapterInfo> {
     results
 }
 
+pub fn has_pci_vendor_gpu(target_vendor_id: u32) -> bool {
+    query_dxgi_adapters()
+        .iter()
+        .any(|adapter| adapter.vendor_id == target_vendor_id)
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct PhysicalDiskPerf {
+    pub instance_name: String,
+    pub disk_index: Option<u32>,
+    pub drive_letters: Vec<String>,
+    pub read_bytes_per_sec: u64,
+    pub write_bytes_per_sec: u64,
+    pub latency_ms: Option<f32>,
+    pub queue_depth: Option<f32>,
+}
+
 pub struct WindowsGpu {
     query: usize,
-    engine_counter: usize,
+    engine_counter: Option<usize>,
     dedicated_mem_counter: Option<usize>,
     shared_mem_counter: Option<usize>,
+    disk_read_counter: Option<usize>,
+    disk_write_counter: Option<usize>,
     disk_latency_counter: Option<usize>,
     disk_queue_counter: Option<usize>,
+    sample_count: u64,
     last: Option<Instant>,
+    cached_stamp_ms: Option<u64>,
     cached_engines: Vec<GpuEngineSample>,
     cached_adapters: Vec<GpuAdapterSample>,
     cached_disk_metrics: HashMap<String, (Option<f32>, Option<f32>)>,
+    cached_physical_disks: Vec<PhysicalDiskPerf>,
+    cached_total_disk_io: (u64, u64),
     dxgi_adapters: Vec<DxgiAdapterInfo>,
     last_dxgi_refresh: Instant,
 }
@@ -380,34 +412,57 @@ impl WindowsGpu {
             return Err(format!("PdhOpenQueryW: 0x{status:08x}"));
         }
 
-        let engine_counter = add_counter(query, "\\GPU Engine(*)\\Utilization Percentage");
-        let Some(engine_counter) = engine_counter else {
-            unsafe { PdhCloseQuery(query) };
-            return Err("GPU Engine counter unavailable".into());
-        };
+        let engine_counter =
+            add_counter(query, "\\GPU Engine(*)\\Utilization Percentage").map(|c| c as usize);
+        let dedicated_mem =
+            add_counter(query, "\\GPU Adapter Memory(*)\\Dedicated Usage").map(|c| c as usize);
+        let shared_mem =
+            add_counter(query, "\\GPU Adapter Memory(*)\\Shared Usage").map(|c| c as usize);
+        let disk_read =
+            add_counter(query, "\\PhysicalDisk(*)\\Disk Read Bytes/sec").map(|c| c as usize);
+        let disk_write =
+            add_counter(query, "\\PhysicalDisk(*)\\Disk Write Bytes/sec").map(|c| c as usize);
+        let disk_latency =
+            add_counter(query, "\\PhysicalDisk(*)\\Avg. Disk sec/Transfer").map(|c| c as usize);
+        let disk_queue =
+            add_counter(query, "\\PhysicalDisk(*)\\Current Disk Queue Length").map(|c| c as usize);
 
-        let dedicated_mem = add_counter(query, "\\GPU Adapter Memory(*)\\Dedicated Usage");
-        let shared_mem = add_counter(query, "\\GPU Adapter Memory(*)\\Shared Usage");
-        let disk_latency = add_counter(query, "\\PhysicalDisk(*)\\Avg. Disk sec/Transfer");
-        let disk_queue = add_counter(query, "\\PhysicalDisk(*)\\Current Disk Queue Length");
+        if engine_counter.is_none()
+            && dedicated_mem.is_none()
+            && shared_mem.is_none()
+            && disk_read.is_none()
+            && disk_write.is_none()
+            && disk_latency.is_none()
+            && disk_queue.is_none()
+        {
+            unsafe { PdhCloseQuery(query) };
+            return Err("No Windows PDH GPU or PhysicalDisk counters available".into());
+        }
 
         let _ = unsafe { PdhCollectQueryData(query) };
+        let baseline_instant = Instant::now();
 
         let dxgi_adapters = query_dxgi_adapters();
 
         Ok(Self {
             query: query as usize,
-            engine_counter: engine_counter as usize,
-            dedicated_mem_counter: dedicated_mem.map(|c| c as usize),
-            shared_mem_counter: shared_mem.map(|c| c as usize),
-            disk_latency_counter: disk_latency.map(|c| c as usize),
-            disk_queue_counter: disk_queue.map(|c| c as usize),
-            last: None,
+            engine_counter,
+            dedicated_mem_counter: dedicated_mem,
+            shared_mem_counter: shared_mem,
+            disk_read_counter: disk_read,
+            disk_write_counter: disk_write,
+            disk_latency_counter: disk_latency,
+            disk_queue_counter: disk_queue,
+            sample_count: 1,
+            last: Some(baseline_instant),
+            cached_stamp_ms: None,
             cached_engines: Vec::new(),
             cached_adapters: Vec::new(),
             cached_disk_metrics: HashMap::new(),
+            cached_physical_disks: Vec::new(),
+            cached_total_disk_io: (0, 0),
             dxgi_adapters,
-            last_dxgi_refresh: Instant::now(),
+            last_dxgi_refresh: baseline_instant,
         })
     }
 
@@ -415,18 +470,29 @@ impl WindowsGpu {
         &mut self,
         stamp: u64,
     ) -> Result<(Vec<GpuAdapterSample>, Vec<GpuEngineSample>), String> {
-        if self
+        let within_min_interval = self
             .last
-            .is_some_and(|last| last.elapsed() < Duration::from_secs(1))
+            .is_some_and(|last| last.elapsed() < Duration::from_millis(50));
+        if within_min_interval
+            && (self.sample_count >= 2
+                || !self.cached_adapters.is_empty()
+                || !self.cached_physical_disks.is_empty())
         {
             return Ok((self.cached_adapters.clone(), self.cached_engines.clone()));
         }
 
-        let status = unsafe { PdhCollectQueryData(self.query as PDH_HQUERY) };
-        if status != 0 {
-            return Err(format!("PdhCollectQueryData: 0x{status:08x}"));
-        }
-        self.last = Some(Instant::now());
+        let is_primed = if within_min_interval {
+            false
+        } else {
+            let status = unsafe { PdhCollectQueryData(self.query as PDH_HQUERY) };
+            if status != 0 {
+                return Err(format!("PdhCollectQueryData: 0x{status:08x}"));
+            }
+            self.sample_count += 1;
+            self.last = Some(Instant::now());
+            self.sample_count >= 2
+        };
+        self.cached_stamp_ms = Some(stamp);
 
         // DXGI adapter identities can change after dock/undock, sleep or driver
         // restart. Re-enumeration is intentionally slower than PDH polling.
@@ -436,14 +502,32 @@ impl WindowsGpu {
         }
 
         // Sample GPU engines
-        let engine_items = query_counter_items(self.engine_counter as PDH_HCOUNTER);
+        let engine_items = self
+            .engine_counter
+            .map(|c| query_counter_items(c as PDH_HCOUNTER))
+            .unwrap_or_default();
         let mut engines = Vec::with_capacity(engine_items.len());
         for (name, value) in engine_items {
-            if !(0.0..=100.0).contains(&value) {
+            if !(0.0..=100.5).contains(&value) {
                 continue;
             }
             let Some(identity) = parse_instance(&name) else {
                 continue;
+            };
+            let util_metric = if is_primed {
+                Metric::available(
+                    value.clamp(0.0, 100.0) as f32,
+                    planora_core::UNIT_PERCENT,
+                    "Windows PDH GPU Engine",
+                    stamp,
+                )
+            } else {
+                Metric::unavailable(
+                    planora_core::UNIT_PERCENT,
+                    "Windows PDH GPU Engine",
+                    stamp,
+                    AvailabilityReason::WarmingUp,
+                )
             };
             engines.push(GpuEngineSample {
                 instance: name,
@@ -452,12 +536,7 @@ impl WindowsGpu {
                 physical_adapter: Some(identity.physical),
                 engine_id: Some(identity.engine),
                 process_pid: Some(identity.pid),
-                utilization_percent: Metric::available(
-                    value as f32,
-                    "%",
-                    "Windows PDH GPU Engine",
-                    stamp,
-                ),
+                utilization_percent: util_metric,
             });
         }
 
@@ -488,12 +567,39 @@ impl WindowsGpu {
         let mut adapters = Vec::new();
         for dxgi in &self.dxgi_adapters {
             let busiest = busiest_physical_engine(&engines, dxgi.luid).unwrap_or_else(|| {
-                Metric::unavailable(
-                    "%",
-                    "Windows PDH physical GPU engine",
-                    stamp,
-                    AvailabilityReason::WarmingUp,
-                )
+                if !self.has_gpu_engine_counter() {
+                    Metric::unavailable(
+                        planora_core::UNIT_PERCENT,
+                        "Windows PDH physical GPU engine",
+                        stamp,
+                        AvailabilityReason::Unsupported(
+                            "Windows PDH GPU Engine counter unavailable".into(),
+                        ),
+                    )
+                } else if !is_primed {
+                    Metric::unavailable(
+                        planora_core::UNIT_PERCENT,
+                        "Windows PDH physical GPU engine",
+                        stamp,
+                        AvailabilityReason::WarmingUp,
+                    )
+                } else if !engines.is_empty() {
+                    Metric::available(
+                        0.0,
+                        planora_core::UNIT_PERCENT,
+                        "Windows PDH physical GPU engine",
+                        stamp,
+                    )
+                } else {
+                    Metric::unavailable(
+                        planora_core::UNIT_PERCENT,
+                        "Windows PDH physical GPU engine",
+                        stamp,
+                        AvailabilityReason::Unsupported(
+                            "no PDH GPU engine instances reported".into(),
+                        ),
+                    )
+                }
             });
             let physical_ids: std::collections::HashSet<u32> = engines
                 .iter()
@@ -515,78 +621,201 @@ impl WindowsGpu {
             let physical_adapter = (physical_ids.len() == 1)
                 .then(|| physical_ids.iter().copied().next())
                 .flatten();
-            let dedicated_used = physical_adapter
-                .and_then(|physical| dedicated_map.get(&(dxgi.luid, physical)).copied())
-                .or(dxgi.current_usage_bytes);
-            let shared_used = physical_adapter
-                .and_then(|physical| shared_map.get(&(dxgi.luid, physical)).copied());
+            let dedicated_used_bytes = if dxgi.dedicated_video_bytes == 0 {
+                Metric::unavailable(
+                    planora_core::UNIT_BYTES,
+                    "DXGI Adapter Desc",
+                    stamp,
+                    AvailabilityReason::Unsupported(
+                        "Dedicated VRAM not applicable on unified memory architecture".into(),
+                    ),
+                )
+            } else {
+                match physical_adapter
+                    .and_then(|physical| dedicated_map.get(&(dxgi.luid, physical)).copied())
+                    .or(dxgi.current_usage_bytes)
+                    .map(|u| u.min(dxgi.dedicated_video_bytes))
+                {
+                    Some(v) => Metric::available(
+                        v,
+                        planora_core::UNIT_BYTES,
+                        "Windows PDH GPU Adapter Memory",
+                        stamp,
+                    ),
+                    None => Metric::unavailable(
+                        planora_core::UNIT_BYTES,
+                        "Windows PDH GPU Adapter Memory",
+                        stamp,
+                        AvailabilityReason::WarmingUp,
+                    ),
+                }
+            };
+            let shared_used_bytes = if dxgi.shared_system_bytes == 0 {
+                Metric::unavailable(
+                    planora_core::UNIT_BYTES,
+                    "DXGI Adapter Desc",
+                    stamp,
+                    AvailabilityReason::Unsupported(
+                        "Shared GPU memory not reported by adapter".into(),
+                    ),
+                )
+            } else {
+                match physical_adapter
+                    .and_then(|physical| shared_map.get(&(dxgi.luid, physical)).copied())
+                    .map(|u| u.min(dxgi.shared_system_bytes))
+                {
+                    Some(v) => Metric::available(
+                        v,
+                        planora_core::UNIT_BYTES,
+                        "Windows PDH GPU Adapter Memory",
+                        stamp,
+                    ),
+                    None => Metric::unavailable(
+                        planora_core::UNIT_BYTES,
+                        "Windows PDH GPU Adapter Memory",
+                        stamp,
+                        AvailabilityReason::WarmingUp,
+                    ),
+                }
+            };
 
             adapters.push(GpuAdapterSample {
                 adapter_luid: dxgi.luid,
                 physical_adapter,
                 name: dxgi.name.clone(),
                 busiest_engine_percent: busiest,
-                dedicated_used_bytes: match dedicated_used {
-                    Some(v) => {
-                        Metric::available(v, "bytes", "Windows PDH GPU Adapter Memory", stamp)
-                    }
-                    None => Metric::unavailable(
-                        "bytes",
-                        "Windows PDH GPU Adapter Memory",
-                        stamp,
-                        AvailabilityReason::WarmingUp,
-                    ),
-                },
+                dedicated_used_bytes,
                 dedicated_total_bytes: Metric::available(
                     dxgi.dedicated_video_bytes,
-                    "bytes",
+                    planora_core::UNIT_BYTES,
                     "DXGI Adapter Desc",
                     stamp,
                 ),
-                shared_used_bytes: match shared_used {
-                    Some(v) => {
-                        Metric::available(v, "bytes", "Windows PDH GPU Adapter Memory", stamp)
-                    }
-                    None => Metric::unavailable(
-                        "bytes",
-                        "Windows PDH GPU Adapter Memory",
-                        stamp,
-                        AvailabilityReason::WarmingUp,
-                    ),
-                },
+                shared_used_bytes,
                 shared_total_bytes: Metric::available(
                     dxgi.shared_system_bytes,
-                    "bytes",
+                    planora_core::UNIT_BYTES,
                     "DXGI Adapter Desc",
                     stamp,
                 ),
-                budget_bytes: dxgi
-                    .budget_bytes
-                    .map(|b| Metric::available(b, "bytes", "DXGI QueryVideoMemoryInfo", stamp)),
+                budget_bytes: dxgi.budget_bytes.map(|b| {
+                    Metric::available(
+                        b,
+                        planora_core::UNIT_BYTES,
+                        "DXGI QueryVideoMemoryInfo",
+                        stamp,
+                    )
+                }),
             });
         }
 
-        // Sample disk metrics (latency in seconds converted to ms, queue depth)
-        let mut disk_metrics = HashMap::new();
-        let latency_items = self
-            .disk_latency_counter
-            .map(|c| query_counter_items(c as PDH_HCOUNTER))
-            .unwrap_or_default();
+        // Sample physical disk performance (throughput, latency, queue depth)
+        let read_items = if is_primed {
+            self.disk_read_counter
+                .map(|c| query_counter_items(c as PDH_HCOUNTER))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let write_items = if is_primed {
+            self.disk_write_counter
+                .map(|c| query_counter_items(c as PDH_HCOUNTER))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let latency_items = if is_primed {
+            self.disk_latency_counter
+                .map(|c| query_counter_items(c as PDH_HCOUNTER))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let queue_items = self
             .disk_queue_counter
             .map(|c| query_counter_items(c as PDH_HCOUNTER))
             .unwrap_or_default();
 
-        for (name, val) in latency_items {
-            if val >= 0.0 {
-                disk_metrics.entry(name).or_insert((None, None)).0 = Some((val * 1000.0) as f32);
+        let mut read_map: HashMap<String, u64> = HashMap::new();
+        for (name, val) in read_items {
+            read_map.insert(name, val.max(0.0) as u64);
+        }
+        let mut write_map: HashMap<String, u64> = HashMap::new();
+        for (name, val) in write_items {
+            write_map.insert(name, val.max(0.0) as u64);
+        }
+
+        let total_read = read_map.get("_Total").copied().unwrap_or_else(|| {
+            read_map
+                .iter()
+                .filter(|(k, _)| k.as_str() != "_Total")
+                .map(|(_, v)| *v)
+                .fold(0u64, u64::saturating_add)
+        });
+        let total_write = write_map.get("_Total").copied().unwrap_or_else(|| {
+            write_map
+                .iter()
+                .filter(|(k, _)| k.as_str() != "_Total")
+                .map(|(_, v)| *v)
+                .fold(0u64, u64::saturating_add)
+        });
+        self.cached_total_disk_io = (total_read, total_write);
+
+        let mut all_instances = std::collections::BTreeSet::new();
+        for k in read_map.keys().chain(write_map.keys()) {
+            if k != "_Total" {
+                all_instances.insert(k.clone());
             }
         }
-        for (name, val) in queue_items {
-            if val >= 0.0 {
-                disk_metrics.entry(name).or_insert((None, None)).1 = Some(val as f32);
+        for (k, _) in &latency_items {
+            if k != "_Total" {
+                all_instances.insert(k.clone());
             }
         }
+        for (k, _) in &queue_items {
+            if k != "_Total" {
+                all_instances.insert(k.clone());
+            }
+        }
+
+        let mut physical_disks = Vec::new();
+        let mut disk_metrics = HashMap::new();
+        for inst in all_instances {
+            let mut parts = inst.split_whitespace();
+            let disk_index = parts.next().and_then(|p| p.parse::<u32>().ok());
+            let drive_letters: Vec<String> = parts.map(|s| s.to_string()).collect();
+
+            let r_bytes = read_map.get(&inst).copied().unwrap_or(0);
+            let w_bytes = write_map.get(&inst).copied().unwrap_or(0);
+            let lat = if is_primed {
+                latency_items
+                    .iter()
+                    .find(|(n, _)| n == &inst)
+                    .map(|(_, v)| (v * 1000.0) as f32)
+                    .filter(|v| v.is_finite() && *v >= 0.0)
+            } else {
+                None
+            };
+            let qd = queue_items
+                .iter()
+                .find(|(n, _)| n == &inst)
+                .map(|(_, v)| *v as f32)
+                .filter(|v| v.is_finite() && *v >= 0.0);
+
+            disk_metrics.insert(inst.clone(), (lat, qd));
+
+            physical_disks.push(PhysicalDiskPerf {
+                instance_name: inst,
+                disk_index,
+                drive_letters,
+                read_bytes_per_sec: r_bytes,
+                write_bytes_per_sec: w_bytes,
+                latency_ms: lat,
+                queue_depth: qd,
+            });
+        }
+        physical_disks.sort_by_key(|d| d.disk_index.unwrap_or(u32::MAX));
+        self.cached_physical_disks = physical_disks;
         self.cached_disk_metrics = disk_metrics;
 
         self.cached_engines = engines.clone();
@@ -596,6 +825,30 @@ impl WindowsGpu {
 
     pub fn disk_metrics(&self) -> &HashMap<String, (Option<f32>, Option<f32>)> {
         &self.cached_disk_metrics
+    }
+
+    pub fn physical_disks(&self) -> &[PhysicalDiskPerf] {
+        &self.cached_physical_disks
+    }
+
+    pub fn total_disk_io(&self) -> (u64, u64) {
+        self.cached_total_disk_io
+    }
+
+    pub fn is_primed(&self) -> bool {
+        self.sample_count >= 2
+    }
+
+    pub fn has_gpu_engine_counter(&self) -> bool {
+        self.engine_counter.is_some()
+    }
+
+    pub fn has_disk_latency_counter(&self) -> bool {
+        self.disk_latency_counter.is_some()
+    }
+
+    pub fn last_stamp_ms(&self) -> Option<u64> {
+        self.cached_stamp_ms
     }
 }
 
@@ -608,7 +861,7 @@ impl Drop for WindowsGpu {
 }
 
 pub fn counter_available() -> bool {
-    WindowsGpu::new().is_ok()
+    WindowsGpu::new().is_ok_and(|g| g.has_gpu_engine_counter())
 }
 
 #[cfg(test)]
@@ -676,10 +929,40 @@ mod tests {
     }
 
     #[test]
-    fn dxgi_adapter_enumeration_finds_adapters_without_panics() {
+    fn dxgi_factory_interface_id_is_accepted_by_windows() {
+        unsafe {
+            let dxgi = windows_sys::Win32::System::LibraryLoader::LoadLibraryExA(
+                c"dxgi.dll".as_ptr().cast(),
+                ptr::null_mut(),
+                windows_sys::Win32::System::LibraryLoader::LOAD_LIBRARY_SEARCH_SYSTEM32,
+            );
+            assert!(!dxgi.is_null());
+            let create_factory_ptr = windows_sys::Win32::System::LibraryLoader::GetProcAddress(
+                dxgi,
+                c"CreateDXGIFactory1".as_ptr().cast(),
+            );
+            let create_factory: unsafe extern "system" fn(
+                *const Guid,
+                *mut *mut std::ffi::c_void,
+            ) -> i32 = std::mem::transmute(create_factory_ptr.expect("CreateDXGIFactory1"));
+            let mut factory = ptr::null_mut();
+            let status = create_factory(&IID_IDXGI_FACTORY1, &mut factory);
+            assert_eq!(status, 0, "CreateDXGIFactory1: 0x{status:08x}");
+            assert!(!factory.is_null());
+            let vtable = *(factory as *mut *mut usize);
+            let release: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32 =
+                std::mem::transmute(*vtable.add(2));
+            release(factory);
+            FreeLibrary(dxgi);
+        }
+    }
+
+    #[test]
+    fn dxgi_adapter_enumeration_finds_named_hardware_adapters() {
         let adapters = query_dxgi_adapters();
         for adapter in adapters {
             assert!(!adapter.name.is_empty());
+            assert_ne!(adapter.name, "Microsoft Basic Render Driver");
         }
     }
 
