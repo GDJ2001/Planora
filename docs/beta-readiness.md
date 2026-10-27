@@ -1,3 +1,7 @@
+# Latest layout update: 0.3.0-beta.29
+
+The Overview containment update is documented in [beta.29 evidence](release-evidence-0.3.0-beta.29.md). Local workspace tests, formatting and strict Clippy pass. Native fixture review is distinct from installed-system acceptance. The matrix below is the historical beta.23 feature baseline; it is not a claim that every item was reverified for beta.29.
+
 # Planora 0.3.0-beta.23 capability and verification matrix
 
 **Status: 0.3.0-beta.23 consolidates all repository feature, security, and performance branches onto `main` as the unified development foundation.** Previously, beta.20 was installed and live-verified on the reference Windows PC (`7af6698`, protocol v5), and beta.22 (`6e1031d`, MSI `0.2.1022`) delivered full-card interactive resource selection and conventional CPU time-series rendering (see [beta.22 record](release-evidence-0.3.0-beta.22.md), [beta.20 record](release-evidence-0.3.0-beta.20.md), [beta.19 record](release-evidence-0.3.0-beta.19.md), and [beta.18 UI audit](release-evidence-0.3.0-beta.18.md)). Beta.23 adds end-to-end sensor input accuracy, physical plausibility contracts (`sanitize_provider_anomalies()` + `validate()`), Windows `\PhysicalDisk(*)` latency/queue/throughput telemetry, hardware-only `GetIfTable2` network aggregation, exact Intel IGCL / NVIDIA NVML x64 C ABI layouts, multi-device sensor history isolation, 1-second stabilized UI rate alignment, and cross-platform CI build hygiene. Earlier release records remain historical observations.

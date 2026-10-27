@@ -138,7 +138,14 @@ fn show_page_scroll<R>(
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::scroll_area::ScrollAreaOutput<R> {
     let available_w = ui.available_width().max(1.0);
-    egui::ScrollArea::vertical()
+    let mut scroll = egui::ScrollArea::vertical();
+    if let Some(offset) = ui
+        .ctx()
+        .data(|d| d.get_temp::<f32>(egui::Id::unique("fixture_scroll_y")))
+    {
+        scroll = scroll.vertical_scroll_offset(offset);
+    }
+    scroll
         .id_salt(id_salt)
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -1704,6 +1711,9 @@ fn main() -> eframe::Result<()> {
     let native_fixture = args.iter().any(|arg| arg == "--native-fixture");
     let fixture_tables_only = args.iter().any(|arg| arg == "--tables-only");
     let mut fixture_resource = None;
+    let mut fixture_scale = None;
+    let mut fixture_text_scale = None;
+    let mut fixture_scroll = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -1751,6 +1761,28 @@ fn main() -> eframe::Result<()> {
             }
             "--screenshot-out" if i + 1 < args.len() => {
                 screenshot_out = Some(std::path::PathBuf::from(&args[i + 1]));
+                i += 2;
+            }
+            "--fixture-scale" | "--fixture-text-scale" | "--fixture-scroll"
+                if i + 1 < args.len() =>
+            {
+                if let Ok(value) = args[i + 1].parse::<f32>()
+                    && value.is_finite()
+                    && native_fixture
+                {
+                    match args[i].as_str() {
+                        "--fixture-scale" if (1.0..=2.0).contains(&value) => {
+                            fixture_scale = Some(value)
+                        }
+                        "--fixture-text-scale" if (1.0..=2.0).contains(&value) => {
+                            fixture_text_scale = Some(value)
+                        }
+                        "--fixture-scroll" if (0.0..=10000.0).contains(&value) => {
+                            fixture_scroll = Some(value)
+                        }
+                        _ => {}
+                    }
+                }
                 i += 2;
             }
             "--resource" if i + 1 < args.len() => {
@@ -1876,6 +1908,24 @@ fn main() -> eframe::Result<()> {
                 && let Some(th) = initial_theme
             {
                 app.settings.theme = th;
+            }
+            if native_fixture {
+                if let Some(text_scale) = fixture_text_scale {
+                    app.appearance
+                        .set_fixture_snapshot(appearance::SystemAppearance {
+                            text_scale,
+                            ..Default::default()
+                        });
+                }
+                app.apply_theme(&cc.egui_ctx);
+                if let Some(scale) = fixture_scale {
+                    cc.egui_ctx.set_pixels_per_point(scale);
+                }
+                if let Some(offset) = fixture_scroll {
+                    cc.egui_ctx.data_mut(|data| {
+                        data.insert_temp(egui::Id::unique("fixture_scroll_y"), offset)
+                    });
+                }
             }
             if let Some(ms) = auto_close_ms {
                 app.auto_close = Some((Instant::now(), std::time::Duration::from_millis(ms)));
@@ -2172,7 +2222,7 @@ mod tests {
             output.textures_delta.clear();
         }
         app.appearance
-            .set_test_snapshot(appearance::SystemAppearance {
+            .set_fixture_snapshot(appearance::SystemAppearance {
                 text_scale: 1.5,
                 animations: false,
                 contrast: Some((Color32::WHITE, Color32::BLACK)),

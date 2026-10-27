@@ -5,6 +5,44 @@ use crate::{
 };
 use eframe::egui::{self, Vec2};
 
+fn header_text(ui: &mut egui::Ui, title: &str, subtitle: &str, p: Palette) {
+    ui.add(egui::Label::new(egui::RichText::new(title).heading()).wrap());
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(subtitle)
+                .color(p.secondary)
+                .size(12.0 * crate::appearance::text_scale(ui.ctx())),
+        )
+        .wrap(),
+    );
+}
+
+fn header_controls(
+    ui: &mut egui::Ui,
+    state: &AppState,
+    pause: &mut DisplayPause,
+    interval: u64,
+    p: Palette,
+) {
+    ui.horizontal_wrapped(|ui| {
+        ui.label(
+            egui::RichText::new(format!("{interval} ms"))
+                .color(p.secondary)
+                .monospace(),
+        );
+        if ui
+            .add_enabled(
+                *state != AppState::Replay,
+                egui::Button::new(if pause.is_paused { "Resume" } else { "Pause" }),
+            )
+            .clicked()
+        {
+            pause.is_paused = !pause.is_paused;
+        }
+        render_status_badge(ui, state, pause.is_paused, p);
+    });
+}
+
 pub fn render_page_header(
     ui: &mut egui::Ui,
     title: &str,
@@ -14,61 +52,32 @@ pub fn render_page_header(
     poll_interval_ms: u64,
     p: Palette,
 ) {
-    ui.horizontal(|ui| {
-        let text_scale = crate::appearance::text_scale(ui.ctx()).max(1.0);
-        let right_width = 260.0 * text_scale;
-        let left_width = (ui.available_width() - right_width - 12.0).max(60.0);
-
-        ui.allocate_ui_with_layout(
-            Vec2::new(left_width, ui.available_height()),
-            egui::Layout::top_down(egui::Align::LEFT),
-            |ui| {
-                ui.set_max_width(left_width);
-                ui.add_space(2.0);
-                ui.add(egui::Label::new(egui::RichText::new(title).heading()).truncate());
-                ui.add_space(2.0);
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(subtitle)
-                            .color(p.secondary)
-                            .size(12.0 * text_scale),
-                    )
-                    .truncate(),
-                );
-            },
-        );
-
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-
-            // Status badge (rightmost)
-            render_status_badge(ui, app_state, pause_state.is_paused, p);
-
-            // Pause / Resume toggle button
-            let pause_btn_text = if pause_state.is_paused {
-                "Resume"
-            } else {
-                "Pause"
-            };
-            if ui
-                .add_enabled(
-                    *app_state != AppState::Replay,
-                    egui::Button::new(pause_btn_text),
-                )
-                .clicked()
-            {
-                pause_state.is_paused = !pause_state.is_paused;
-            }
-
-            ui.label(
-                egui::RichText::new(format!("{poll_interval_ms} ms"))
-                    .color(p.secondary)
-                    .monospace()
-                    .size(11.0 * crate::appearance::text_scale(ui.ctx())),
+    let scale = crate::appearance::text_scale(ui.ctx()).max(1.0);
+    let controls_width = 300.0 * scale;
+    let available = ui.available_width();
+    if available < controls_width + 300.0 * scale {
+        header_text(ui, title, subtitle, p);
+        header_controls(ui, app_state, pause_state, poll_interval_ms, p);
+    } else {
+        ui.horizontal_top(|ui| {
+            let left_width = available - controls_width - ui.spacing().item_spacing.x;
+            ui.allocate_ui_with_layout(
+                Vec2::new(left_width, 0.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_width(left_width);
+                    header_text(ui, title, subtitle, p);
+                },
+            );
+            ui.allocate_ui_with_layout(
+                Vec2::new(controls_width, 0.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    header_controls(ui, app_state, pause_state, poll_interval_ms, p);
+                },
             );
         });
-    });
-
+    }
     ui.add_space(10.0);
     ui.separator();
     ui.add_space(12.0);

@@ -51,8 +51,8 @@ impl AppearanceMonitor {
         *self.snapshot.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    #[cfg(test)]
-    pub fn set_test_snapshot(&self, value: SystemAppearance) {
+    // Only used by isolated fixtures; normal windows read Windows settings.
+    pub fn set_fixture_snapshot(&self, value: SystemAppearance) {
         *self.snapshot.lock().unwrap() = value;
     }
 

@@ -89,23 +89,217 @@ fn summary_value(value: f32, unit: &str) -> String {
     }
 }
 
+const SUMMARY_HEADINGS: [&str; 6] = ["Resource", "Now", "Average", "Low", "Peak", "Coverage"];
+
+struct SummaryDisplay {
+    label: String,
+    values: [String; 5],
+    hints: [String; 5],
+    detail: String,
+    color: Color32,
+}
+
+fn summary_display(
+    rows: &[SummaryRow<'_>],
+    range: HistoryRange,
+    now: Instant,
+) -> Vec<SummaryDisplay> {
+    rows.iter().map(|row| {
+        let summary = row.series.observed_summary(now, range);
+        let mut values = [row.current.clone(), "—".into(), "—".into(), "—".into(), "Collecting".into()];
+        if let Some(s) = summary {
+            values[1] = summary_value(s.average, row.unit);
+            values[2] = summary_value(s.minimum, row.unit);
+            values[3] = summary_value(s.maximum, row.unit);
+            values[4] = format!("{}/{} seconds · {:.0}%", s.observed_seconds, s.expected_seconds, s.coverage_percent());
+        }
+        SummaryDisplay {
+            label: row.label.into(),
+            values,
+            hints: [
+                row.reason.clone().unwrap_or_else(|| "Latest measured value".into()),
+                "Average of observed samples".into(),
+                "Lowest observed value".into(),
+                "Highest observed value".into(),
+                "Observed time in the selected range. Missing intervals are excluded from statistics.".into(),
+            ],
+            detail: row.detail.clone().unwrap_or_else(|| row.label.into()),
+            color: row.color,
+        }
+    }).collect()
+}
+
+fn measured_width(ui: &egui::Ui, text: &str, monospace: bool) -> f32 {
+    let style = if monospace {
+        egui::TextStyle::Monospace
+    } else {
+        egui::TextStyle::Body
+    };
+    ui.painter()
+        .layout_no_wrap(
+            text.into(),
+            style.resolve(ui.style()),
+            ui.visuals().text_color(),
+        )
+        .size()
+        .x
+        .ceil()
+}
+
+fn summary_column_widths(
+    ui: &egui::Ui,
+    rows: &[SummaryDisplay],
+    available: f32,
+) -> Option<[f32; 6]> {
+    // Each cell includes its own 12-point gutter. Measure the same fonts used to
+    // render values: fixed percentage widths can silently truncate byte rates.
+    let mut widths = std::array::from_fn(|i| measured_width(ui, SUMMARY_HEADINGS[i], false) + 12.0);
+    for row in rows {
+        widths[0] = widths[0].max(measured_width(ui, &row.label, false) + 12.0);
+        for (i, value) in row.values.iter().enumerate() {
+            widths[i + 1] = widths[i + 1].max(measured_width(ui, value, true) + 12.0);
+        }
+    }
+    let minimum: f32 = widths.iter().sum();
+    if minimum > available {
+        return None;
+    }
+    let spare = (available - minimum) / 6.0;
+    for width in &mut widths {
+        *width += spare;
+    }
+    Some(widths)
+}
+
 fn summary_cell(
     ui: &mut egui::Ui,
     width: f32,
-    height: f32,
     text: egui::RichText,
-    align: Align,
+    right: bool,
 ) -> egui::Response {
-    let layout = if align == Align::RIGHT {
-        egui::Layout::right_to_left(Align::Center)
+    let height = ui.text_style_height(&egui::TextStyle::Body).max(24.0) + 8.0;
+    // Reserve the full column even when the label is short. An allocating
+    // child layout may shrink to its content and shift all later columns.
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::hover());
+    let mut cell = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect.shrink2(Vec2::new(6.0, 0.0)))
+            .layout(if right {
+                egui::Layout::right_to_left(Align::Center)
+            } else {
+                egui::Layout::left_to_right(Align::Center)
+            }),
+    );
+    cell.add(egui::Label::new(text))
+}
+
+fn render_summary_display(ui: &mut egui::Ui, rows: &[SummaryDisplay], p: Palette) {
+    let available = ui.available_width();
+    if let Some(widths) = summary_column_widths(ui, rows, available) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            for (i, heading) in SUMMARY_HEADINGS.iter().enumerate() {
+                summary_cell(
+                    ui,
+                    widths[i],
+                    egui::RichText::new(*heading).color(p.secondary),
+                    i > 0,
+                );
+            }
+        });
+        ui.separator();
+        for (index, row) in rows.iter().enumerate() {
+            egui::Frame::NONE
+                .fill(if index % 2 == 0 {
+                    ui.visuals().faint_bg_color
+                } else {
+                    Color32::TRANSPARENT
+                })
+                .corner_radius(4)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        summary_cell(
+                            ui,
+                            widths[0],
+                            egui::RichText::new(&row.label).color(row.color),
+                            false,
+                        )
+                        .on_hover_text(&row.detail);
+                        for (i, value) in row.values.iter().enumerate() {
+                            summary_cell(
+                                ui,
+                                widths[i + 1],
+                                egui::RichText::new(value).monospace(),
+                                true,
+                            )
+                            .on_hover_text(&row.hints[i]);
+                        }
+                    });
+                });
+        }
     } else {
-        egui::Layout::left_to_right(Align::Center)
-    };
-    ui.allocate_ui_with_layout(Vec2::new(width, height), layout, |ui| {
-        ui.set_max_width(width);
-        ui.add(egui::Label::new(text).truncate())
-    })
-    .inner
+        // A compact summary is a list of complete records, never a clipped
+        // table or a horizontally scrolling page.
+        for row in rows {
+            egui::Frame::NONE
+                .fill(ui.visuals().faint_bg_color)
+                .corner_radius(6)
+                .inner_margin(10)
+                .show(ui, |ui| {
+                    ui.set_width((available - 20.0).max(1.0));
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(&row.label).color(row.color).strong())
+                            .wrap(),
+                    )
+                    .on_hover_text(&row.detail);
+                    ui.add_space(4.0);
+                    let min_field = row
+                        .values
+                        .iter()
+                        .enumerate()
+                        .map(|(i, value)| {
+                            measured_width(ui, value, true).max(measured_width(
+                                ui,
+                                SUMMARY_HEADINGS[i + 1],
+                                false,
+                            ))
+                        })
+                        .fold(0.0f32, f32::max);
+                    let columns =
+                        if 2.0 * min_field + ui.spacing().item_spacing.x <= ui.available_width() {
+                            2
+                        } else {
+                            1
+                        };
+                    for start in (0..5).step_by(columns) {
+                        ui.columns(columns, |cols| {
+                            for (offset, col) in cols.iter_mut().enumerate() {
+                                let i = start + offset;
+                                if i >= 5 {
+                                    break;
+                                }
+                                col.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(SUMMARY_HEADINGS[i + 1])
+                                            .color(p.secondary),
+                                    )
+                                    .wrap(),
+                                );
+                                col.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&row.values[i]).monospace(),
+                                    )
+                                    .wrap(),
+                                )
+                                .on_hover_text(&row.hints[i]);
+                            }
+                        });
+                    }
+                });
+            ui.add_space(6.0);
+        }
+    }
 }
 
 fn summary_table(
@@ -115,144 +309,7 @@ fn summary_table(
     now: Instant,
     p: Palette,
 ) {
-    let text_scale = crate::appearance::text_scale(ui.ctx()).max(1.0);
-    let min_table_width = 560.0 * text_scale;
-    let available_w = ui.available_width();
-    let table_width = available_w.max(min_table_width);
-
-    let render_table_content = |ui: &mut egui::Ui| {
-        ui.set_min_width(table_width);
-        ui.set_max_width(table_width);
-        let content_width = (table_width - 8.0).max(100.0);
-        let widths = [
-            (content_width * 0.22).floor(),
-            (content_width * 0.16).floor(),
-            (content_width * 0.15).floor(),
-            (content_width * 0.15).floor(),
-            (content_width * 0.15).floor(),
-            (content_width * 0.17).floor(),
-        ];
-        let headings = ["RESOURCE", "NOW", "AVERAGE", "LOW", "PEAK", "COVERAGE"];
-        egui::Frame::NONE
-            .inner_margin(egui::Margin::symmetric(4, 4))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    for (index, (heading, width)) in headings.iter().zip(widths).enumerate() {
-                        let align = if index == 0 {
-                            Align::LEFT
-                        } else {
-                            Align::RIGHT
-                        };
-                        summary_cell(
-                            ui,
-                            width,
-                            24.0,
-                            egui::RichText::new(*heading)
-                                .small()
-                                .color(ui.visuals().weak_text_color()),
-                            align,
-                        );
-                    }
-                });
-            });
-        ui.separator();
-
-        for (index, row) in rows.iter().enumerate() {
-            let summary = row.series.observed_summary(now, range);
-            let values = summary.map(|summary| {
-                [
-                    summary_value(summary.average, row.unit),
-                    summary_value(summary.minimum, row.unit),
-                    summary_value(summary.maximum, row.unit),
-                ]
-            });
-            egui::Frame::NONE
-                .fill(if index % 2 == 0 {
-                    ui.visuals().faint_bg_color
-                } else {
-                    egui::Color32::TRANSPARENT
-                })
-                .corner_radius(CornerRadius::same(4))
-                .inner_margin(egui::Margin::symmetric(4, 3))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 0.0;
-                        summary_cell(
-                            ui,
-                            widths[0],
-                            30.0,
-                            egui::RichText::new(row.label).color(row.color),
-                            Align::LEFT,
-                        )
-                        .on_hover_text(row.detail.as_deref().unwrap_or(row.label));
-
-                        summary_cell(
-                            ui,
-                            widths[1],
-                            30.0,
-                            egui::RichText::new(&row.current).strong().monospace(),
-                            Align::RIGHT,
-                        )
-                        .on_hover_text(row.reason.as_deref().unwrap_or("Latest measured value"));
-
-                        for (column, width) in widths[2..5].iter().enumerate() {
-                            summary_cell(
-                                ui,
-                                *width,
-                                30.0,
-                                egui::RichText::new(
-                                    values.as_ref().map_or("—", |values| values[column].as_str()),
-                                )
-                                .monospace(),
-                                Align::RIGHT,
-                            );
-                        }
-
-                        if let Some(summary) = summary {
-                            let coverage_detail = format!(
-                                "{} of {} seconds observed. Missing intervals are excluded from the statistics.",
-                                summary.observed_seconds, summary.expected_seconds
-                            );
-                            let cov_str = format!(
-                                "{:.0}% ({}/{}s)",
-                                summary.coverage_percent(),
-                                summary.observed_seconds,
-                                summary.expected_seconds
-                            );
-                            summary_cell(
-                                ui,
-                                widths[5],
-                                30.0,
-                                egui::RichText::new(cov_str).monospace().color(p.secondary),
-                                Align::RIGHT,
-                            )
-                            .on_hover_text(coverage_detail);
-                        } else {
-                            summary_cell(
-                                ui,
-                                widths[5],
-                                30.0,
-                                egui::RichText::new("Collecting").monospace().color(p.secondary),
-                                Align::RIGHT,
-                            )
-                            .on_hover_text("No valid observations in this range yet");
-                        }
-                    });
-                });
-        }
-    };
-
-    if available_w < min_table_width {
-        egui::ScrollArea::horizontal()
-            .id_salt("overview_resource_summary_scroll")
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                render_table_content(ui);
-            });
-    } else {
-        render_table_content(ui);
-    }
+    render_summary_display(ui, &summary_display(rows, range, now), p);
 }
 
 type CardItem<'a> = (
@@ -400,31 +457,55 @@ fn resource_cards(
     let available_width = ui.available_width();
     let text_scale = crate::appearance::text_scale(ui.ctx()).max(1.0);
     let columns = resource_card_columns(available_width, cards.len(), text_scale);
-    let card_h = (98.0 * text_scale + 40.0).round();
     for row in cards.chunks(columns) {
-        let col_count = row.len();
-        let total_spacing = 12.0 * (col_count - 1) as f32;
-        let card_w = ((available_width - total_spacing) / col_count as f32)
+        let card_w = ((available_width - 12.0 * (row.len() - 1) as f32) / row.len() as f32)
             .floor()
-            .max(120.0);
+            .max(1.0);
+        let inner_w = (card_w - 24.0).max(1.0);
+        let text: Vec<_> = row
+            .iter()
+            .map(|(title, _, value, _, color, subtitle)| {
+                [
+                    (*title, 14.0, *color),
+                    (value.as_str(), 22.0, p.text),
+                    (subtitle.as_str(), 12.0, p.secondary),
+                ]
+                .map(|(text, size, color)| {
+                    ui.painter().layout(
+                        text.into(),
+                        egui::FontId::proportional(size * text_scale),
+                        color,
+                        inner_w,
+                    )
+                })
+            })
+            .collect();
+        let card_h = text
+            .iter()
+            .map(|galleys| galleys.iter().map(|g| g.size().y).sum::<f32>())
+            .fold(0.0f32, f32::max)
+            + 24.0
+            + 12.0
+            + 36.0;
         ui.with_layout(egui::Layout::left_to_right(Align::Min), |ui| {
             ui.spacing_mut().item_spacing.x = 12.0;
-            for (title, target_resource, value, series, color, subtitle) in row {
+            for ((title, target_resource, value, series, color, subtitle), galleys) in
+                row.iter().zip(&text)
+            {
                 let (card_rect, response) =
                     ui.allocate_exact_size(Vec2::new(card_w, card_h), egui::Sense::click());
-                let card_rect = card_rect.round();
                 let response = response
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .on_hover_text(format!("Open {} in Performance", title));
-
+                    .on_hover_text(format!(
+                        "{title} — {value}\n{subtitle}\nOpen in Performance"
+                    ));
                 response.widget_info(|| {
                     egui::WidgetInfo::labeled(
                         egui::accesskit::Role::Button,
                         true,
-                        format!("{} - {}", title, value),
+                        format!("{title} — {value} — {subtitle}"),
                     )
                 });
-
                 let (fill, stroke) = overview_card_visuals(
                     response.hovered(),
                     response.is_pointer_button_down_on(),
@@ -432,7 +513,6 @@ fn resource_cards(
                     *color,
                     p,
                 );
-
                 ui.painter().rect(
                     card_rect,
                     CornerRadius::same(8),
@@ -440,81 +520,36 @@ fn resource_cards(
                     stroke,
                     egui::StrokeKind::Inside,
                 );
-
                 if response.has_focus() {
                     ui.painter().rect_stroke(
-                        card_rect.expand(1.0),
-                        CornerRadius::same(9),
+                        card_rect.shrink(2.0),
+                        CornerRadius::same(6),
                         Stroke::new(2.0, p.focus),
-                        egui::StrokeKind::Outside,
+                        egui::StrokeKind::Inside,
                     );
                 }
-
-                let activated = response.clicked()
+                if response.clicked()
                     || (response.has_focus()
                         && ui.input(|i| {
                             i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Space)
-                        }));
-                if activated {
+                        }))
+                {
                     *performance_request = Some((*target_resource).to_string());
                     *active_page = Page::Performance;
                 }
-
-                let inner_rect = card_rect.shrink(12.0);
-                if inner_rect.width() > 10.0 && inner_rect.height() > 10.0 {
-                    let card_clip = card_rect.shrink(1.0).intersect(ui.clip_rect());
-                    let spark_h = 36.0;
-                    let spark_rect = Rect::from_min_size(
-                        egui::pos2(inner_rect.min.x, inner_rect.max.y - spark_h),
-                        Vec2::new(inner_rect.width(), spark_h),
-                    );
-                    let text_rect = Rect::from_min_max(
-                        inner_rect.min,
-                        egui::pos2(inner_rect.max.x, spark_rect.min.y - 4.0),
-                    );
-
-                    let mut cur_y = text_rect.min.y;
-                    ui.painter_at(card_clip).text(
-                        egui::pos2(text_rect.min.x, cur_y),
-                        egui::Align2::LEFT_TOP,
-                        *title,
-                        egui::FontId::proportional(13.0 * text_scale),
-                        *color,
-                    );
-                    cur_y += 18.0 * text_scale;
-
-                    ui.painter_at(card_clip).text(
-                        egui::pos2(text_rect.min.x, cur_y),
-                        egui::Align2::LEFT_TOP,
-                        value,
-                        egui::FontId::proportional(22.0 * text_scale),
-                        p.text,
-                    );
-                    cur_y += 26.0 * text_scale;
-
-                    ui.painter_at(card_clip).text(
-                        egui::pos2(text_rect.min.x, cur_y),
-                        egui::Align2::LEFT_TOP,
-                        subtitle,
-                        egui::FontId::proportional(11.0 * text_scale),
-                        p.secondary,
-                    );
-
-                    let mut child_ui = ui.new_child(
-                        egui::UiBuilder::new()
-                            .max_rect(spark_rect)
-                            .layout(egui::Layout::top_down(Align::Min)),
-                    );
-                    child_ui.set_clip_rect(card_clip);
-                    sparkline_sized(
-                        &mut child_ui,
-                        series,
-                        now,
-                        *color,
-                        p,
-                        Vec2::new(spark_rect.width(), spark_rect.height()),
-                    );
+                let inner = card_rect.shrink(12.0);
+                let mut child = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(inner)
+                        .layout(egui::Layout::top_down(Align::Min)),
+                );
+                child.set_clip_rect(inner.intersect(ui.clip_rect()));
+                child.spacing_mut().item_spacing.y = 4.0;
+                for galley in galleys {
+                    child.add(egui::Label::new(galley.clone()).selectable(false));
                 }
+                child.add_space((inner.bottom() - 36.0 - child.cursor().top()).max(0.0));
+                sparkline_sized(&mut child, series, now, *color, p, Vec2::new(inner_w, 36.0));
             }
         });
         ui.add_space(10.0);
@@ -802,6 +837,213 @@ pub fn render_overview_view(
 mod layout_tests {
     use super::resource_card_columns;
 
+    fn visit_text(
+        shape: &eframe::egui::epaint::Shape,
+        f: &mut impl FnMut(&eframe::egui::epaint::TextShape),
+    ) {
+        match shape {
+            eframe::egui::epaint::Shape::Text(text) => f(text),
+            eframe::egui::epaint::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    visit_text(shape, f);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn summary_values_are_complete_and_contained_in_table_and_stacked_modes() {
+        use eframe::egui;
+        for dark in [true, false] {
+            for scale in [1.0, 1.25, 1.5, 2.0] {
+                for width in [300.0, 480.0, 760.0, 1180.0, 1920.0] {
+                    let ctx = egui::Context::default();
+                    crate::theme::configure_theme(
+                        &ctx,
+                        crate::theme::get_palette(dark),
+                        crate::theme::Density::Normal,
+                        scale,
+                        false,
+                    );
+                    let mut rows = vec![super::SummaryDisplay {
+                        label: "Network receive on a long named interface".into(),
+                        values: [
+                            "999.9 GiB/s".into(),
+                            "123.4 GiB/s".into(),
+                            "0 B/s".into(),
+                            "1.2 TiB/s".into(),
+                            "899/900 seconds · 100%".into(),
+                        ],
+                        hints: std::array::from_fn(|_| "Observed value".into()),
+                        detail: "Provider details".into(),
+                        color: egui::Color32::BLUE,
+                    }];
+                    rows.push(super::SummaryDisplay {
+                        label: "CPU".into(),
+                        values: [
+                            "12%".into(),
+                            "10%".into(),
+                            "0%".into(),
+                            "99%".into(),
+                            "50/60 seconds - 83%".into(),
+                        ],
+                        hints: std::array::from_fn(|_| String::new()),
+                        detail: String::new(),
+                        color: egui::Color32::BLUE,
+                    });
+                    let mut right = 0.0;
+                    let mut left = 0.0;
+                    let mut table = false;
+                    let mut output = ctx.run_ui(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(width, 10000.0),
+                            )),
+                            ..Default::default()
+                        },
+                        |ui| {
+                            left = ui.cursor().left();
+                            right = ui.max_rect().right();
+                            table = super::summary_column_widths(ui, &rows, ui.available_width())
+                                .is_some();
+                            super::render_summary_display(
+                                ui,
+                                &rows,
+                                crate::theme::get_palette(dark),
+                            );
+                            assert!(ui.min_rect().right() <= right + 1.0);
+                        },
+                    );
+                    output.textures_delta.clear();
+                    let mut texts = Vec::new();
+                    let mut rights = std::collections::HashMap::new();
+                    for shape in &output.shapes {
+                        visit_text(&shape.shape, &mut |text| {
+                            assert!(!text.galley.elided, "elided {}", text.galley.job.text);
+                            let bounds = text.galley.rect.translate(text.pos.to_vec2());
+                            assert!(
+                                bounds.left() >= left - 1.0 && bounds.right() <= right + 1.0,
+                                "width {width} scale {scale}: {} {bounds:?}",
+                                text.galley.job.text
+                            );
+                            rights.insert(text.galley.job.text.clone(), bounds.right());
+                            texts.push(text.galley.job.text.clone());
+                        });
+                    }
+                    for value in &rows[0].values {
+                        assert!(texts.contains(value), "missing {value}");
+                    }
+                    for heading in &super::SUMMARY_HEADINGS[1..] {
+                        assert!(texts.iter().any(|t| t == heading));
+                    }
+                    if table {
+                        for (i, heading) in super::SUMMARY_HEADINGS[1..].iter().enumerate() {
+                            for row in &rows {
+                                assert!(
+                                    (rights[*heading] - rights[&row.values[i]]).abs() <= 1.0,
+                                    "unaligned column {heading}"
+                                );
+                            }
+                        }
+                    }
+                    if width == 300.0 {
+                        assert!(!table);
+                    }
+                    if width == 1920.0 && scale == 1.0 {
+                        assert!(table);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn overview_card_text_and_charts_stay_inside_each_card() {
+        use eframe::egui;
+        let fixture = crate::smoke_test::create_native_fixture_app(
+            crate::theme::Theme::Dark,
+            crate::state::Page::Overview,
+        );
+        let frame = fixture.shared.lock().unwrap().frame.clone().unwrap();
+        for width in [280.0, 600.0, 1180.0, 1536.0] {
+            for scale in [1.0, 1.5, 2.0] {
+                let ctx = egui::Context::default();
+                crate::theme::configure_theme(
+                    &ctx,
+                    crate::theme::get_palette(true),
+                    crate::theme::Density::Normal,
+                    scale,
+                    false,
+                );
+                ctx.data_mut(|d| d.insert_temp(egui::Id::unique("system_text_scale"), scale));
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 10000.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        super::resource_cards(
+                            ui,
+                            &frame,
+                            &fixture.histories,
+                            &mut None,
+                            &mut crate::state::Page::Overview,
+                            std::time::Instant::now(),
+                            crate::theme::get_palette(true),
+                        );
+                    },
+                );
+                output.textures_delta.clear();
+                for shape in &output.shapes {
+                    visit_text(&shape.shape, &mut |text| {
+                        assert!(!text.galley.elided);
+                        let bounds = text.galley.rect.translate(text.pos.to_vec2());
+                        assert!(
+                            shape.clip_rect.expand(1.0).contains_rect(bounds),
+                            "card clipped at width {width} scale {scale}: {} {bounds:?}, {:?}",
+                            text.galley.job.text,
+                            shape.clip_rect
+                        );
+                    });
+                    if let egui::epaint::Shape::LineSegment { points, .. } = &shape.shape {
+                        for point in points {
+                            assert!(shape.clip_rect.expand(1.0).contains(*point));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn empty_summary_never_invents_observations() {
+        let empty = crate::history::TimeSeries::default();
+        let rows = [super::SummaryRow {
+            label: "CPU",
+            current: "Unavailable".into(),
+            series: &empty,
+            unit: "%",
+            color: eframe::egui::Color32::BLUE,
+            reason: Some("Provider missing".into()),
+            detail: None,
+        }];
+        let display = super::summary_display(
+            &rows,
+            crate::history::HistoryRange::Min15,
+            std::time::Instant::now(),
+        );
+        assert_eq!(
+            display[0].values,
+            ["Unavailable", "—", "—", "—", "Collecting"]
+        );
+        assert_eq!(display[0].hints[0], "Provider missing");
+    }
+
     #[test]
     fn five_resource_cards_use_the_wide_row_and_reflow_on_smaller_windows() {
         assert_eq!(resource_card_columns(1310.0, 5, 1.0), 5);
@@ -1022,7 +1264,7 @@ mod layout_tests {
             collect_text(&clipped.shape, &mut text_found);
         }
 
-        for heading in ["RESOURCE", "NOW", "AVERAGE", "LOW", "PEAK", "COVERAGE"] {
+        for heading in super::SUMMARY_HEADINGS {
             assert!(
                 text_found.iter().any(|t| t == heading),
                 "Heading {heading} must be present in Overview render output"
