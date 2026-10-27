@@ -389,15 +389,15 @@ struct PlotCacheKey {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum PlotStyle {
-    SmoothArea,
+enum GapPolicy {
+    Standard,
     CpuUtilization,
 }
 
-impl PlotStyle {
+impl GapPolicy {
     fn gap_threshold(self) -> Duration {
         match self {
-            Self::SmoothArea => Duration::from_secs(3),
+            Self::Standard => Duration::from_secs(3),
             // CPU history is aggregated into one-second observations. A
             // missing second must remain visible instead of bridging it.
             Self::CpuUtilization => Duration::from_millis(2200),
@@ -405,7 +405,7 @@ impl PlotStyle {
     }
 }
 
-/// Paint a bounded, gap-aware plot with smooth curves, min..max bands, and seamless fills.
+/// Paint a bounded, gap-aware trend using observed interval averages.
 pub fn time_plot(
     ui: &mut egui::Ui,
     id: impl std::hash::Hash + std::fmt::Debug,
@@ -429,7 +429,7 @@ pub fn time_plot(
         height,
         state,
         p,
-        PlotStyle::SmoothArea,
+        GapPolicy::Standard,
     );
 }
 
@@ -457,7 +457,7 @@ pub fn cpu_utilization_plot(
         height,
         state,
         p,
-        PlotStyle::CpuUtilization,
+        GapPolicy::CpuUtilization,
     );
 }
 
@@ -473,7 +473,7 @@ fn draw_time_plot(
     height: f32,
     state: &mut PlotState,
     p: Palette,
-    style: PlotStyle,
+    gap_policy: GapPolicy,
 ) {
     let chart_id = ui.make_persistent_id(id);
     let width = ui.available_width().max(140.0);
@@ -505,7 +505,7 @@ fn draw_time_plot(
         now < cached_at || now.saturating_duration_since(cached_at) >= Duration::from_secs(1)
     });
     if state.cache_key.as_ref() != Some(&key) || expired {
-        let gap = style.gap_threshold();
+        let gap = gap_policy.gap_threshold();
         state.cached_segments = series
             .iter()
             .map(|item| {
@@ -574,7 +574,7 @@ fn draw_time_plot(
     );
 
     // Horizontal grid lines and tick labels
-    if style == PlotStyle::CpuUtilization && axis.max >= 99.0 {
+    if unit == "%" && axis.max >= 99.0 {
         let minor_stroke = Stroke::new(1.0, p.border.gamma_multiply(0.45));
         for tens in 1..10 {
             // Major ticks 25, 50, 75, 100 are drawn below
@@ -657,7 +657,8 @@ fn draw_time_plot(
 
     let canvas_painter = ui.painter_at(canvas.expand(1.0));
 
-    // Render curves, fills, and bands
+    // Show one direct trend per measurement. A single series gets a restrained
+    // area fill; paired and comparison charts remain readable as separate lines.
     for (item, item_segments) in series.iter().zip(segments) {
         for segment in item_segments {
             if segment.is_empty() {
@@ -672,49 +673,18 @@ fn draw_time_plot(
                 continue;
             }
 
-            // The CPU line shows one-second averages directly. The summary and
-            // cursor retain within-interval extrema without waveform-like marks.
-            let has_variation = style == PlotStyle::SmoothArea
-                && segment.iter().any(|p| (p.max - p.min).abs() > 0.005 * ymax);
-            if has_variation {
-                let upper_pts: Vec<Pos2> = segment.iter().map(|p| to_point(p.x, p.max)).collect();
-                let lower_pts: Vec<Pos2> = segment.iter().map(|p| to_point(p.x, p.min)).collect();
-                let smooth_upper = monotone_path(&upper_pts, 3.0);
-                let smooth_lower = monotone_path(&lower_pts, 3.0);
-                let band = band_mesh(
-                    &smooth_upper,
-                    &smooth_lower,
-                    item.color.gamma_multiply(0.09),
-                );
-                canvas_painter.add(band);
-            }
-
-            // Mean trend line and restrained area fill.
-            let mean_pts: Vec<Pos2> = segment.iter().map(|p| to_point(p.x, p.mean)).collect();
-            let path = if style == PlotStyle::CpuUtilization {
-                mean_pts
-            } else {
-                monotone_path(&mean_pts, 3.0)
-            };
-
-            if !item.dashed {
-                let fill_top = if style == PlotStyle::CpuUtilization {
-                    if p.is_dark { 0.22 } else { 0.16 }
-                } else {
-                    0.18
-                };
-                let fill_bottom = if style == PlotStyle::CpuUtilization {
-                    0.04
-                } else {
-                    0.02
-                };
+            let path: Vec<Pos2> = segment.iter().map(|p| to_point(p.x, p.mean)).collect();
+            if series.len() == 1 {
+                let fill_top = if p.is_dark { 0.16 } else { 0.12 };
                 let fill = area_mesh(
                     &path,
                     canvas.bottom(),
                     item.color.gamma_multiply(fill_top),
-                    item.color.gamma_multiply(fill_bottom),
+                    item.color.gamma_multiply(0.02),
                 );
                 canvas_painter.add(fill);
+            }
+            if !item.dashed {
                 canvas_painter.add(Shape::line(path, Stroke::new(1.75, item.color)));
             } else {
                 let dashed_shapes =
@@ -811,6 +781,7 @@ fn draw_time_plot(
 
         let mut details = Vec::new();
         let mut concise = Vec::new();
+        let mut missing = Vec::new();
         let tolerance = Duration::from_secs_f32(
             (range.duration().as_secs_f32() / canvas.width() * 1.5).clamp(1.5, 2.5),
         );
@@ -841,10 +812,13 @@ fn draw_time_plot(
                     painter.circle_filled(to_point(pt.x, pt.mean), 3.0, item.color);
                     painter.circle_stroke(to_point(pt.x, pt.mean), 4.5, Stroke::new(1.0, p.focus));
                 }
+            } else {
+                missing.push(item.name);
+                concise.push(format!("{}: Unavailable", item.name));
             }
         }
 
-        if !details.is_empty() {
+        if !details.is_empty() || !missing.is_empty() {
             response.on_hover_ui_at_pointer(|ui| {
                 ui.set_max_width(280.0);
                 for (name, reading, sample, age) in &details {
@@ -856,18 +830,21 @@ fn draw_time_plot(
                     });
                     ui.label(
                         egui::RichText::new(format!(
-                            "{} ago · {}",
+                            "Sample {} ms Unix · {} ago · {}",
+                            sample.timestamp_ms,
                             format_age(*age),
                             sample.source
                         ))
                         .small(),
                     );
-                    if let (Some(min), Some(max)) = (sample.minimum, sample.maximum)
-                        && (max - min).abs() >= 0.05
-                    {
+                    if let (Some(min), Some(max)) = (sample.minimum, sample.maximum) {
                         ui.label(
                             egui::RichText::new(format!(
-                                "Observed range: {}–{}",
+                                "Interval average: {} · Minimum: {} · Maximum: {}",
+                                sample.value.map_or_else(
+                                    || "Unavailable".into(),
+                                    |value| format_plot_value(value, unit)
+                                ),
                                 format_plot_value(min, unit),
                                 format_plot_value(max, unit)
                             ))
@@ -877,6 +854,9 @@ fn draw_time_plot(
                     if let Some(reason) = &sample.unavailable_reason {
                         ui.label(egui::RichText::new(reason.to_string()).small());
                     }
+                }
+                for name in &missing {
+                    ui.label(format!("{name}: Unavailable at this time"));
                 }
             });
 
@@ -955,15 +935,14 @@ pub fn sparkline_sized(
             })
             .collect();
         if points.len() >= 2 {
-            let smooth = monotone_path(&points, 3.0);
             let fill_mesh = area_mesh(
-                &smooth,
+                &points,
                 plot_rect.bottom(),
-                color.gamma_multiply(0.18),
+                color.gamma_multiply(0.12),
                 color.gamma_multiply(0.02),
             );
             painter.add(fill_mesh);
-            painter.add(Shape::line(smooth, Stroke::new(1.4, color)));
+            painter.add(Shape::line(points, Stroke::new(1.4, color)));
         } else if let Some(point) = points.first() {
             painter.circle_filled(*point, 2.0, color);
         }
@@ -1027,7 +1006,7 @@ mod tests {
         let segments = series.chart_segments(
             now,
             HistoryRange::Sec60,
-            PlotStyle::CpuUtilization.gap_threshold(),
+            GapPolicy::CpuUtilization.gap_threshold(),
             0,
         );
         assert_eq!(
@@ -1036,6 +1015,73 @@ mod tests {
         );
         assert_eq!(segments[0][0].mean, 21.0);
         assert_eq!(segments[1][0].mean, 44.0);
+    }
+
+    #[test]
+    fn single_trend_has_one_fill_and_paired_trends_have_none() {
+        let now = Instant::now();
+        let mut first = TimeSeries::new();
+        let mut second = TimeSeries::new();
+        for offset in 0..3 {
+            let time = now - Duration::from_secs(3 - offset);
+            first.push(
+                time,
+                1_000 + offset * 1_000,
+                Some((offset * 10 + 15) as f32),
+            );
+            second.push(time, 1_000 + offset * 1_000, Some((offset * 5 + 8) as f32));
+        }
+        let p = crate::theme::get_palette(true);
+        let mesh_count = |paired: bool| {
+            let ctx = egui::Context::default();
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::Vec2::new(640.0, 360.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| {
+                    let mut plot = PlotState::default();
+                    let mut series = vec![PlotSeries {
+                        name: "Read",
+                        samples: &first,
+                        color: p.cpu,
+                        dashed: false,
+                    }];
+                    if paired {
+                        series.push(PlotSeries {
+                            name: "Write",
+                            samples: &second,
+                            color: p.disk,
+                            dashed: true,
+                        });
+                    }
+                    time_plot(
+                        ui,
+                        "chart-style-test",
+                        &series,
+                        HistoryRange::Sec30,
+                        now,
+                        "%",
+                        ValueScale::Percent { full: true },
+                        240.0,
+                        &mut plot,
+                        p,
+                    );
+                },
+            );
+            let count = output
+                .shapes
+                .iter()
+                .filter(|shape| matches!(shape.shape, egui::Shape::Mesh(_)))
+                .count();
+            output.textures_delta.clear();
+            count
+        };
+        assert_eq!(mesh_count(false), 1);
+        assert_eq!(mesh_count(true), 0);
     }
 
     #[test]
