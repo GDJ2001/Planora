@@ -32,7 +32,7 @@
     <Page Name="Install">
       <Label X="28" Y="104" Width="564" Height="20" FontId="5" DisablePrefix="yes">READY TO INSTALL</Label>
       <Label X="28" Y="130" Width="564" Height="30" FontId="2" DisablePrefix="yes">Planora for Windows</Label>
-      <Label X="28" Y="170" Width="564" Height="39" FontId="0" DisablePrefix="yes">The desktop app, local telemetry helper, and Start menu shortcuts will be installed for this PC.</Label>
+      <Label X="28" Y="170" Width="564" Height="39" FontId="0" DisablePrefix="yes">The app, local helper, and desktop and Start menu shortcuts will be installed for this PC.</Label>
       <Label X="28" Y="218" Width="564" Height="20" FontId="3" DisablePrefix="yes">INSTALL LOCATION</Label>
       <Label X="28" Y="242" Width="564" Height="24" FontId="0" DisablePrefix="yes">[PlanoraInstallLocation]</Label>
       <Checkbox Name="PlanoraAdvancedSensors" X="28" Y="280" Width="564" Height="24" TabStop="yes" FontId="0">Advanced sensors (signed PawnIO driver)</Checkbox>
@@ -80,7 +80,7 @@
         <Text Condition="WixBundleAction = 8">Planora repaired</Text>
       </Label>
       <Label X="28" Y="192" Width="564" Height="84" FontId="0" DisablePrefix="yes">
-        <Text>Open Planora from the Start menu. The first launch guides you through authorization for live monitoring.</Text>
+        <Text>Open Planora from the desktop or Start menu. The first launch guides you through authorization for live monitoring.</Text>
         <Text Condition="WixBundleAction = 4">The application and helper were removed. Personal settings and recordings remain available for a future install.</Text>
         <Text Condition="WixBundleAction = 8">The app and helper files were restored. Your settings, recordings, and authorization were kept.</Text>
       </Label>

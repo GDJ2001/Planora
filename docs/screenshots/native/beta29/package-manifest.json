@@ -1,0 +1,35 @@
+﻿{
+    "version":  "0.3.0-beta.29",
+    "sourceCommit":  "b617d9b",
+    "target":  "x86_64-pc-windows-msvc",
+    "profile":  "release",
+    "productVersion":  "0.2.1029",
+    "protocolVersion":  5,
+    "uiSubsystem":  "Windows GUI",
+    "binaries":  [
+                     {
+                         "file":  "planora.exe",
+                         "sha256":  "1A45E19E19295C4E992BEC9B2908A99F371887B141CF126E5C548A141FC650CF"
+                     },
+                     {
+                         "file":  "planora-helper.exe",
+                         "sha256":  "18B63592F82E606B1A6E1B985F1B993FD7BA65EB12860E8193B6AF05C931CC98"
+                     },
+                     {
+                         "file":  "planora-sensor-broker.exe",
+                         "sha256":  "75286E2FFB52C9A6336A98F41D3F377C4E5FEC8466D866690E8B28DCC12818C3"
+                     },
+                     {
+                         "file":  "PawnIO_setup.exe",
+                         "sha256":  "1F519A22E47187F70A1379A48CA604981C4FCF694F4E65B734AAA74A9FBA3032"
+                     }
+                 ],
+    "msi":  {
+                "file":  "Planora-0.3.0-beta.29-x64.msi",
+                "sha256":  "A7F28658E96FDD521E848CDF5483690A29731E790DBD49CD0FF2FEA78C4E6454"
+            },
+    "setup":  {
+                  "file":  "Planora-0.3.0-beta.29-x64-Setup.exe",
+                  "sha256":  "1F17FFD29B4E2DED0F43A9D8CD94FB45FB85315162362F82072977368E4670F0"
+              }
+}

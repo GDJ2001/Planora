@@ -24,7 +24,11 @@ Fixture captures are synthetic data. Pixel-per-point overrides emulate rendering
 
 ## Package and installed acceptance
 
-Release package identity, final executable capture evidence and installed acceptance are recorded after the clean-source build. Installation remains pending until Windows approval and installed hash verification complete.
+Built from clean source `b617d9b`; WiX validation, GUI subsystem, binary identities and signed PawnIO dependency checks passed. Setup/MSI and manifest were copied to the primary checkout dist directory and hashes verified. [Package manifest](screenshots/native/beta29/package-manifest.json).
+
+Thirty additional captures use the final release executable. [Native capture manifest](screenshots/native/beta29/manifest.json) distinguishes full-size review from contact-sheet review and records fixture scales. The final executable shows complete table columns and enlarged-text stacked sections.
+
+The user completed beta.29 installation. Burn exited `0x0`, no restart. Installed UI, helper and broker hashes match the manifest; helper running, authorization present, settings hash unchanged. [Installed verification](screenshots/native/beta29/installed-verification.json). Live interactive Overview acceptance remains separate from these hash/service and fixture checks.
 
 ## Remaining acceptance
 

@@ -1,0 +1,22 @@
+{
+  "binaries": [
+    {
+      "file": "planora.exe",
+      "sha256": "1A45E19E19295C4E992BEC9B2908A99F371887B141CF126E5C548A141FC650CF",
+      "matches": true
+    },
+    {
+      "file": "planora-helper.exe",
+      "sha256": "18B63592F82E606B1A6E1B985F1B993FD7BA65EB12860E8193B6AF05C931CC98",
+      "matches": true
+    },
+    {
+      "file": "planora-sensor-broker.exe",
+      "sha256": "75286E2FFB52C9A6336A98F41D3F377C4E5FEC8466D866690E8B28DCC12818C3",
+      "matches": true
+    }
+  ],
+  "helper": "Running",
+  "authorizationPresent": true,
+  "settingsUnchanged": true
+}
