@@ -1,0 +1,6 @@
+{
+  "directory": "DesktopFolder",
+  "target": "[INSTALLFOLDER]planora.exe",
+  "icon": "PlanoraIcon.ico",
+  "workingDirectory": "INSTALLFOLDER"
+}

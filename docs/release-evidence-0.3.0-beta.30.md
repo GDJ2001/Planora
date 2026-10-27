@@ -4,6 +4,8 @@ The previous MSI defined only Start menu shortcuts. Beta.30 adds a Planora deskt
 
 Setup copy now explicitly mentions the desktop shortcut. All beta.29 Overview fixes remain included. MSI version is `0.2.1030`; beta.29 artifacts are retained unchanged.
 
-Package validation and native shortcut verification are recorded after the clean-source build. Full uninstall/repair lifecycle retesting is not implied by MSI validation.
+Built from clean source `8f2c617`. WiX MSI validation, installer theme checks, GUI subsystem, binary identities and PawnIO signature/hash checks passed. The built MSI Shortcut table contains DesktopShortcut targeting `[INSTALLFOLDER]planora.exe`, DesktopFolder, PlanoraIcon.ico and INSTALLFOLDER working directory. Setup/MSI copies match their manifest hashes. [Package manifest](screenshots/native/beta30/package-manifest.json), [built shortcut validation](screenshots/native/beta30/shortcut-msi-validation.json).
+
+Installation and native shortcut verification are pending Windows approval. Full uninstall/repair lifecycle retesting is not implied by MSI validation.
 
 Implementation follows the [WiX Shortcut schema](https://docs.firegiant.com/wix/schema/wxs/shortcut/).

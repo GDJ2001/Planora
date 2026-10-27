@@ -28,7 +28,7 @@ Built from clean source `b617d9b`; WiX validation, GUI subsystem, binary identit
 
 Thirty additional captures use the final release executable. [Native capture manifest](screenshots/native/beta29/manifest.json) distinguishes full-size review from contact-sheet review and records fixture scales. The final executable shows complete table columns and enlarged-text stacked sections.
 
-The user completed beta.29 installation. Burn exited `0x0`, no restart. Installed UI, helper and broker hashes match the manifest; helper running, authorization present, settings hash unchanged. [Installed verification](screenshots/native/beta29/installed-verification.json). Live interactive Overview acceptance remains separate from these hash/service and fixture checks.
+The user completed beta.29 installation. Burn exited `0x0`, no restart. Installed UI, helper and broker hashes match the manifest; helper running, authorization present, settings hash unchanged. [Installed verification](screenshots/native/beta29/installed-verification.json). An installed live-data capture at 1180x790 confirms cards and all six summary columns inside the panel, with live CPU, memory, GPU, storage and network values. [Installed live Overview](screenshots/native/beta29/installed-live-overview.png). This capture bypasses placement restoration; interactive keyboard/pause/range acceptance remains separate.
 
 ## Remaining acceptance
 
