@@ -66,6 +66,16 @@ fn main() {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "release".to_string());
     println!("cargo:rustc-env=PLANORA_GIT_COMMIT={}", git_commit);
+    let rustc_cmd = env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+    let rustc_version = std::process::Command::new(rustc_cmd)
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "rustc 1.99.1".to_string());
+    println!("cargo:rustc-env=PLANORA_RUSTC_VERSION={}", rustc_version);
     println!(
         "cargo:rustc-env=PLANORA_TARGET={}",
         env::var("TARGET").unwrap_or_else(|_| "unknown".to_string())

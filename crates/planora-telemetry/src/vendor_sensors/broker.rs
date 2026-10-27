@@ -370,13 +370,16 @@ impl SensorBrokerSupervisor {
                                 )
                             }
                         } else {
+                            let reason = if is_cpu && r.name.contains("Memory") {
+                                "Sensor returned no reading (DRAM RAPL MSR unpopulated by PCU or integrated into CPU Platform power domain)"
+                            } else {
+                                "Sensor returned no reading (PawnIO driver or elevated privileges may be required)"
+                            };
                             Metric::unavailable(
                                 canonical_unit,
                                 &r.provider,
                                 r.sampled_at_ms,
-                                AvailabilityReason::Unsupported(
-                                    "Sensor returned no reading (PawnIO driver or elevated privileges may be required)".into(),
-                                ),
+                                AvailabilityReason::Unsupported(reason.into()),
                             )
                         };
 

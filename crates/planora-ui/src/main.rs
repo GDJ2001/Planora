@@ -1942,45 +1942,7 @@ fn main() -> eframe::Result<()> {
     result
 }
 
-fn normalize_sensor_device_name(name: &str) -> String {
-    let cleaned = name
-        .to_lowercase()
-        .replace("(r)", " ")
-        .replace("(tm)", " ")
-        .replace(['®', '™'], " ");
-    cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-pub fn merge_sensor_readings(
-    helper_sensors: &[planora_core::SensorReading],
-    vendor_sensors: &[planora_core::SensorReading],
-) -> Vec<planora_core::SensorReading> {
-    let mut result = Vec::with_capacity(vendor_sensors.len() + helper_sensors.len());
-    let mut seen_ids = std::collections::HashSet::new();
-    let mut vendor_keys = std::collections::HashSet::new();
-
-    for s in vendor_sensors {
-        if seen_ids.insert(s.id.clone()) {
-            let device_norm = normalize_sensor_device_name(&s.device_name);
-            vendor_keys.insert((device_norm, s.sensor_type, s.name.trim().to_lowercase()));
-            result.push(s.clone());
-        }
-    }
-
-    for s in helper_sensors {
-        if seen_ids.contains(&s.id) {
-            continue;
-        }
-        let device_norm = normalize_sensor_device_name(&s.device_name);
-        if vendor_keys.contains(&(device_norm, s.sensor_type, s.name.trim().to_lowercase())) {
-            continue;
-        }
-        seen_ids.insert(s.id.clone());
-        result.push(s.clone());
-    }
-
-    result
-}
+pub use crate::history::merge_sensor_readings;
 
 #[cfg(test)]
 mod tests {

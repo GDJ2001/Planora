@@ -1,7 +1,7 @@
 use planora_core::{AvailabilityReason, ProcessIdentity, SensorReading, TelemetryFrame};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashSet, VecDeque},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -606,6 +606,19 @@ impl ResourceHistories {
         now: Instant,
         wall_clock_now_ms: u64,
     ) {
+        let merged_storage;
+        let effective_sensors: &[SensorReading] = if !frame.sensors.is_empty()
+            && !frame
+                .sensors
+                .iter()
+                .all(|fs| sensors.iter().any(|s| s.id == fs.id))
+        {
+            merged_storage = merge_sensor_readings(&frame.sensors, sensors);
+            &merged_storage
+        } else {
+            sensors
+        };
+
         for cpu in &frame.logical_cpus {
             let metric = &cpu.utilization_percent;
             self.push_detail(
@@ -624,25 +637,6 @@ impl ResourceHistories {
                     "gpu:{}:{:?}:busiest",
                     adapter.adapter_luid, adapter.physical_adapter
                 ),
-                measurement_instant(now, wall_clock_now_ms, metric.sampled_at_ms),
-                metric.sampled_at_ms,
-                metric.value,
-                &metric.source,
-                metric.unavailable_reason.as_ref(),
-            );
-        }
-        for engine in &frame.gpu_engines {
-            let metric = &engine.utilization_percent;
-            let key = format!(
-                "gpu-engine:{}:{:?}:{:?}:{}:{}",
-                engine.adapter_luid.unwrap_or(0),
-                engine.physical_adapter,
-                engine.engine_id,
-                engine.engine_type,
-                engine.instance
-            );
-            self.push_detail(
-                key,
                 measurement_instant(now, wall_clock_now_ms, metric.sampled_at_ms),
                 metric.sampled_at_ms,
                 metric.value,
@@ -695,12 +689,31 @@ impl ResourceHistories {
                 );
             }
         }
-        for sensor in sensors {
+        for sensor in effective_sensors {
             let metric = &sensor.value;
             let instant = measurement_instant(now, wall_clock_now_ms, metric.sampled_at_ms);
             self.push_detail(
                 sensor_series_key(sensor),
                 instant,
+                metric.sampled_at_ms,
+                metric.value,
+                &metric.source,
+                metric.unavailable_reason.as_ref(),
+            );
+        }
+        for engine in &frame.gpu_engines {
+            let metric = &engine.utilization_percent;
+            let key = format!(
+                "gpu-engine:{}:{:?}:{:?}:{}:{}",
+                engine.adapter_luid.unwrap_or(0),
+                engine.physical_adapter,
+                engine.engine_id,
+                engine.engine_type,
+                engine.instance
+            );
+            self.push_detail(
+                key,
+                measurement_instant(now, wall_clock_now_ms, metric.sampled_at_ms),
                 metric.sampled_at_ms,
                 metric.value,
                 &metric.source,
@@ -758,6 +771,16 @@ impl ResourceHistories {
         self.enforce_budget_with_limit(100_000)
     }
 
+    pub fn retention_tier(&self, key: &str) -> u8 {
+        if self.priority_details.contains(key) {
+            2
+        } else if !key.starts_with("gpu-engine:") {
+            1
+        } else {
+            0
+        }
+    }
+
     fn enforce_budget_with_limit(&mut self, max_detail_points: usize) -> usize {
         let mut points: usize = self
             .details
@@ -773,8 +796,7 @@ impl ResourceHistories {
             .map(|(key, series)| {
                 (
                     key.clone(),
-                    u8::from(self.priority_details.contains(key)) * 2
-                        + u8::from(!key.starts_with("gpu-engine:")),
+                    self.retention_tier(key),
                     series
                         .samples
                         .back()
@@ -782,7 +804,7 @@ impl ResourceHistories {
                 )
             })
             .collect();
-        oldest.sort_by_key(|(_, priority, timestamp)| (*priority, *timestamp));
+        oldest.sort_by_key(|(_, tier, timestamp)| (*tier, *timestamp));
         let mut removed = 0;
         for (key, _, _) in oldest {
             if points <= max_detail_points {
@@ -814,25 +836,33 @@ impl ResourceHistories {
         if self.not_retained.contains(&key) && !self.priority_details.contains(&key) {
             return;
         }
-        if self.details.len() >= 1024
-            && !self.details.contains_key(&key)
-            && self.priority_details.contains(&key)
-        {
+        if self.details.len() >= 1024 && !self.details.contains_key(&key) {
+            let incoming_tier = self.retention_tier(&key);
             let victim = self
                 .details
-                .keys()
-                .find(|candidate| !self.priority_details.contains(*candidate))
-                .cloned();
-            if let Some(victim) = victim {
-                self.details.remove(&victim);
-                self.not_retained.insert(victim);
+                .iter()
+                .map(|(k, series)| {
+                    (
+                        k.clone(),
+                        self.retention_tier(k),
+                        series.samples.back().map_or(0, |s| s.timestamp_ms),
+                    )
+                })
+                .min_by_key(|(_, tier, ts)| (*tier, *ts));
+
+            if let Some((victim_key, victim_tier, _)) = victim
+                && incoming_tier > victim_tier
+            {
+                self.details.remove(&victim_key);
+                if self.not_retained.len() < 1024 {
+                    self.not_retained.insert(victim_key);
+                }
+            } else {
+                if self.not_retained.len() < 1024 {
+                    self.not_retained.insert(key);
+                }
+                return;
             }
-        }
-        if self.details.len() >= 1024 && !self.details.contains_key(&key) {
-            if self.not_retained.len() < 1024 {
-                self.not_retained.insert(key);
-            }
-            return;
         }
         self.not_retained.remove(&key);
         self.details.entry(key).or_default().push_with_metadata(
@@ -854,6 +884,46 @@ pub fn sensor_series_key(sensor: &SensorReading) -> String {
             sensor.device_id, sensor.scope, sensor.provider, sensor.name, sensor.sensor_type
         )
     }
+}
+
+pub fn normalize_sensor_device_name(name: &str) -> String {
+    let cleaned = name
+        .to_lowercase()
+        .replace("(r)", " ")
+        .replace("(tm)", " ")
+        .replace(['®', '™'], " ");
+    cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+pub fn merge_sensor_readings(
+    helper_sensors: &[SensorReading],
+    vendor_sensors: &[SensorReading],
+) -> Vec<SensorReading> {
+    let mut result = Vec::with_capacity(vendor_sensors.len() + helper_sensors.len());
+    let mut seen_ids = HashSet::new();
+    let mut vendor_keys = HashSet::new();
+
+    for s in vendor_sensors {
+        if seen_ids.insert(s.id.clone()) {
+            let device_norm = normalize_sensor_device_name(&s.device_name);
+            vendor_keys.insert((device_norm, s.sensor_type, s.name.trim().to_lowercase()));
+            result.push(s.clone());
+        }
+    }
+
+    for s in helper_sensors {
+        if seen_ids.contains(&s.id) {
+            continue;
+        }
+        let device_norm = normalize_sensor_device_name(&s.device_name);
+        if vendor_keys.contains(&(device_norm, s.sensor_type, s.name.trim().to_lowercase())) {
+            continue;
+        }
+        seen_ids.insert(s.id.clone());
+        result.push(s.clone());
+    }
+
+    result
 }
 
 #[cfg(test)]

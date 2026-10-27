@@ -5,7 +5,7 @@ target="aarch64-apple-darwin"
 version="${PLANORA_VERSION:-$(cargo pkgid --manifest-path "$root/Cargo.toml" -p planora-ui | sed 's/.*[#@]//')}"
 bundle_version="${version%%-*}"
 target_dir="${CARGO_TARGET_DIR:-$root/target}"
-export RUSTUP_TOOLCHAIN=1.95.0
+export RUSTUP_TOOLCHAIN=1.99.1
 cargo build --manifest-path "$root/Cargo.toml" --release --target "$target" --bins --locked
 stage="$target_dir/package/macos"
 app="$stage/Applications/Planora.app"

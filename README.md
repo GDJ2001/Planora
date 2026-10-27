@@ -10,7 +10,7 @@ The current 0.3.0-beta.23 foundation on `main` consolidates all security hardeni
 
 ## Build and test
 
-Use the pinned [Rust 1.95 toolchain](rust-toolchain.toml). Install the native dependencies for `eframe` on the target platform, then run:
+Use the pinned [Rust 1.99.1 toolchain](rust-toolchain.toml). Install the native dependencies for `eframe` on the target platform, then run:
 
 ```sh
 cargo fmt --all -- --check

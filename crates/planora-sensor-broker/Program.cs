@@ -99,7 +99,7 @@ public static class Program
 {
     public static readonly string AppVersion = typeof(Program).Assembly
         .GetCustomAttributes<AssemblyMetadataAttribute>()
-        .FirstOrDefault(attribute => attribute.Key == "PlanoraVersion")?.Value ?? "0.3.0-beta.30";
+        .FirstOrDefault(attribute => attribute.Key == "PlanoraVersion")?.Value ?? "0.3.0-beta.31";
 
     public static readonly string BuildCommit = typeof(Program).Assembly
         .GetCustomAttributes<AssemblyMetadataAttribute>()
@@ -152,6 +152,8 @@ public static class Program
 
             computer.Open();
             visitor = new UpdateVisitor();
+            computer.Accept(visitor);
+            System.Threading.Thread.Sleep(15);
             computer.Accept(visitor);
         }
         catch (Exception ex)
@@ -336,7 +338,7 @@ public static class Program
                             if (v < 0.0f || v > 200.0f) value = null;
                             break;
                         case SensorType.Power:
-                            if (v <= 0.0f || v > 1500.0f) value = null;
+                            if (v < 0.0f || v > 2500.0f) value = null;
                             break;
                         case SensorType.Temperature:
                             // SuperIO disconnected thermistors or uninitialized readings

@@ -468,7 +468,7 @@ pub fn render_settings_view(
                         ui.end_row();
 
                         ui.label("Rust Toolchain:");
-                        ui.label(egui::RichText::new("Rust 1.95.0 (Edition 2024)").monospace());
+                        ui.label(egui::RichText::new(format!("{} (Edition 2024)", BUILD_INFO.rustc_version)).monospace());
                         ui.end_row();
                     });
             });

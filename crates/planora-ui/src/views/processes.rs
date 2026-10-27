@@ -238,21 +238,28 @@ pub fn render_processes_view(
         );
     }
 
+    let available_w = ui.available_width().max(1.0);
     let available_h = ui.available_height();
-    let is_wide = ui.available_width() >= 1100.0;
+    let text_scale = crate::appearance::text_scale(ui.ctx()).max(1.0);
+    let is_wide = available_w >= 1020.0 * text_scale.min(1.25);
     let selected_record = selected_identity
         .as_ref()
         .and_then(|id| frame.processes.iter().find(|p| &p.identity == id));
 
     if is_wide {
-        // The middle grip is draggable without assuming a fixed 30% inspector.
-        let max_inspector = (ui.available_width() - 620.0).max(280.0);
+        let spacing_x = ui.spacing().item_spacing.x;
+        let grip_w = 12.0;
+        let total_grip = grip_w + 2.0 * spacing_x;
+        let min_table_w = 380.0;
+        let min_inspector_w = (320.0 * text_scale).min(420.0);
+        let max_inspector = (available_w - min_table_w - total_grip).max(min_inspector_w);
+        let default_inspector = (360.0 * text_scale).clamp(min_inspector_w, max_inspector);
         let inspector_w = if state.inspector_width <= 0.0 {
-            330.0f32.min(max_inspector)
+            default_inspector
         } else {
-            state.inspector_width.clamp(280.0, max_inspector)
+            state.inspector_width.clamp(min_inspector_w, max_inspector)
         };
-        let table_w = (ui.available_width() - inspector_w - 12.0).max(300.0);
+        let table_w = (available_w - inspector_w - total_grip).max(min_table_w);
 
         ui.horizontal(|ui| {
             ui.set_min_height(available_h);
@@ -273,15 +280,17 @@ pub fn render_processes_view(
             );
 
             // Native draggable split handle; keep the table usable.
-            let (grip, drag) = ui
-                .allocate_exact_size(Vec2::new(12.0, available_h.max(100.0)), egui::Sense::drag());
+            let (grip, drag) = ui.allocate_exact_size(
+                Vec2::new(grip_w, available_h.max(100.0)),
+                egui::Sense::drag(),
+            );
             ui.painter().line_segment(
                 [grip.center_top(), grip.center_bottom()],
                 Stroke::new(2.0, p.border_control),
             );
             if drag.dragged() {
                 state.inspector_width =
-                    (inspector_w - drag.drag_delta().x).clamp(280.0, max_inspector);
+                    (inspector_w - drag.drag_delta().x).clamp(min_inspector_w, max_inspector);
             }
 
             // Right Inspector Pane
@@ -389,15 +398,20 @@ fn render_inspector_pane(
         tx,
         gpu_engines,
     );
+    let inner_w = (ui.available_width() - 30.0).max(1.0);
     egui::Frame::group(ui.style())
         .fill(p.surface)
         .stroke(Stroke::new(1.0, p.border))
         .corner_radius(CornerRadius::same(CORNER_RADIUS as u8))
         .inner_margin(egui::Margin::same(14))
         .show(ui, |ui| {
+            ui.set_width(inner_w);
+            ui.set_max_width(inner_w);
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
+                    ui.set_width(inner_w);
+                    ui.set_max_width(inner_w);
                     let Some(record) = selected_record else {
                         ui.heading("Process Inspector");
                         ui.add_space(8.0);
@@ -414,15 +428,16 @@ fn render_inspector_pane(
                         return;
                     };
 
+            let pid_label = egui::RichText::new(format!("PID {}", record.identity.pid))
+                .monospace()
+                .strong()
+                .color(p.primary);
             ui.horizontal(|ui| {
-                ui.heading(&record.name);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
-                        egui::RichText::new(format!("PID {}", record.identity.pid))
-                            .monospace()
-                            .strong()
-                            .color(p.primary),
-                    );
+                    ui.label(pid_label);
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.add(egui::Label::new(egui::RichText::new(&record.name).heading()).truncate());
+                    });
                 });
             });
 
@@ -458,33 +473,44 @@ fn render_inspector_pane(
             } else {
                 ui.label("Collecting history for this process identity.");
             }
-            egui::Grid::new("selected_process_history").striped(true).num_columns(4).show(ui, |ui| {
-                ui.strong("Metric"); ui.strong("Average"); ui.strong("Range"); ui.strong("Coverage"); ui.end_row();
-                let fmt_val = |v: f32, u: &str| -> String {
-                    match u {
-                        "%" => format_percent(Some(v)),
-                        "bytes" => format_bytes(v.max(0.0) as u64),
-                        "B/s" | "bytes/s" => format_rate(Some(v)),
-                        _ => format!("{:.1} {u}", v),
-                    }
-                };
-                for (label, series, unit, color) in [
-                    ("CPU", &histories.selected_cpu, "%", p.cpu),
-                    ("Memory", &histories.selected_memory, "bytes", p.memory),
-                    ("I/O read", &histories.selected_io_read, "B/s", p.disk),
-                    ("I/O write", &histories.selected_io_write, "B/s", p.disk),
-                ] {
-                    ui.colored_label(color, label);
-                    if let Some(summary) = series.observed_summary(now, HistoryRange::Sec60) {
-                        ui.monospace(fmt_val(summary.average, unit));
-                        ui.monospace(format!("{}–{}", fmt_val(summary.minimum, unit), fmt_val(summary.maximum, unit)));
-                        ui.label(format!("{}/{} s", summary.observed_seconds, summary.expected_seconds));
-                    } else {
-                        ui.label("—"); ui.label("—"); ui.label("Collecting");
-                    }
+            egui::Grid::new("selected_process_history")
+                .striped(true)
+                .num_columns(4)
+                .spacing([8.0, 4.0])
+                .show(ui, |ui| {
+                    ui.strong("Metric");
+                    ui.strong("Average");
+                    ui.strong("Range");
+                    ui.strong("Coverage");
                     ui.end_row();
-                }
-            });
+                    let fmt_val = |v: f32, u: &str| -> String {
+                        match u {
+                            "%" => format_percent(Some(v)),
+                            "bytes" => format_bytes(v.max(0.0) as u64),
+                            "B/s" | "bytes/s" => format_rate(Some(v)),
+                            _ => format!("{:.1} {u}", v),
+                        }
+                    };
+                    for (label, series, unit, color) in [
+                        ("CPU", &histories.selected_cpu, "%", p.cpu),
+                        ("Memory", &histories.selected_memory, "bytes", p.memory),
+                        ("I/O read", &histories.selected_io_read, "B/s", p.disk),
+                        ("I/O write", &histories.selected_io_write, "B/s", p.disk),
+                    ] {
+                        ui.colored_label(color, label);
+                        if let Some(summary) = series.observed_summary(now, HistoryRange::Sec60) {
+                            ui.monospace(fmt_val(summary.average, unit));
+                            let range_str = format!("{}–{}", fmt_val(summary.minimum, unit), fmt_val(summary.maximum, unit));
+                            ui.add(egui::Label::new(egui::RichText::new(range_str).monospace()).truncate());
+                            ui.label(format!("{}/{}s", summary.observed_seconds, summary.expected_seconds));
+                        } else {
+                            ui.label("—");
+                            ui.label("—");
+                            ui.label("Collecting");
+                        }
+                        ui.end_row();
+                    }
+                });
 
             ui.add_space(10.0);
             ui.separator();
@@ -631,7 +657,7 @@ fn render_inspector_pane(
                 });
 
                 ui.add_space(6.0);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if ui.small_button("All").clicked() {
                         for cpu_idx in available_cpus.iter().copied() {
                             state.affinity_selection.insert(cpu_idx);
@@ -663,7 +689,7 @@ fn render_inspector_pane(
                             ui.label(format!("Proposed CPUs: {:?}", proposed));
                             ui.small("Process creation identity will be revalidated through the opened handle.");
 
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
                                 if ui.add_enabled(!proposed.is_empty(), egui::Button::new("Confirm & Apply")).clicked() {
                                     state.pending_affinity_confirm = false;
                                     if let Err(error) = tx.try_send(Command::SetAffinity {
@@ -711,5 +737,115 @@ mod tests {
         assert!(!state.pending_affinity_confirm);
         assert!(!state.affinity_requested);
         assert!(!state.affinity_initialized);
+    }
+    #[test]
+    fn processes_view_inspector_contained_within_viewport() {
+        let ctx = egui::Context::default();
+        let m = planora_core::Metric::available(10.0, "%", "test", 1000);
+        let frame = planora_core::TelemetryFrame {
+            protocol_version: planora_core::PROTOCOL_VERSION,
+            session_id: 1,
+            topology_generation: 1,
+            sequence: 1,
+            sampled_at_ms: 1000,
+            collection_duration_ms: 0.1,
+            cpu_percent: m.clone(),
+            logical_cpus: Vec::new(),
+            memory_used_bytes: planora_core::Metric::available(100_000_000, "bytes", "test", 1000),
+            memory_available_bytes: planora_core::Metric::available(
+                100_000_000,
+                "bytes",
+                "test",
+                1000,
+            ),
+            memory_total_bytes: planora_core::Metric::available(200_000_000, "bytes", "test", 1000),
+            commit_used_bytes: planora_core::Metric::available(100_000_000, "bytes", "test", 1000),
+            commit_total_bytes: planora_core::Metric::available(200_000_000, "bytes", "test", 1000),
+            disk_read_bytes_per_sec: planora_core::Metric::available(1024, "B/s", "test", 1000),
+            disk_write_bytes_per_sec: planora_core::Metric::available(1024, "B/s", "test", 1000),
+            network_rx_bytes_per_sec: planora_core::Metric::available(1024, "B/s", "test", 1000),
+            network_tx_bytes_per_sec: planora_core::Metric::available(1024, "B/s", "test", 1000),
+            gpu_percent: m.clone(),
+            gpu_adapters: Vec::new(),
+            gpu_engines: Vec::new(),
+            gpu_engine_unavailable_reason: None,
+            disks: Vec::new(),
+            network_interfaces: Vec::new(),
+            package_power_watts: planora_core::Metric::available(15.0, "W", "test", 1000),
+            sensors: Vec::new(),
+            processes: vec![planora_core::ProcessRecord {
+                identity: ProcessIdentity {
+                    pid: 13452,
+                    started: 1234567,
+                    sequence_number: None,
+                    source: planora_core::IdentitySource::WindowsProcessFiletime,
+                },
+                name: "Wispr Flow.exe".into(),
+                cpu_percent: planora_core::Metric::available(4.5, "%", "test", 1000),
+                memory_bytes: planora_core::Metric::available(176_800_000, "bytes", "test", 1000),
+                io_read_bytes_per_sec: planora_core::Metric::available(1024, "B/s", "test", 1000),
+                io_write_bytes_per_sec: planora_core::Metric::available(2048, "B/s", "test", 1000),
+                disk_read_bytes_per_sec: planora_core::Metric::available(1024, "B/s", "test", 1000),
+                disk_write_bytes_per_sec: planora_core::Metric::available(
+                    2048, "B/s", "test", 1000,
+                ),
+                gpu_percent: planora_core::Metric::available(0.0, "%", "test", 1000),
+                affinity: planora_core::Metric::unavailable(
+                    "cpus",
+                    "test",
+                    1000,
+                    planora_core::AvailabilityReason::Unsupported("test".into()),
+                ),
+            }],
+        };
+        let mut histories = crate::history::ResourceHistories::default();
+        let identity = frame.processes[0].identity.clone();
+        histories.ingest_frame(&frame, &[], Some(&identity), Instant::now(), 1000);
+
+        let p = crate::theme::get_palette(true);
+        let (tx, _rx) = std::sync::mpsc::sync_channel(1);
+        let mut pause_state = DisplayPause::default();
+        let app_state = AppState::Live;
+
+        for width in [800.0, 1024.0, 1180.0, 1536.0, 1920.0] {
+            let mut state = ProcessesViewState::default();
+            let mut selected = Some(identity.clone());
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::Vec2::new(width, 790.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        ui.set_width(width);
+                        render_processes_view(
+                            ui,
+                            &frame,
+                            &histories,
+                            &mut state,
+                            &app_state,
+                            &mut pause_state,
+                            1000,
+                            &mut selected,
+                            None,
+                            None,
+                            &tx,
+                            Instant::now(),
+                            p,
+                        );
+                        assert!(
+                            ui.min_rect().right() <= ui.max_rect().right() + 1.5,
+                            "Width {width} overflowed right edge: {} > {}",
+                            ui.min_rect().right(),
+                            width
+                        );
+                    });
+                },
+            );
+            output.textures_delta.clear();
+        }
     }
 }

@@ -375,15 +375,16 @@ impl Default for ResourcesViewState {
 impl ResourcesViewState {
     pub fn priority_history_keys(&self, sensors: &[SensorReading]) -> BTreeSet<String> {
         let mut keys = BTreeSet::new();
+        // Retain history for the actively visible sensor trend group
+        keys.extend(
+            sensors
+                .iter()
+                .filter(|sensor| self.selected_sensor_trend.matches_sensor(sensor))
+                .map(crate::history::sensor_series_key),
+        );
         if let Some(resource) = self.selected_resource.as_deref() {
             if resource.starts_with("sensor:") {
                 keys.insert(resource.to_owned());
-                keys.extend(
-                    sensors
-                        .iter()
-                        .filter(|sensor| self.selected_sensor_trend.matches_sensor(sensor))
-                        .map(crate::history::sensor_series_key),
-                );
             } else if resource.starts_with("gpu:") {
                 keys.insert(format!("{resource}:busiest"));
                 keys.extend(self.selected_engines.iter().take(4).cloned());
@@ -676,7 +677,10 @@ pub fn choices(
                 &b.id,
             ))
     });
-    for sensor in sensor_rows {
+    for sensor in sensor_rows
+        .into_iter()
+        .filter(|s| s.value.value.is_some() || s.value.unavailable_reason.is_none())
+    {
         let age_ms = planora_telemetry::unix_ms().saturating_sub(sensor.value.sampled_at_ms);
         let is_stale = age_ms > 5_000;
         let is_ok = sensor.value.value.is_some();
@@ -1663,10 +1667,12 @@ fn render_selected(
             summary_badge(ui, &cov_text, p.secondary, p);
         });
     } else {
-        let status = if histories.not_retained.contains(&item.series_key) {
-            "History not retained — the bounded history budget was reached. Current readings remain available."
+        let status = if let Some(reason) = &item.unavailable_reason {
+            format!("Sensor unavailable — {reason}")
+        } else if histories.not_retained.contains(&item.series_key) {
+            "History not retained — the bounded history budget was reached. Current readings remain available.".into()
         } else {
-            "Collecting history — unobserved time remains blank."
+            "Collecting history — unobserved time remains blank.".into()
         };
         ui.label(egui::RichText::new(status).color(p.secondary));
     }

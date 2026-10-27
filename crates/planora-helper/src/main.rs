@@ -487,8 +487,15 @@ fn capabilities(frame: &TelemetryFrame) -> Vec<Capability> {
                         .as_ref()
                         .map(ToString::to_string)
                 },
-                recovery_action: (sensor.value.value.is_none())
-                    .then_some("Check signed PawnIO installation and hardware support".into()),
+                recovery_action: if sensor.value.value.is_none() {
+                    if sensor.name.contains("Memory") {
+                        Some("Hardware platform does not expose dedicated DRAM RAPL MSR 0x619; memory power is reported in CPU Platform".into())
+                    } else {
+                        Some("Check signed PawnIO installation and hardware support".into())
+                    }
+                } else {
+                    None
+                },
             });
         }
         result
@@ -1180,13 +1187,20 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
             .name("planora-advanced-sensors".into())
             .spawn(move || {
                 let mut broker = planora_telemetry::vendor_sensors::broker::SensorBrokerSupervisor::new_with_expected_commit(Some(env!("PLANORA_GIT_COMMIT")));
+                let mut next_due = Instant::now();
                 while !STOP.load(Ordering::Relaxed) {
                     *sensor_sink.write().unwrap() = broker.poll_sensors();
-                    for _ in 0..20 {
+                    next_due += Duration::from_secs(1);
+                    let now = Instant::now();
+                    if next_due <= now {
+                        next_due = now + Duration::from_secs(1);
+                    }
+                    while Instant::now() < next_due {
                         if STOP.load(Ordering::Relaxed) {
                             break;
                         }
-                        thread::sleep(Duration::from_millis(50));
+                        let rem = next_due.saturating_duration_since(Instant::now());
+                        thread::sleep(rem.min(Duration::from_millis(50)));
                     }
                 }
             })?

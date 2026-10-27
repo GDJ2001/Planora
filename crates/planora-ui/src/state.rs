@@ -253,6 +253,7 @@ pub struct BuildInfo {
     pub git_commit: &'static str,
     pub target: &'static str,
     pub profile: &'static str,
+    pub rustc_version: &'static str,
 }
 
 pub const BUILD_INFO: BuildInfo = BuildInfo {
@@ -261,6 +262,7 @@ pub const BUILD_INFO: BuildInfo = BuildInfo {
     git_commit: env!("PLANORA_GIT_COMMIT"),
     target: env!("PLANORA_TARGET"),
     profile: env!("PLANORA_PROFILE"),
+    rustc_version: env!("PLANORA_RUSTC_VERSION"),
 };
 
 #[derive(Default)]
@@ -323,7 +325,10 @@ fn handle_response(
                     && let Some(history) = history_sender
                 {
                     #[cfg(windows)]
-                    let sensors = Arc::clone(&shared.sensor_readings);
+                    let sensors = Arc::new(crate::history::merge_sensor_readings(
+                        &frame_arc.sensors,
+                        &shared.sensor_readings,
+                    ));
                     #[cfg(not(windows))]
                     let sensors = Arc::new(frame_arc.sensors.clone());
                     let input = crate::history_worker::HistoryInput {
