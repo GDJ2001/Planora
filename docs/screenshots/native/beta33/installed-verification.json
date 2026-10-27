@@ -1,0 +1,31 @@
+{
+  "version": "0.3.0-beta.33",
+  "sourceCommit": "decc3db",
+  "msiVersion": "0.2.1033",
+  "protocolVersion": 5,
+  "burnResult": "0x0",
+  "msiResult": "success",
+  "installedBinaries": [
+    {
+      "file": "planora.exe",
+      "sha256": "8DA0ED69AF3211FDB575DCB5C6E690FB27E879996B5C38047F650FFC98D134E3",
+      "matchesManifest": true
+    },
+    {
+      "file": "planora-helper.exe",
+      "sha256": "A50A5606D2383931A6A1FF82ABA8E5C9A226315159F85751CBEE062519D20A24",
+      "matchesManifest": true
+    },
+    {
+      "file": "planora-sensor-broker.exe",
+      "sha256": "CC96CE31DBB5B70B769B1F117D8C9C63062DB3722AEB95B714ECE083BD73C6C8",
+      "matchesManifest": true
+    }
+  ],
+  "helperService": "Running",
+  "freshSnapshots": 25,
+  "authorizedHandshake": true,
+  "desktopShortcut": true,
+  "fanRpmReadings": 0,
+  "visualCapture": "unavailable: computer-use runtime failed to initialize"
+}
