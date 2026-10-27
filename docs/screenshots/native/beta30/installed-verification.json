@@ -1,0 +1,28 @@
+{
+  "binaries": [
+    {
+      "file": "planora.exe",
+      "sha256": "092715B7D3A1B36F100FB64A5FE721E8762BC839CAF8919635BD965B13EBF953",
+      "matches": true
+    },
+    {
+      "file": "planora-helper.exe",
+      "sha256": "551C857D9AFA8EEB61B638C18BCAD2FB6532FDD53980D7BBA6442B4FD0B88D71",
+      "matches": true
+    },
+    {
+      "file": "planora-sensor-broker.exe",
+      "sha256": "9C319AD7E46E7A1DC2D5CB7F239D5125EF0EC41C99AEC67CA1E347D360F23DEE",
+      "matches": true
+    }
+  ],
+  "helper": "Running",
+  "authorizationPresent": true,
+  "settingsUnchanged": true,
+  "shortcutExists": true,
+  "shortcutPath": "C:\\Users\\Public\\Desktop\\Planora.lnk",
+  "target": "C:\\Program Files\\Planora\\planora.exe",
+  "arguments": "",
+  "workingDirectory": "C:\\Program Files\\Planora\\",
+  "icon": "C:\\WINDOWS\\Installer\\{893AB34A-D50D-44F9-B7E7-8AD06D6882A9}\\PlanoraIcon.ico,0"
+}
