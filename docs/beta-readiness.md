@@ -1,4 +1,8 @@
-# Latest layout update: 0.3.0-beta.29
+# Latest chart and sensor-navigation update: 0.3.0-beta.33
+
+The current internal update is documented in [beta.33 evidence](release-evidence-0.3.0-beta.33.md). It unifies chart presentation, categorizes sensor navigation, and uses Windows interface metadata for network prominence. The installed beta.32 broker on the reference laptop reports no fan RPM, so that measurement remains explicitly unavailable. The matrix below is a historical beta.23 feature baseline, not a claim that every item was reverified for beta.33.
+
+# Historical layout update: 0.3.0-beta.29
 
 The Overview containment update is documented in [beta.29 evidence](release-evidence-0.3.0-beta.29.md). Local workspace tests, formatting and strict Clippy pass. Native fixture review is distinct from installed-system acceptance. The matrix below is the historical beta.23 feature baseline; it is not a claim that every item was reverified for beta.29.
 
