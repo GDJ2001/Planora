@@ -67,6 +67,8 @@ pub struct UserSettings {
     pub performance_resource: Option<String>,
     pub performance_range: HistoryRange,
     pub performance_engines: Vec<String>,
+    pub expanded_resource_sections: Vec<crate::views::resources::ResourceSection>,
+    pub pinned_network_interfaces: Vec<String>,
     pub process_columns: crate::components::table::TableColumnsConfig,
     pub process_sort_column: crate::components::table::SortColumn,
     pub process_sort_descending: bool,
@@ -75,7 +77,7 @@ pub struct UserSettings {
 impl Default for UserSettings {
     fn default() -> Self {
         Self {
-            schema_version: 6,
+            schema_version: 7,
             theme: Theme::System,
             density: Density::Normal,
             poll_interval_ms: 100,
@@ -88,6 +90,8 @@ impl Default for UserSettings {
             performance_resource: None,
             performance_range: HistoryRange::Sec60,
             performance_engines: Vec::new(),
+            expanded_resource_sections: Vec::new(),
+            pinned_network_interfaces: Vec::new(),
             process_columns: crate::components::table::TableColumnsConfig::default(),
             process_sort_column: crate::components::table::SortColumn::Cpu,
             process_sort_descending: true,
@@ -127,8 +131,13 @@ impl UserSettings {
                 if let Ok(data) = std::fs::read_to_string(path)
                     && let Ok(mut settings) = serde_json::from_str::<Self>(&data)
                 {
-                    settings.schema_version = 6;
+                    settings.schema_version = 7;
                     settings.performance_engines.truncate(4);
+                    settings.expanded_resource_sections.truncate(8);
+                    settings
+                        .pinned_network_interfaces
+                        .retain(|id| id.starts_with("net:") && id.len() <= 256);
+                    settings.pinned_network_interfaces.truncate(128);
                     settings.performance_resource =
                         settings.performance_resource.filter(|id| id.len() <= 256);
                     settings.poll_interval_ms = match settings.poll_interval_ms {
@@ -915,6 +924,36 @@ pub fn background_worker(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn schema_six_settings_keep_selection_and_accept_new_navigation_fields() {
+        let legacy: super::UserSettings = serde_json::from_str(
+            r#"{"schema_version":6,"poll_interval_ms":250,"performance_resource":"sensor:cpu:0:temp","performance_range":"Min15","resource_graphs":[true,false,true,true,true,true]}"#,
+        ).unwrap();
+        assert_eq!(
+            legacy.performance_resource.as_deref(),
+            Some("sensor:cpu:0:temp")
+        );
+        assert_eq!(
+            legacy.performance_range,
+            crate::history::HistoryRange::Min15
+        );
+        assert!(!legacy.resource_graphs[1]);
+        assert!(legacy.expanded_resource_sections.is_empty());
+        assert!(legacy.pinned_network_interfaces.is_empty());
+        let mut upgraded = legacy;
+        upgraded.schema_version = 7;
+        upgraded
+            .expanded_resource_sections
+            .push(crate::views::resources::ResourceSection::CpuSensors);
+        upgraded.pinned_network_interfaces.push("net:luid:1".into());
+        let roundtrip: super::UserSettings =
+            serde_json::from_value(serde_json::to_value(upgraded).unwrap()).unwrap();
+        assert_eq!(
+            roundtrip.expanded_resource_sections,
+            vec![crate::views::resources::ResourceSection::CpuSensors]
+        );
+        assert_eq!(roundtrip.pinned_network_interfaces, vec!["net:luid:1"]);
+    }
     #[test]
     fn legacy_appearance_is_discarded_without_losing_monitoring_preferences() {
         let settings: super::UserSettings = serde_json::from_str(

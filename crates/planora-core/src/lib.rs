@@ -411,6 +411,20 @@ impl SensorType {
     }
 }
 
+/// Hardware owner of a sensor; independent of its measured unit or display name.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum HardwareCategory {
+    Cpu,
+    Gpu,
+    Memory,
+    Storage,
+    Network,
+    MotherboardCooling,
+    Other,
+    #[default]
+    Unknown,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SensorReading {
     #[serde(default)]
@@ -420,6 +434,8 @@ pub struct SensorReading {
     #[serde(default)]
     pub device_name: String,
     pub name: String,
+    #[serde(default)]
+    pub hardware_category: HardwareCategory,
     pub sensor_type: SensorType,
     #[serde(default)]
     pub scope: String,
@@ -453,6 +469,12 @@ pub struct ResourceDeviceSample {
     pub link_speed_bps: Option<Metric<u64>>,
     #[serde(default)]
     pub link_state: Option<String>,
+    /// OS-reported hardware interface flag; absent for older recordings/providers.
+    #[serde(default)]
+    pub is_hardware_interface: Option<bool>,
+    /// OS interface type, retained for details without inferring identity from names.
+    #[serde(default)]
+    pub interface_type: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -1412,6 +1434,8 @@ mod tests {
             latency_ms: None,
             queue_depth: None,
             link_speed_bps: None,
+            is_hardware_interface: None,
+            interface_type: None,
             link_state: None,
         });
         assert!(invalid_device.validate().is_ok());
@@ -1487,6 +1511,7 @@ mod tests {
             device_id: "cpu0".into(),
             device_name: "CPU".into(),
             name: "Core 0 Temp".into(),
+            hardware_category: HardwareCategory::Unknown,
             sensor_type: SensorType::CpuTemperatureCelsius,
             scope: "Core".into(),
             provider: "test".into(),
@@ -1515,6 +1540,7 @@ mod tests {
             device_id: "gpu0".into(),
             device_name: "GPU".into(),
             name: "Fan".into(),
+            hardware_category: HardwareCategory::Unknown,
             sensor_type: SensorType::FanRpm,
             scope: "Cooling".into(),
             provider: "test".into(),
@@ -1574,6 +1600,8 @@ mod tests {
                 latency_ms: Some(Metric::available(100_000.0, "ms", "sys", 1000)), // corrupted latency
                 queue_depth: None,
                 link_speed_bps: Some(Metric::available(u64::MAX, "bps", "sys", 1000)), // NDIS unknown sentinel
+                is_hardware_interface: None,
+                interface_type: None,
                 link_state: None,
             }],
             network_interfaces: Vec::new(),
@@ -1584,6 +1612,7 @@ mod tests {
                     device_id: "cpu0".into(),
                     device_name: "CPU".into(),
                     name: "CPU Package".into(),
+                    hardware_category: HardwareCategory::Unknown,
                     sensor_type: SensorType::CpuTemperatureCelsius,
                     scope: "Package".into(),
                     provider: "test".into(),
@@ -1594,6 +1623,7 @@ mod tests {
                     device_id: "fan0".into(),
                     device_name: "Chassis".into(),
                     name: "Fan 1".into(),
+                    hardware_category: HardwareCategory::Unknown,
                     sensor_type: SensorType::FanRpm,
                     scope: "Cooling".into(),
                     provider: "test".into(),
@@ -1623,6 +1653,52 @@ mod tests {
                 .is_none()
         );
         assert!(frame.package_power_watts.value.is_none());
+    }
+
+    #[test]
+    fn optional_hardware_metadata_preserves_legacy_v5_frames() {
+        let sensor = SensorReading {
+            id: "cpu/temp/0".into(),
+            device_id: "cpu:0".into(),
+            device_name: "CPU".into(),
+            name: "Package".into(),
+            hardware_category: HardwareCategory::Cpu,
+            sensor_type: SensorType::CpuTemperatureCelsius,
+            scope: "Package".into(),
+            provider: "broker".into(),
+            value: Metric::available(55.0, "°C", "broker", 1_000),
+        };
+        let mut old_sensor = serde_json::to_value(&sensor).unwrap();
+        old_sensor
+            .as_object_mut()
+            .unwrap()
+            .remove("hardware_category");
+        let imported: SensorReading = serde_json::from_value(old_sensor).unwrap();
+        assert_eq!(imported.hardware_category, HardwareCategory::Unknown);
+        assert_eq!(imported.id, sensor.id);
+
+        let iface = ResourceDeviceSample {
+            id: "luid:1".into(),
+            label: "Ethernet".into(),
+            read_bytes_per_sec: Metric::available(0, "B/s", "OS", 1_000),
+            write_bytes_per_sec: Metric::available(0, "B/s", "OS", 1_000),
+            latency_ms: None,
+            queue_depth: None,
+            link_speed_bps: None,
+            link_state: Some("Connected".into()),
+            is_hardware_interface: Some(true),
+            interface_type: Some(6),
+        };
+        let mut old_iface = serde_json::to_value(&iface).unwrap();
+        old_iface
+            .as_object_mut()
+            .unwrap()
+            .remove("is_hardware_interface");
+        old_iface.as_object_mut().unwrap().remove("interface_type");
+        let imported: ResourceDeviceSample = serde_json::from_value(old_iface).unwrap();
+        assert_eq!(imported.is_hardware_interface, None);
+        assert_eq!(imported.interface_type, None);
+        assert_eq!(imported.id, iface.id);
     }
 
     #[test]

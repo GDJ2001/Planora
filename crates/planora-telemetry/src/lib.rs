@@ -823,6 +823,8 @@ impl Sampler {
                             )
                         }),
                         link_speed_bps: None,
+                        is_hardware_interface: None,
+                        interface_type: None,
                         link_state: None,
                     });
                 }
@@ -918,6 +920,8 @@ impl Sampler {
                                 stamp,
                             )
                         }),
+                        is_hardware_interface: Some(iface.is_hardware),
+                        interface_type: Some(iface.if_type),
                         link_state: iface.link_state.clone(),
                     });
 
@@ -1397,6 +1401,8 @@ impl Sampler {
                 latency_ms: None,
                 queue_depth: None,
                 link_speed_bps: None,
+                is_hardware_interface: None,
+                interface_type: None,
                 link_state: None,
             });
             self.prev_disks.insert(key, (curr_read, curr_write));
@@ -1498,6 +1504,8 @@ impl Sampler {
                 latency_ms: None,
                 queue_depth: None,
                 link_speed_bps: None,
+                is_hardware_interface: None,
+                interface_type: None,
                 link_state: None,
             });
             self.prev_networks.insert(name.clone(), (curr_rx, curr_tx));

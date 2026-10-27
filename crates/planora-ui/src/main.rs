@@ -240,6 +240,13 @@ impl App {
         resources_state.selected_resource = settings.performance_resource.clone();
         resources_state.range = settings.performance_range;
         resources_state.selected_engines = settings.performance_engines.iter().cloned().collect();
+        resources_state.expanded_sections = settings
+            .expanded_resource_sections
+            .iter()
+            .copied()
+            .collect();
+        resources_state.pinned_interfaces =
+            settings.pinned_network_interfaces.iter().cloned().collect();
         let poll_ms = Arc::new(AtomicU64::new(settings.poll_interval_ms));
         let shared = Arc::new(Mutex::new(Shared::default()));
 
@@ -1420,11 +1427,15 @@ impl App {
                             );
                     let selection_changed = self.settings.performance_resource != self.resources_state.selected_resource
                         || self.settings.performance_range != self.resources_state.range
-                        || self.settings.performance_engines.iter().cloned().collect::<std::collections::BTreeSet<_>>() != self.resources_state.selected_engines;
+                        || self.settings.performance_engines.iter().cloned().collect::<std::collections::BTreeSet<_>>() != self.resources_state.selected_engines
+                        || self.settings.expanded_resource_sections.iter().copied().collect::<std::collections::BTreeSet<_>>() != self.resources_state.expanded_sections
+                        || self.settings.pinned_network_interfaces.iter().cloned().collect::<std::collections::BTreeSet<_>>() != self.resources_state.pinned_interfaces;
                     if self.settings.resource_graphs != previous_graph_modes || self.settings.resource_legends != previous_legends || self.settings.percent_scale != previous_scale || selection_changed {
                         self.settings.performance_resource = self.resources_state.selected_resource.clone();
                         self.settings.performance_range = self.resources_state.range;
                         self.settings.performance_engines = self.resources_state.selected_engines.iter().take(4).cloned().collect();
+                        self.settings.expanded_resource_sections = self.resources_state.expanded_sections.iter().copied().collect();
+                        self.settings.pinned_network_interfaces = self.resources_state.pinned_interfaces.iter().cloned().collect();
                         self.settings_error = self.settings.save().err().map(|error| format!("Could not save preferences: {error}"));
                     }
                 },
@@ -2120,6 +2131,8 @@ mod tests {
             performance_resource: None,
             performance_range: history::HistoryRange::Sec60,
             performance_engines: Vec::new(),
+            expanded_resource_sections: Vec::new(),
+            pinned_network_interfaces: Vec::new(),
         };
         let serialized = serde_json::to_string(&s).unwrap();
         let deserialized: UserSettings = serde_json::from_str(&serialized).unwrap();
@@ -2213,6 +2226,7 @@ mod tests {
             device_id: "nvidia_gpu/0".into(),
             device_name: "NVIDIA GeForce RTX 3080".into(),
             name: "GPU Temperature".into(),
+            hardware_category: planora_core::HardwareCategory::Unknown,
             sensor_type: SensorType::GpuTemperatureCelsius,
             scope: "GPU 0".into(),
             provider: "NVIDIA NVML".into(),
@@ -2224,6 +2238,7 @@ mod tests {
                 device_id: "lhm_gpu_0".into(),
                 device_name: "NVIDIA GeForce RTX 3080".into(),
                 name: "GPU Temperature".into(),
+                hardware_category: planora_core::HardwareCategory::Unknown,
                 sensor_type: SensorType::GpuTemperatureCelsius,
                 scope: "GPU".into(),
                 provider: "LibreHardwareMonitor".into(),
@@ -2234,6 +2249,7 @@ mod tests {
                 device_id: "lhm_cpu_0".into(),
                 device_name: "Intel Core i9".into(),
                 name: "CPU Package".into(),
+                hardware_category: planora_core::HardwareCategory::Unknown,
                 sensor_type: SensorType::CpuPackagePowerWatts,
                 scope: "Package".into(),
                 provider: "LibreHardwareMonitor".into(),
@@ -2251,6 +2267,7 @@ mod tests {
             device_id: "0000:00:02.0".into(),
             device_name: "Intel(R) Iris(R) Xe Graphics".into(),
             name: "GPU Global Temperature".into(),
+            hardware_category: planora_core::HardwareCategory::Unknown,
             sensor_type: SensorType::GpuTemperatureCelsius,
             scope: "GPU".into(),
             provider: "Intel IGCL".into(),
@@ -2261,6 +2278,7 @@ mod tests {
             device_id: "/gpu-intel-integrated/0".into(),
             device_name: "Intel Iris Xe Graphics".into(),
             name: "GPU Global Temperature".into(),
+            hardware_category: planora_core::HardwareCategory::Unknown,
             sensor_type: SensorType::GpuTemperatureCelsius,
             scope: "GPU".into(),
             provider: "LibreHardwareMonitor".into(),

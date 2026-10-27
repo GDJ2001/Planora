@@ -113,10 +113,10 @@ fn terminate_other_planora_processes() {
         Foundation::CloseHandle,
         System::{
             Diagnostics::ToolHelp::{
-                CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+                CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
                 TH32CS_SNAPPROCESS,
             },
-            Threading::{GetCurrentProcessId, OpenProcess, TerminateProcess, PROCESS_TERMINATE},
+            Threading::{GetCurrentProcessId, OpenProcess, PROCESS_TERMINATE, TerminateProcess},
         },
     };
     let my_pid = unsafe { GetCurrentProcessId() };

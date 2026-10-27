@@ -388,6 +388,19 @@ impl SensorBrokerSupervisor {
                             device_id: r.device_id,
                             device_name: r.device_name,
                             name: r.name,
+                            hardware_category: match r.hardware_type.as_str() {
+                                "Cpu" => planora_core::HardwareCategory::Cpu,
+                                kind if kind.starts_with("Gpu") => {
+                                    planora_core::HardwareCategory::Gpu
+                                }
+                                "Memory" => planora_core::HardwareCategory::Memory,
+                                "Storage" => planora_core::HardwareCategory::Storage,
+                                "Network" => planora_core::HardwareCategory::Network,
+                                "Motherboard" | "Mainboard" | "SuperIO" | "EmbeddedController" => {
+                                    planora_core::HardwareCategory::MotherboardCooling
+                                }
+                                _ => planora_core::HardwareCategory::Unknown,
+                            },
                             sensor_type: st,
                             scope: r.scope,
                             provider: r.provider,
@@ -598,6 +611,7 @@ mod tests {
             device_id: "cpu/0".into(),
             device_name: "CPU".into(),
             name: "CPU Package".into(),
+            hardware_category: planora_core::HardwareCategory::Unknown,
             sensor_type: SensorType::CpuTemperatureCelsius,
             scope: "Package".into(),
             provider: "LibreHardwareMonitor".into(),

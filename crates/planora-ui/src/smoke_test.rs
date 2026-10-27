@@ -401,6 +401,8 @@ pub fn create_native_fixture_app(theme: Theme, page: Page) -> App {
         latency_ms: Some(Metric::available(1.8, "ms", "Fixture data", timestamp)),
         queue_depth: Some(Metric::available(0.8, "depth", "Fixture data", timestamp)),
         link_speed_bps: None,
+        is_hardware_interface: None,
+        interface_type: None,
         link_state: None,
     }];
     frame.network_interfaces = vec![ResourceDeviceSample {
@@ -416,6 +418,8 @@ pub fn create_native_fixture_app(theme: Theme, page: Page) -> App {
             "Fixture data",
             timestamp,
         )),
+        is_hardware_interface: Some(true),
+        interface_type: Some(6),
         link_state: Some("Up".into()),
     }];
     frame.sensors = vec![
@@ -424,6 +428,7 @@ pub fn create_native_fixture_app(theme: Theme, page: Page) -> App {
             device_id: "gpu:0".into(),
             device_name: "Intel Iris Xe Graphics".into(),
             name: "GPU temperature".into(),
+            hardware_category: planora_core::HardwareCategory::Unknown,
             sensor_type: SensorType::GpuTemperatureCelsius,
             scope: "Intel Iris Xe Graphics".into(),
             provider: "Fixture data".into(),
@@ -434,6 +439,7 @@ pub fn create_native_fixture_app(theme: Theme, page: Page) -> App {
             device_id: "cpu:0".into(),
             device_name: "11th Gen Intel Core i7-1165G7".into(),
             name: "Package Power".into(),
+            hardware_category: planora_core::HardwareCategory::Unknown,
             sensor_type: SensorType::CpuPackagePowerWatts,
             scope: "11th Gen Intel Core i7-1165G7".into(),
             provider: "Fixture data".into(),
@@ -1080,12 +1086,23 @@ fn native_fixture_sensor_detail_is_retained_and_populated() {
     let histories = &app.histories;
     let now = Instant::now();
     let sensor_key = "sensor:gpu/temperature/0";
-    let detail = histories.detail(sensor_key).expect("fixture sensor detail exists");
-    assert!(!detail.samples.is_empty(), "sensor history should have samples");
+    let detail = histories
+        .detail(sensor_key)
+        .expect("fixture sensor detail exists");
+    assert!(
+        !detail.samples.is_empty(),
+        "sensor history should have samples"
+    );
     let summary = detail
         .observed_summary(now, crate::history::HistoryRange::Sec60)
         .expect("fixture sensor summary exists");
-    assert!(summary.observed_seconds > 0, "observed seconds should be > 0");
-    assert!(summary.coverage_percent() > 50.0, "coverage should be > 50%");
+    assert!(
+        summary.observed_seconds > 0,
+        "observed seconds should be > 0"
+    );
+    assert!(
+        summary.coverage_percent() > 50.0,
+        "coverage should be > 50%"
+    );
     assert!(summary.average > 40.0, "average temp should be realistic");
 }

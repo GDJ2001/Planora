@@ -226,6 +226,7 @@ mod history_selection_tests {
             device_id: "cpu:0".into(),
             device_name: "CPU".into(),
             name: "Core #1 Distance to TjMax".into(),
+            hardware_category: planora_core::HardwareCategory::Unknown,
             sensor_type: SensorType::CpuTemperatureCelsius,
             scope: "Core #1".into(),
             provider: "Advanced sensors".into(),
@@ -239,6 +240,111 @@ mod history_selection_tests {
         state.sync_sensor_trend_with_selection(std::slice::from_ref(&sensor));
         assert_eq!(state.selected_sensor_trend, SensorTrendKind::Temperature);
         assert!(state.priority_history_keys(&[sensor]).contains(&key));
+    }
+
+    #[test]
+    fn hardware_owner_keeps_generic_clock_and_fan_with_its_device() {
+        let mut sensor = SensorReading {
+            id: "fan/0".into(),
+            device_id: "gpu:luid-a".into(),
+            device_name: "Adapter A".into(),
+            name: "Fan".into(),
+            hardware_category: planora_core::HardwareCategory::Gpu,
+            sensor_type: SensorType::FanRpm,
+            scope: "GPU".into(),
+            provider: "Vendor".into(),
+            value: Metric::available(1_800.0, "RPM", "Vendor", 1_000),
+        };
+        assert_eq!(sensor_section(&sensor), ResourceSection::GpuSensors);
+        sensor.sensor_type = SensorType::ClockMhz;
+        assert_eq!(sensor_section(&sensor), ResourceSection::GpuSensors);
+        sensor.hardware_category = planora_core::HardwareCategory::Unknown;
+        assert_eq!(sensor_section(&sensor), ResourceSection::OtherHardware);
+        sensor.sensor_type = SensorType::CpuTemperatureCelsius;
+        assert_eq!(sensor_section(&sensor), ResourceSection::CpuSensors);
+    }
+
+    #[test]
+    fn same_named_gpu_sensors_keep_distinct_device_groups_and_search_by_provider() {
+        let sensor = SensorReading {
+            id: "temperature".into(),
+            device_id: "gpu:luid:1".into(),
+            device_name: "Iris Xe".into(),
+            name: "Temperature".into(),
+            hardware_category: planora_core::HardwareCategory::Gpu,
+            sensor_type: SensorType::GpuTemperatureCelsius,
+            scope: "GPU".into(),
+            provider: "IGCL".into(),
+            value: Metric::available(52.0, "°C", "IGCL", 1_000),
+        };
+        let mut other = sensor.clone();
+        other.device_id = "gpu:luid:2".into();
+        let frame = crate::smoke_test::create_native_fixture_app(
+            crate::theme::Theme::Dark,
+            crate::state::Page::Performance,
+        )
+        .shared
+        .lock()
+        .unwrap()
+        .frame
+        .clone()
+        .unwrap();
+        let rows = choices(
+            &frame,
+            None,
+            &[sensor, other],
+            crate::theme::get_palette(true),
+        );
+        let gpu_rows: Vec<_> = rows
+            .iter()
+            .filter(|row| row.section == ResourceSection::GpuSensors)
+            .collect();
+        assert_eq!(gpu_rows.len(), 2);
+        assert_ne!(gpu_rows[0].device, gpu_rows[1].device);
+        assert!(gpu_rows.iter().all(|row| matches_choice(row, "igcl")));
+    }
+
+    #[test]
+    fn network_prominence_requires_physical_interface_and_known_connected_state() {
+        let fixture = crate::smoke_test::create_native_fixture_app(
+            crate::theme::Theme::Dark,
+            crate::state::Page::Performance,
+        );
+        let mut frame = fixture
+            .shared
+            .lock()
+            .unwrap()
+            .frame
+            .clone()
+            .unwrap()
+            .as_ref()
+            .clone();
+        let base = frame.network_interfaces[0].clone();
+        let mut virtual_iface = base.clone();
+        virtual_iface.id = "virtual".into();
+        virtual_iface.is_hardware_interface = Some(false);
+        let mut unknown_iface = base.clone();
+        unknown_iface.id = "unknown".into();
+        unknown_iface.link_state = None;
+        let mut disconnected = base;
+        disconnected.id = "disconnected".into();
+        disconnected.link_state = Some("Disconnected".into());
+        frame
+            .network_interfaces
+            .extend([virtual_iface, unknown_iface, disconnected]);
+        let rows = choices(&frame, None, &[], crate::theme::get_palette(true));
+        let section = |id: &str| rows.iter().find(|row| row.id == id).unwrap().section;
+        assert_eq!(section("net:fixture-ethernet"), ResourceSection::Main);
+        assert_eq!(section("net:virtual"), ResourceSection::NetworkDetails);
+        assert_eq!(section("net:unknown"), ResourceSection::NetworkDetails);
+        assert_eq!(section("net:disconnected"), ResourceSection::NetworkDetails);
+        assert_eq!(
+            rows.iter()
+                .find(|row| row.id == "net:unknown")
+                .unwrap()
+                .status_text,
+            "Unknown"
+        );
     }
 }
 
@@ -328,16 +434,115 @@ impl SensorTrendKind {
     }
 }
 
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+pub enum ResourceSection {
+    Main,
+    CpuSensors,
+    GpuSensors,
+    MemorySensors,
+    StorageDetails,
+    NetworkDetails,
+    MotherboardCooling,
+    OtherHardware,
+}
+
+impl ResourceSection {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Main => "Resources",
+            Self::CpuSensors => "CPU sensors",
+            Self::GpuSensors => "GPU sensors",
+            Self::MemorySensors => "Memory sensors",
+            Self::StorageDetails => "Storage details",
+            Self::NetworkDetails => "Network details",
+            Self::MotherboardCooling => "Motherboard & cooling",
+            Self::OtherHardware => "Other hardware",
+        }
+    }
+}
+
+const DETAIL_SECTIONS: [ResourceSection; 7] = [
+    ResourceSection::CpuSensors,
+    ResourceSection::GpuSensors,
+    ResourceSection::MemorySensors,
+    ResourceSection::StorageDetails,
+    ResourceSection::NetworkDetails,
+    ResourceSection::MotherboardCooling,
+    ResourceSection::OtherHardware,
+];
+
+fn visible_section(item: &Choice, pinned_interfaces: &BTreeSet<String>) -> ResourceSection {
+    if item.id.starts_with("net:") && pinned_interfaces.contains(&item.id) {
+        ResourceSection::Main
+    } else {
+        item.section
+    }
+}
+
+fn matches_choice(item: &Choice, query: &str) -> bool {
+    query.is_empty()
+        || [
+            item.label.as_str(),
+            item.section.label(),
+            item.device.as_str(),
+            item.family.as_str(),
+            item.source.as_str(),
+        ]
+        .iter()
+        .any(|text| text.to_lowercase().contains(query))
+}
+
+fn sensor_section(sensor: &SensorReading) -> ResourceSection {
+    use planora_core::{HardwareCategory as H, SensorType as T};
+    match sensor.hardware_category {
+        H::Cpu => ResourceSection::CpuSensors,
+        H::Gpu => ResourceSection::GpuSensors,
+        H::Memory => ResourceSection::MemorySensors,
+        H::Storage => ResourceSection::StorageDetails,
+        H::Network => ResourceSection::NetworkDetails,
+        H::MotherboardCooling => ResourceSection::MotherboardCooling,
+        H::Other | H::Unknown => match sensor.sensor_type {
+            T::CpuPackagePowerWatts | T::CpuTemperatureCelsius => ResourceSection::CpuSensors,
+            T::GpuChipPowerWatts | T::GpuBoardPowerWatts | T::GpuTemperatureCelsius => {
+                ResourceSection::GpuSensors
+            }
+            T::StorageTemperatureCelsius => ResourceSection::StorageDetails,
+            _ => ResourceSection::OtherHardware,
+        },
+    }
+}
+
+fn sensor_family(sensor: &SensorReading) -> &'static str {
+    use planora_core::SensorType as T;
+    match sensor.sensor_type {
+        T::GpuTemperatureCelsius
+        | T::CpuTemperatureCelsius
+        | T::StorageTemperatureCelsius
+        | T::ThermalZoneCelsius => "Temperature",
+        T::GpuChipPowerWatts
+        | T::GpuBoardPowerWatts
+        | T::CpuPackagePowerWatts
+        | T::EnergyJoules => "Power",
+        T::ClockMhz => "Clocks",
+        T::FanRpm => "Cooling",
+        T::VoltageVolts | T::CurrentAmperes => "Electrical",
+        T::LoadPercent => "Load",
+    }
+}
+
 pub struct ResourcesViewState {
-    pub active_tab: usize, // 0: CPU, 1: Memory, 2: GPU, 3: Storage, 4: Network, 5: Sensors
     pub search_query: String,
     pub engine_search: String,
     detail_height: f32,
     pub selected_resource: Option<String>,
+    pub summary_section: Option<ResourceSection>,
     /// Reveal the selected card once after startup or a compact picker change.
     /// Egui can restore an old list offset that hides the persisted selection.
     pub reveal_selected_resource: bool,
-    sensors_expanded: bool,
+    pub expanded_sections: BTreeSet<ResourceSection>,
+    pub pinned_interfaces: BTreeSet<String>,
     pub range: HistoryRange,
     pub selected_cpu: Option<(u16, u16)>,
     pub selected_engines: BTreeSet<String>,
@@ -345,6 +550,7 @@ pub struct ResourcesViewState {
     pub show_provider_details: bool,
     pub export_message: Option<(Instant, String)>,
     pub selected_sensor_trend: SensorTrendKind,
+    pub compare_sensors: bool,
     last_sensor_selection: Option<String>,
     plots: BTreeMap<String, PlotState>,
 }
@@ -352,13 +558,14 @@ pub struct ResourcesViewState {
 impl Default for ResourcesViewState {
     fn default() -> Self {
         Self {
-            active_tab: 0,
             search_query: String::new(),
             engine_search: String::new(),
             detail_height: 790.0,
             selected_resource: None,
+            summary_section: None,
             reveal_selected_resource: true,
-            sensors_expanded: true,
+            expanded_sections: BTreeSet::new(),
+            pinned_interfaces: BTreeSet::new(),
             range: HistoryRange::Sec60,
             selected_cpu: None,
             selected_engines: BTreeSet::new(),
@@ -366,6 +573,7 @@ impl Default for ResourcesViewState {
             show_provider_details: false,
             export_message: None,
             selected_sensor_trend: SensorTrendKind::default(),
+            compare_sensors: false,
             last_sensor_selection: None,
             plots: BTreeMap::new(),
         }
@@ -434,6 +642,9 @@ pub struct Choice {
     pub status_symbol: &'static str,
     pub status_color: egui::Color32,
     pub category: usize,
+    pub section: ResourceSection,
+    pub device: String,
+    pub family: String,
     pub color: egui::Color32,
     pub series_key: String,
     pub source: String,
@@ -471,6 +682,9 @@ pub fn choices(
                 p.warning
             },
             category: 0,
+            section: ResourceSection::Main,
+            device: String::new(),
+            family: String::new(),
             color: p.cpu,
             series_key: "cpu".into(),
             source: frame.cpu_percent.source.clone(),
@@ -507,6 +721,9 @@ pub fn choices(
                 p.warning
             },
             category: 1,
+            section: ResourceSection::Main,
+            device: String::new(),
+            family: String::new(),
             color: p.memory,
             series_key: "memory".into(),
             source: frame.memory_used_bytes.source.clone(),
@@ -537,6 +754,9 @@ pub fn choices(
             status_symbol: if is_ok { "●" } else { "—" },
             status_color: if is_ok { p.success } else { p.warning },
             category: 2,
+            section: ResourceSection::Main,
+            device: String::new(),
+            family: String::new(),
             color: p.gpu,
             series_key: format!(
                 "gpu:{}:{:?}:busiest",
@@ -559,6 +779,9 @@ pub fn choices(
             status_symbol: "—",
             status_color: p.secondary,
             category: 2,
+            section: ResourceSection::Main,
+            device: String::new(),
+            family: String::new(),
             color: p.gpu,
             series_key: "gpu:none".into(),
             source: "DXGI".into(),
@@ -586,6 +809,9 @@ pub fn choices(
             status_symbol: if is_ok { "●" } else { "—" },
             status_color: if is_ok { p.success } else { p.warning },
             category: 3,
+            section: ResourceSection::Main,
+            device: String::new(),
+            family: String::new(),
             color: p.disk,
             series_key: format!("disk:{}:read", disk.id),
             source: disk.read_bytes_per_sec.source.clone(),
@@ -605,6 +831,9 @@ pub fn choices(
             status_symbol: "—",
             status_color: p.secondary,
             category: 3,
+            section: ResourceSection::Main,
+            device: String::new(),
+            family: String::new(),
             color: p.disk,
             series_key: "disk:none".into(),
             source: "Storage".into(),
@@ -615,7 +844,8 @@ pub fn choices(
     let mut interfaces: Vec<_> = frame.network_interfaces.iter().collect();
     interfaces.sort_by(|a, b| a.id.cmp(&b.id));
     for iface in interfaces {
-        let is_connected = iface.link_state.as_deref() != Some("Disconnected");
+        let is_connected = iface.link_state.as_deref() == Some("Connected")
+            || iface.link_state.as_deref() == Some("Up");
         let stable_rx = histories
             .and_then(|h| h.details.get(&format!("net:{}:rx", iface.id)))
             .and_then(|ts| ts.latest_stable_value())
@@ -624,10 +854,17 @@ pub fn choices(
             id: format!("net:{}", iface.id),
             label: iface.label.clone(),
             value: format_rate(stable_rx),
-            status_text: iface.link_state.as_deref().unwrap_or("Connected").into(),
+            status_text: iface.link_state.as_deref().unwrap_or("Unknown").into(),
             status_symbol: if is_connected { "●" } else { "○" },
-            status_color: if is_connected { p.success } else { p.error },
+            status_color: if is_connected { p.success } else { p.secondary },
             category: 4,
+            section: if is_connected && iface.is_hardware_interface == Some(true) {
+                ResourceSection::Main
+            } else {
+                ResourceSection::NetworkDetails
+            },
+            device: iface.id.clone(),
+            family: "Activity".into(),
             color: p.network,
             series_key: format!("net:{}:rx", iface.id),
             source: iface.read_bytes_per_sec.source.clone(),
@@ -647,6 +884,9 @@ pub fn choices(
             status_symbol: "—",
             status_color: p.secondary,
             category: 4,
+            section: ResourceSection::NetworkDetails,
+            device: String::new(),
+            family: String::new(),
             color: p.network,
             series_key: "net:none".into(),
             source: "Network".into(),
@@ -673,10 +913,7 @@ pub fn choices(
                 &b.id,
             ))
     });
-    for sensor in sensor_rows
-        .into_iter()
-        .filter(|s| s.value.value.is_some() || s.value.unavailable_reason.is_none())
-    {
+    for sensor in sensor_rows {
         let age_ms = planora_telemetry::unix_ms().saturating_sub(sensor.value.sampled_at_ms);
         let is_stale = age_ms > 5_000;
         let is_ok = sensor.value.value.is_some();
@@ -705,6 +942,15 @@ pub fn choices(
             status_symbol,
             status_color,
             category: 5,
+            section: sensor_section(sensor),
+            device: if sensor.device_name.is_empty() {
+                sensor.device_id.clone()
+            } else if sensor.device_id.is_empty() {
+                sensor.device_name.clone()
+            } else {
+                format!("{} ({})", sensor.device_name, sensor.device_id)
+            },
+            family: sensor_family(sensor).into(),
             color: p.accent,
             series_key: id,
             source: sensor.provider.clone(),
@@ -724,6 +970,9 @@ pub fn choices(
             status_symbol: "—",
             status_color: p.secondary,
             category: 5,
+            section: ResourceSection::OtherHardware,
+            device: String::new(),
+            family: String::new(),
             color: p.accent,
             series_key: "sensor:none".into(),
             source: "Sensors".into(),
@@ -742,6 +991,167 @@ pub fn blend_color(base: Color32, tint: Color32, factor: f32) -> Color32 {
         (base.b() as f32 * inv + tint.b() as f32 * factor).round() as u8,
         (base.a() as f32 * inv + tint.a() as f32 * factor).round() as u8,
     )
+}
+
+fn render_resource_selector(
+    ui: &mut egui::Ui,
+    all: &[Choice],
+    histories: &ResourceHistories,
+    state: &mut ResourcesViewState,
+    now: Instant,
+    p: Palette,
+) {
+    let query = state.search_query.trim().to_lowercase();
+    let main_items: Vec<_> = all
+        .iter()
+        .filter(|item| {
+            visible_section(item, &state.pinned_interfaces) == ResourceSection::Main
+                && matches_choice(item, &query)
+        })
+        .collect();
+    for item in main_items {
+        let selected = state.selected_resource.as_ref() == Some(&item.id);
+        let card_width = (ui.available_width() - 22.0).max(100.0);
+        let response = resource_selector_card(ui, item, selected, card_width, histories, now, p);
+        let activated = response.clicked()
+            || (response.has_focus()
+                && ui
+                    .input(|i| i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Space)));
+        if activated {
+            state.selected_resource = Some(item.id.clone());
+            state.summary_section = None;
+        }
+        if selected && state.reveal_selected_resource {
+            response.scroll_to_me_animation(
+                Some(egui::Align::Center),
+                egui::style::ScrollAnimation::none(),
+            );
+            state.reveal_selected_resource = false;
+        }
+        ui.add_space(6.0);
+    }
+
+    for section in DETAIL_SECTIONS {
+        let mut entries: Vec<_> = all
+            .iter()
+            .filter(|item| {
+                visible_section(item, &state.pinned_interfaces) == section
+                    && matches_choice(item, &query)
+            })
+            .collect();
+        entries.sort_by(|a, b| {
+            (&a.device, &a.family, &a.label, &a.id).cmp(&(&b.device, &b.family, &b.label, &b.id))
+        });
+        if entries.is_empty() {
+            continue;
+        }
+        ui.add_space(8.0);
+        let expanded = state.expanded_sections.contains(&section) || !query.is_empty();
+        let arrow = if expanded { "▾" } else { "▸" };
+        ui.horizontal(|ui| {
+            if ui
+                .small_button(arrow)
+                .on_hover_text("Expand or collapse")
+                .clicked()
+                && !state.expanded_sections.remove(&section)
+            {
+                state.expanded_sections.insert(section);
+            }
+            if ui
+                .button(format!("{} ({})", section.label(), entries.len()))
+                .on_hover_text("Open category summary table")
+                .clicked()
+            {
+                state.summary_section = Some(section);
+            }
+        });
+        if !expanded {
+            continue;
+        }
+        if section == ResourceSection::CpuSensors
+            && !entries.iter().any(|item| item.family == "Cooling")
+        {
+            ui.label(
+                egui::RichText::new("Fan RPM not reported by the current read-only providers")
+                    .small()
+                    .color(p.secondary),
+            )
+            .on_hover_text("A physical fan may be present, but its tachometer reading is not exposed to Planora. A requested fan speed is not an actual RPM reading.");
+        }
+        let mut previous_device = String::new();
+        let mut previous_family = String::new();
+        for item in entries {
+            if item.device != previous_device {
+                previous_device.clone_from(&item.device);
+                previous_family.clear();
+                if !item.device.is_empty() {
+                    ui.add_space(5.0);
+                    if ui
+                        .add_sized(
+                            [ui.available_width().max(100.0), 28.0],
+                            egui::Button::new(&item.device).truncate(),
+                        )
+                        .on_hover_text(format!("Open device measurements\n{}", item.device))
+                        .clicked()
+                    {
+                        state.selected_resource = Some(item.id.clone());
+                        state.summary_section = None;
+                    }
+                }
+            }
+            if item.family != previous_family {
+                previous_family.clone_from(&item.family);
+                if !item.family.is_empty() {
+                    ui.label(egui::RichText::new(&item.family).small().color(p.secondary));
+                }
+            }
+            ui.push_id(&item.id, |ui| {
+                ui.horizontal(|ui| {
+                    let selected = state.selected_resource.as_ref() == Some(&item.id);
+                    let short_label = if item.category == 5 {
+                        item.label
+                            .split_once(" · ")
+                            .map_or(item.label.as_str(), |(_, name)| name)
+                    } else {
+                        item.label.as_str()
+                    };
+                    let pin_available =
+                        section == ResourceSection::NetworkDetails && item.id != "net:none";
+                    let row_width =
+                        (ui.available_width() - if pin_available { 48.0 } else { 0.0 }).max(90.0);
+                    let response = ui.add_sized(
+                        [row_width, 28.0],
+                        egui::Button::new(format!("{}  {}", short_label, item.value))
+                            .selected(selected)
+                            .truncate(),
+                    );
+                    response.clone().on_hover_text(format!(
+                        "{}\n{}\nSource: {}\nStatus: {}",
+                        item.label, item.value, item.source, item.status_text
+                    ));
+                    if response.clicked() {
+                        state.selected_resource = Some(item.id.clone());
+                        state.summary_section = None;
+                    }
+                    if selected && state.reveal_selected_resource {
+                        response.scroll_to_me_animation(
+                            Some(egui::Align::Center),
+                            egui::style::ScrollAnimation::none(),
+                        );
+                        state.reveal_selected_resource = false;
+                    }
+                    if pin_available
+                        && ui
+                            .small_button("Pin")
+                            .on_hover_text("Pin to main resources")
+                            .clicked()
+                    {
+                        state.pinned_interfaces.insert(item.id.clone());
+                    }
+                });
+            });
+        }
+    }
 }
 
 fn selector_card_visuals(
@@ -911,6 +1321,27 @@ pub fn render_resources_view(
             item.status_symbol = "●";
         }
     }
+    if let Some(missing_id) = state.selected_resource.as_deref()
+        && missing_id.starts_with("net:")
+        && !all.iter().any(|item| item.id == missing_id)
+    {
+        all.push(Choice {
+            id: missing_id.to_owned(),
+            label: "Unavailable network interface".into(),
+            value: "Unavailable".into(),
+            status_text: "Device removed".into(),
+            status_symbol: "○",
+            status_color: p.warning,
+            category: 4,
+            section: ResourceSection::NetworkDetails,
+            device: missing_id.to_owned(),
+            family: "Activity".into(),
+            color: p.network,
+            series_key: format!("{missing_id}:rx"),
+            source: "Windows interface inventory".into(),
+            unavailable_reason: Some("Interface is no longer reported by the OS".into()),
+        });
+    }
     if state
         .selected_resource
         .as_ref()
@@ -933,12 +1364,12 @@ pub fn render_resources_view(
     }
     state.sync_sensor_trend_with_selection(sensors);
     if state.reveal_selected_resource
-        && state
-            .selected_resource
-            .as_deref()
-            .is_some_and(|id| id.starts_with("sensor:"))
+        && let Some(selected) = all
+            .iter()
+            .find(|item| state.selected_resource.as_ref() == Some(&item.id))
+        && selected.section != ResourceSection::Main
     {
-        state.sensors_expanded = true;
+        state.expanded_sections.insert(selected.section);
     }
 
     // Dismiss export message after 5 seconds
@@ -979,59 +1410,7 @@ pub fn render_resources_view(
                 .max_height(ui.available_height())
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    let query = state.search_query.to_lowercase();
-                    let sensor_count = all.iter().filter(|item| item.category == 5).count();
-                    let mut sensor_heading_shown = false;
-                    for item in &all {
-                        if !item.label.to_lowercase().contains(&query) {
-                            continue;
-                        }
-                        if item.category == 5 && !sensor_heading_shown {
-                            sensor_heading_shown = true;
-                            ui.add_space(6.0);
-                            let arrow = if state.sensors_expanded || !query.is_empty() {
-                                "▾"
-                            } else {
-                                "▸"
-                            };
-                            if ui
-                                .button(format!("{arrow} Sensors ({sensor_count})"))
-                                .on_hover_text("Expand or collapse individual sensor readings")
-                                .clicked()
-                            {
-                                state.sensors_expanded = !state.sensors_expanded;
-                            }
-                            ui.add_space(4.0);
-                        }
-                        if item.category == 5 && !state.sensors_expanded && query.is_empty() {
-                            continue;
-                        }
-                        let selected = state.selected_resource.as_ref() == Some(&item.id);
-                        let card_width = (ui.available_width() - 22.0).max(100.0);
-                        let card_response = resource_selector_card(
-                            ui, item, selected, card_width, histories, now, p,
-                        );
-                        let activated = card_response.clicked()
-                            || (card_response.has_focus()
-                                && ui.input(|i| {
-                                    i.key_pressed(egui::Key::Enter)
-                                        || i.key_pressed(egui::Key::Space)
-                                }));
-                        if activated {
-                            state.selected_resource = Some(item.id.clone());
-                            if item.category == 5 {
-                                state.sensors_expanded = true;
-                            }
-                        }
-                        if selected && state.reveal_selected_resource {
-                            card_response.scroll_to_me_animation(
-                                Some(egui::Align::Center),
-                                egui::style::ScrollAnimation::none(),
-                            );
-                            state.reveal_selected_resource = false;
-                        }
-                        ui.add_space(6.0);
-                    }
+                    render_resource_selector(ui, &all, histories, state, now, p);
                 });
         });
         ui.scope_builder(egui::UiBuilder::new().max_rect(detail), |ui| {
@@ -1041,7 +1420,18 @@ pub fn render_resources_view(
                 .id_salt("performance_details_wide")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    if let Some(item) = all
+                    if let Some(section) = state.summary_section {
+                        render_section_summary(
+                            ui,
+                            section,
+                            frame,
+                            sensors,
+                            histories,
+                            &mut state.range,
+                            now,
+                            p,
+                        );
+                    } else if let Some(item) = all
                         .iter()
                         .find(|item| state.selected_resource.as_ref() == Some(&item.id))
                     {
@@ -1071,34 +1461,49 @@ pub fn render_resources_view(
             ui.label(egui::RichText::new("Selected resource:").strong());
             egui::ComboBox::from_id_salt("performance_resource_picker")
                 .selected_text(
-                    all.iter()
-                        .find(|item| state.selected_resource.as_ref() == Some(&item.id))
-                        .map_or("CPU", |item| item.label.as_str()),
+                    state
+                        .summary_section
+                        .map(ResourceSection::label)
+                        .unwrap_or_else(|| {
+                            all.iter()
+                                .find(|item| state.selected_resource.as_ref() == Some(&item.id))
+                                .map_or("CPU", |item| item.label.as_str())
+                        }),
                 )
                 .show_ui(ui, |ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut state.search_query)
                             .hint_text("Find a resource"),
                     );
-                    for item in &all {
-                        if !item
-                            .label
-                            .to_lowercase()
-                            .contains(&state.search_query.to_lowercase())
-                        {
+                    for section in std::iter::once(ResourceSection::Main).chain(DETAIL_SECTIONS) {
+                        let entries: Vec<_> = all
+                            .iter()
+                            .filter(|item| {
+                                visible_section(item, &state.pinned_interfaces) == section
+                                    && matches_choice(item, &state.search_query.to_lowercase())
+                            })
+                            .collect();
+                        if entries.is_empty() {
                             continue;
                         }
-                        if ui
-                            .selectable_label(
-                                state.selected_resource.as_ref() == Some(&item.id),
-                                format!("{} · {}", item.label, item.value),
-                            )
-                            .clicked()
-                        {
-                            state.selected_resource = Some(item.id.clone());
-                            state.reveal_selected_resource = true;
-                            if item.category == 5 {
-                                state.sensors_expanded = true;
+                        if section != ResourceSection::Main {
+                            ui.separator();
+                            if ui.button(format!("{} summary", section.label())).clicked() {
+                                state.summary_section = Some(section);
+                            }
+                        }
+                        for item in entries {
+                            if ui
+                                .selectable_label(
+                                    state.selected_resource.as_ref() == Some(&item.id),
+                                    format!("{} · {}", item.label, item.value),
+                                )
+                                .on_hover_text(format!("{}\nSource: {}", item.device, item.source))
+                                .clicked()
+                            {
+                                state.selected_resource = Some(item.id.clone());
+                                state.summary_section = None;
+                                state.reveal_selected_resource = true;
                             }
                         }
                     }
@@ -1109,7 +1514,18 @@ pub fn render_resources_view(
             .id_salt("performance_details_compact")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                if let Some(item) = all
+                if let Some(section) = state.summary_section {
+                    render_section_summary(
+                        ui,
+                        section,
+                        frame,
+                        sensors,
+                        histories,
+                        &mut state.range,
+                        now,
+                        p,
+                    );
+                } else if let Some(item) = all
                     .iter()
                     .find(|item| state.selected_resource.as_ref() == Some(&item.id))
                 {
@@ -1353,6 +1769,183 @@ fn cpu_heatmap(
         });
 }
 
+fn render_section_summary(
+    ui: &mut egui::Ui,
+    section: ResourceSection,
+    frame: &TelemetryFrame,
+    sensors: &[SensorReading],
+    histories: &ResourceHistories,
+    range: &mut HistoryRange,
+    now: Instant,
+    p: Palette,
+) {
+    ui.heading(section.label());
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Observed range:");
+        for value in [
+            HistoryRange::Sec30,
+            HistoryRange::Sec60,
+            HistoryRange::Min5,
+            HistoryRange::Min15,
+        ] {
+            ui.selectable_value(range, value, value.label());
+        }
+    });
+    ui.label(egui::RichText::new("Observed values for this hardware category. Select a measurement for its trend and device table.").color(p.secondary));
+    ui.add_space(8.0);
+    let mut rows: Vec<_> = sensors
+        .iter()
+        .filter(|sensor| sensor_section(sensor) == section)
+        .collect();
+    rows.sort_by(|a, b| {
+        (&a.device_id, &a.provider, sensor_family(a), &a.name, &a.id).cmp(&(
+            &b.device_id,
+            &b.provider,
+            sensor_family(b),
+            &b.name,
+            &b.id,
+        ))
+    });
+    if rows.is_empty() && section != ResourceSection::NetworkDetails {
+        ui.label("No readings in this category.");
+        return;
+    }
+    egui::ScrollArea::horizontal()
+        .id_salt(format!("section_summary_{section:?}"))
+        .show(ui, |ui| {
+            egui::Grid::new(format!("section_summary_grid_{section:?}"))
+                .striped(true)
+                .spacing([18.0, 7.0])
+                .min_row_height(30.0)
+                .show(ui, |ui| {
+                    for heading in [
+                        "Device / measurement",
+                        "Current",
+                        "Minimum",
+                        "Maximum",
+                        "Average",
+                        "Unit",
+                        "Age",
+                        "Status",
+                    ] {
+                        ui.strong(heading);
+                    }
+                    ui.end_row();
+                    for sensor in rows {
+                        let key = crate::history::sensor_series_key(sensor);
+                        let summary = histories
+                            .detail(&key)
+                            .and_then(|series| series.observed_summary(now, *range));
+                        let label = format!(
+                            "{} · {} · {}",
+                            sensor.device_name,
+                            sensor_family(sensor),
+                            sensor.name
+                        );
+                        ui.label(label).on_hover_text(format!(
+                            "Provider: {}\nSource: {}\nDevice ID: {}\nScope: {}",
+                            sensor.provider, sensor.value.source, sensor.device_id, sensor.scope
+                        ));
+                        ui.monospace(
+                            sensor
+                                .value
+                                .value
+                                .map_or_else(|| "—".into(), |v| format!("{v:.1}")),
+                        );
+                        ui.monospace(
+                            summary.map_or_else(|| "—".into(), |s| format!("{:.1}", s.minimum)),
+                        );
+                        ui.monospace(
+                            summary.map_or_else(|| "—".into(), |s| format!("{:.1}", s.maximum)),
+                        );
+                        ui.monospace(
+                            summary.map_or_else(|| "—".into(), |s| format!("{:.1}", s.average)),
+                        );
+                        ui.label(&sensor.value.unit);
+                        let age_ms =
+                            planora_telemetry::unix_ms().saturating_sub(sensor.value.sampled_at_ms);
+                        ui.monospace(format!("{}s", age_ms / 1_000));
+                        let status = sensor.value.unavailable_reason.as_ref().map_or_else(
+                            || {
+                                if age_ms > 5_000 {
+                                    "Stale".into()
+                                } else {
+                                    "Available".into()
+                                }
+                            },
+                            ToString::to_string,
+                        );
+                        ui.label(status).on_hover_text(format!(
+                            "Provider: {}\nSample time: {} ms Unix",
+                            sensor.provider, sensor.value.sampled_at_ms
+                        ));
+                        ui.end_row();
+                    }
+                    if section == ResourceSection::NetworkDetails {
+                        for iface in &frame.network_interfaces {
+                            let status = iface.link_state.as_deref().unwrap_or("Unknown");
+                            for (direction, metric, suffix) in [
+                                ("Receive", &iface.read_bytes_per_sec, "rx"),
+                                ("Transmit", &iface.write_bytes_per_sec, "tx"),
+                            ] {
+                                let key = format!("net:{}:{suffix}", iface.id);
+                                let summary = histories
+                                    .detail(&key)
+                                    .and_then(|series| series.observed_summary(now, *range));
+                                ui.label(format!("{} · {direction}", iface.label))
+                                    .on_hover_text(format!(
+                                        "Interface ID: {}\nType: {:?}\nHardware: {:?}\nSource: {}",
+                                        iface.id,
+                                        iface.interface_type,
+                                        iface.is_hardware_interface,
+                                        metric.source
+                                    ));
+                                ui.monospace(
+                                    metric.value.map_or_else(
+                                        || "—".into(),
+                                        |v| format_rate(Some(v as f32)),
+                                    ),
+                                );
+                                ui.monospace(
+                                    summary.map_or_else(
+                                        || "—".into(),
+                                        |s| format_rate(Some(s.minimum)),
+                                    ),
+                                );
+                                ui.monospace(
+                                    summary.map_or_else(
+                                        || "—".into(),
+                                        |s| format_rate(Some(s.maximum)),
+                                    ),
+                                );
+                                ui.monospace(
+                                    summary.map_or_else(
+                                        || "—".into(),
+                                        |s| format_rate(Some(s.average)),
+                                    ),
+                                );
+                                ui.label("B/s");
+                                let age_ms = planora_telemetry::unix_ms()
+                                    .saturating_sub(metric.sampled_at_ms);
+                                ui.monospace(format!("{}s", age_ms / 1_000));
+                                ui.label(status);
+                                ui.end_row();
+                            }
+                        }
+                    }
+                });
+        });
+    if section == ResourceSection::CpuSensors
+        && !sensors.iter().any(|sensor| {
+            sensor_section(sensor) == section
+                && sensor.sensor_type == planora_core::SensorType::FanRpm
+        })
+    {
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new("CPU fan RPM unavailable: no tachometer reading is exposed by the enabled read-only providers on this machine.").color(p.secondary));
+    }
+}
+
 fn render_selected(
     ui: &mut egui::Ui,
     frame: &TelemetryFrame,
@@ -1371,7 +1964,6 @@ fn render_selected(
     now: Instant,
     p: Palette,
 ) {
-    state.active_tab = item.category;
     #[cfg(test)]
     let original_right = ui.max_rect().right();
 
@@ -1396,6 +1988,13 @@ fn render_selected(
                                 .strong()
                                 .color(p.text),
                         );
+                        if item.category == 2 {
+                            ui.label(
+                                egui::RichText::new("Busiest engine")
+                                    .small()
+                                    .color(p.secondary),
+                            );
+                        }
                         ui.label(
                             egui::RichText::new(&item.value)
                                 .size(38.0 * crate::appearance::text_scale(ui.ctx()))
@@ -1482,6 +2081,23 @@ fn render_selected(
 
         ui.separator();
         ui.toggle_value(&mut state.show_provider_details, "Details");
+        if item.id.starts_with("net:") && item.id != "net:none" {
+            let pinned = state.pinned_interfaces.contains(&item.id);
+            if ui
+                .button(if pinned {
+                    "Unpin interface"
+                } else {
+                    "Pin to main resources"
+                })
+                .clicked()
+            {
+                if pinned {
+                    state.pinned_interfaces.remove(&item.id);
+                } else {
+                    state.pinned_interfaces.insert(item.id.clone());
+                }
+            }
+        }
 
         let empty = TimeSeries::default();
         let primary = choice_series(item, histories).unwrap_or(&empty);
@@ -2120,6 +2736,7 @@ fn render_selected(
                 sensors,
                 histories,
                 state,
+                item,
                 graph_modes[5],
                 exporter,
                 now,
@@ -2563,9 +3180,13 @@ fn render_network_tab(
                         ui.monospace(format_rate(rx_rate));
                         ui.monospace(format_rate(tx_rate));
 
-                        let is_conn = iface.link_state.as_deref() != Some("Disconnected");
-                        let state_str = iface.link_state.as_deref().unwrap_or("Connected");
-                        ui.colored_label(if is_conn { p.success } else { p.error }, state_str);
+                        let state_str = iface.link_state.as_deref().unwrap_or("Unknown");
+                        let state_color = match state_str {
+                            "Connected" | "Up" => p.success,
+                            "Disconnected" => p.error,
+                            _ => p.secondary,
+                        };
+                        ui.colored_label(state_color, state_str);
 
                         let speed_str = iface
                             .link_speed_bps
@@ -2595,13 +3216,30 @@ fn render_sensors_tab(
     sensors: &[SensorReading],
     histories: &ResourceHistories,
     state: &mut ResourcesViewState,
+    item: &Choice,
     show_graphs: bool,
     exporter: Option<&mut ExportManager>,
     now: Instant,
     p: Palette,
 ) {
+    let selected = sensors
+        .iter()
+        .find(|sensor| crate::history::sensor_series_key(sensor) == item.id);
+    let sensors: Vec<SensorReading> = if let Some(selected) = selected {
+        sensors
+            .iter()
+            .filter(|sensor| {
+                sensor_section(sensor) == sensor_section(selected)
+                    && sensor.device_id == selected.device_id
+                    && sensor.provider == selected.provider
+            })
+            .cloned()
+            .collect()
+    } else {
+        Vec::new()
+    };
     ui.horizontal(|ui| {
-        ui.heading("Hardware Sensors & Telemetry Providers");
+        ui.heading("Device measurements");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if let Some(exp) = exporter
                 && ui
@@ -2609,7 +3247,7 @@ fn render_sensors_tab(
                     .on_hover_text("Export current sensor snapshot to CSV")
                     .clicked()
             {
-                match exp.sensors(sensors.to_vec()) {
+                match exp.sensors(sensors.clone()) {
                     Ok(()) => {
                         state.export_message =
                             Some((Instant::now(), "Sensors exported to CSV".into()));
@@ -2625,7 +3263,7 @@ fn render_sensors_tab(
 
     ui.label(
         egui::RichText::new(
-            "Substantiated hardware metrics from isolated workers: Intel IGCL, NVIDIA NVML, AMD ADLX, and Advanced Sensors (LibreHardwareMonitor / PawnIO).",
+            "Exact readings and observed range. Provider and device identity remain available in the table.",
         )
         .size(11.5 * crate::appearance::text_scale(ui.ctx()))
         .color(p.secondary),
@@ -2646,8 +3284,14 @@ fn render_sensors_tab(
         return;
     }
 
-    // 1. Selectable Trend Charts by Compatible Unit
     if show_graphs {
+        ui.checkbox(
+            &mut state.compare_sensors,
+            "Compare up to four compatible readings from this device",
+        );
+    }
+    // The selected reading already has a large chart above. Comparison is opt-in.
+    if show_graphs && state.compare_sensors {
         ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new("Trend Group:").strong());
             let mut trend_kinds = vec![
@@ -2672,10 +3316,17 @@ fn render_sensors_tab(
         });
 
         let current_kind = state.selected_sensor_trend;
-        let matching_sensors: Vec<&SensorReading> = sensors
+        let mut matching_sensors: Vec<&SensorReading> = sensors
             .iter()
             .filter(|s| current_kind.matches_sensor(s))
             .collect();
+        matching_sensors.sort_by_key(|sensor| {
+            (
+                crate::history::sensor_series_key(sensor) != item.id,
+                sensor.name.clone(),
+            )
+        });
+        matching_sensors.truncate(4);
 
         if !matching_sensors.is_empty() {
             ui.add_space(6.0);
@@ -2751,20 +3402,22 @@ fn render_sensors_tab(
                 );
             }
         } else {
-            ui.label(
-                egui::RichText::new(format!(
-                    "No active sensors matching {} on this system.",
+            let message = if current_kind == SensorTrendKind::Fan {
+                "No fan RPM reading is exposed by the current read-only providers. A physical fan may still be present; Planora will not substitute requested speed or fan duty for measured RPM.".to_owned()
+            } else {
+                format!(
+                    "No active sensors matching {} on this device.",
                     current_kind.label()
-                ))
-                .color(p.secondary),
-            );
+                )
+            };
+            ui.label(egui::RichText::new(message).color(p.secondary));
         }
         ui.add_space(12.0);
     }
 
     // 2. Device-Grouped Sensor Tables
     let mut groups: BTreeMap<(String, String), Vec<&SensorReading>> = BTreeMap::new();
-    for sensor in sensors {
+    for sensor in &sensors {
         let device_name = if !sensor.device_name.is_empty() {
             sensor.device_name.clone()
         } else if !sensor.device_id.is_empty() {

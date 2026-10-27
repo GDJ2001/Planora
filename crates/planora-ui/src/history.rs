@@ -1354,6 +1354,7 @@ mod tests {
             device_id: "/nvme/0".into(),
             device_name: "Samsung SSD 990 PRO".into(),
             name: "Temperature".into(),
+            hardware_category: planora_core::HardwareCategory::Unknown,
             sensor_type: planora_core::SensorType::StorageTemperatureCelsius,
             value: planora_core::Metric::available(41.0, "°C", "LHM", 1_000),
         };
