@@ -1,6 +1,8 @@
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
   <Package Name="Planora" Manufacturer="Planora" Version="$(var.PlanoraVersion)" UpgradeCode="D8D1E733-9195-4B0D-9B9C-23E1B455D8D8" Scope="perMachine">
     <MajorUpgrade DowngradeErrorMessage="A newer Planora version is already installed." />
+    <util:CloseApplication Id="ClosePlanoraUI" Target="planora.exe" CloseMessage="yes" RebootPrompt="no" TerminateProcess="1" Timeout="5" />
     <Property Id="PLANORA_PREVIOUS_SID">
       <RegistrySearch Id="FindPlanoraAuthorizedSid" Root="HKLM" Key="SOFTWARE\Planora" Name="AuthorizedSid" Type="raw" Bitness="always64" />
     </Property>

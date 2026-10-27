@@ -7,6 +7,11 @@ pub struct InstanceGuard(windows_sys::Win32::Foundation::HANDLE);
 impl InstanceGuard {
     /// `None` means another normal window was activated.
     pub fn acquire() -> std::io::Result<Option<Self>> {
+        Self::acquire_or_replace(false)
+    }
+
+    /// Acquire the instance lock, optionally closing and replacing any existing running instance.
+    pub fn acquire_or_replace(replace: bool) -> std::io::Result<Option<Self>> {
         use windows_sys::Win32::{
             Foundation::{ERROR_ALREADY_EXISTS, GetLastError},
             System::{
@@ -29,6 +34,20 @@ impl InstanceGuard {
         }
         if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
             unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+            if replace {
+                close_existing();
+                // Wait briefly for the previous instance to terminate and release the mutex
+                for _ in 0..40 {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    let retry_handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+                    if !retry_handle.is_null() {
+                        if unsafe { GetLastError() } != ERROR_ALREADY_EXISTS {
+                            return Ok(Some(Self(retry_handle)));
+                        }
+                        unsafe { windows_sys::Win32::Foundation::CloseHandle(retry_handle) };
+                    }
+                }
+            }
             activate_existing();
             Ok(None)
         } else {
@@ -80,6 +99,39 @@ fn current_user_sid() -> std::io::Result<String> {
     })();
     unsafe { CloseHandle(token) };
     result
+}
+
+#[cfg(windows)]
+fn close_existing() {
+    use windows_sys::Win32::{
+        Foundation::CloseHandle,
+        System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE},
+        UI::WindowsAndMessaging::{FindWindowW, GetWindowThreadProcessId, PostMessageW, WM_CLOSE},
+    };
+    let title: Vec<u16> = "Planora".encode_utf16().chain(std::iter::once(0)).collect();
+    for _ in 0..10 {
+        let hwnd = unsafe { FindWindowW(std::ptr::null(), title.as_ptr()) };
+        if !hwnd.is_null() {
+            let mut pid = 0u32;
+            unsafe {
+                GetWindowThreadProcessId(hwnd, &mut pid);
+                PostMessageW(hwnd, WM_CLOSE, 0, 0);
+            }
+            // Give the process 500ms to gracefully exit on WM_CLOSE
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            if pid != 0 {
+                let proc = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+                if !proc.is_null() {
+                    unsafe {
+                        TerminateProcess(proc, 0);
+                        CloseHandle(proc);
+                    }
+                }
+            }
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
 #[cfg(windows)]

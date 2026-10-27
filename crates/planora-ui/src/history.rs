@@ -773,6 +773,8 @@ impl ResourceHistories {
 
     pub fn retention_tier(&self, key: &str) -> u8 {
         if self.priority_details.contains(key) {
+            3
+        } else if key.starts_with("sensor:") {
             2
         } else if !key.starts_with("gpu-engine:") {
             1

@@ -1714,6 +1714,7 @@ fn main() -> eframe::Result<()> {
     let mut fixture_scale = None;
     let mut fixture_text_scale = None;
     let mut fixture_scroll = None;
+    let mut replace_existing = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -1789,6 +1790,10 @@ fn main() -> eframe::Result<()> {
                 fixture_resource = Some(args[i + 1].clone());
                 i += 2;
             }
+            "--replace" => {
+                replace_existing = true;
+                i += 1;
+            }
             _ => {
                 i += 1;
             }
@@ -1800,7 +1805,7 @@ fn main() -> eframe::Result<()> {
     let _instance_guard = if capture_mode || native_fixture {
         None
     } else {
-        match instance::InstanceGuard::acquire() {
+        match instance::InstanceGuard::acquire_or_replace(replace_existing) {
             Ok(Some(guard)) => Some(guard),
             Ok(None) => return Ok(()),
             Err(error) => {

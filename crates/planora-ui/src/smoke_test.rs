@@ -418,16 +418,28 @@ pub fn create_native_fixture_app(theme: Theme, page: Page) -> App {
         )),
         link_state: Some("Up".into()),
     }];
-    frame.sensors = vec![SensorReading {
-        id: "gpu/temperature/0".into(),
-        device_id: "gpu:0".into(),
-        device_name: "Intel Iris Xe Graphics".into(),
-        name: "GPU temperature".into(),
-        sensor_type: SensorType::GpuTemperatureCelsius,
-        scope: "Intel Iris Xe Graphics".into(),
-        provider: "Fixture data".into(),
-        value: Metric::available(57.0, "°C", "Fixture data", timestamp),
-    }];
+    frame.sensors = vec![
+        SensorReading {
+            id: "gpu/temperature/0".into(),
+            device_id: "gpu:0".into(),
+            device_name: "Intel Iris Xe Graphics".into(),
+            name: "GPU temperature".into(),
+            sensor_type: SensorType::GpuTemperatureCelsius,
+            scope: "Intel Iris Xe Graphics".into(),
+            provider: "Fixture data".into(),
+            value: Metric::available(57.0, "°C", "Fixture data", timestamp),
+        },
+        SensorReading {
+            id: "cpu/package_power/0".into(),
+            device_id: "cpu:0".into(),
+            device_name: "11th Gen Intel Core i7-1165G7".into(),
+            name: "Package Power".into(),
+            sensor_type: SensorType::CpuPackagePowerWatts,
+            scope: "11th Gen Intel Core i7-1165G7".into(),
+            provider: "Fixture data".into(),
+            value: Metric::available(28.5, "W", "Fixture data", timestamp),
+        },
+    ];
     frame.validate().expect("native fixture frame is valid");
     let mut histories = crate::history::ResourceHistories {
         session_id: frame.session_id,
@@ -540,6 +552,14 @@ pub fn create_native_fixture_app(theme: Theme, page: Page) -> App {
             (
                 "net:fixture-ethernet:tx",
                 80_000.0 + 60_000.0 * (index as f32 * 0.21).cos().abs(),
+            ),
+            (
+                "sensor:gpu/temperature/0",
+                52.0 + 8.0 * (index as f32 * 0.15).sin().abs(),
+            ),
+            (
+                "sensor:cpu/package_power/0",
+                22.0 + 12.0 * (index as f32 * 0.22).cos().abs(),
             ),
         ] {
             histories.push_detail(
@@ -1052,4 +1072,20 @@ pub fn run_smoke_suite(out_dir: &Path, capture_png: bool) -> Result<(), String> 
 
     println!("=== Smoke Suite Completed Successfully! ===");
     Ok(())
+}
+
+#[test]
+fn native_fixture_sensor_detail_is_retained_and_populated() {
+    let app = create_native_fixture_app(Theme::Dark, Page::Performance);
+    let histories = &app.histories;
+    let now = Instant::now();
+    let sensor_key = "sensor:gpu/temperature/0";
+    let detail = histories.detail(sensor_key).expect("fixture sensor detail exists");
+    assert!(!detail.samples.is_empty(), "sensor history should have samples");
+    let summary = detail
+        .observed_summary(now, crate::history::HistoryRange::Sec60)
+        .expect("fixture sensor summary exists");
+    assert!(summary.observed_seconds > 0, "observed seconds should be > 0");
+    assert!(summary.coverage_percent() > 50.0, "coverage should be > 50%");
+    assert!(summary.average > 40.0, "average temp should be realistic");
 }

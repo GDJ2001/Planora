@@ -83,6 +83,7 @@ try {
     New-Item -ItemType Directory -Force -Path (Join-Path $root 'dist') | Out-Null
     $msi = Join-Path $root "dist\Planora-$version-x64.msi"
     wix build 'packaging/windows/Planora.wxs' -arch x64 `
+        -ext WixToolset.Util.wixext `
         -d "PlanoraVersion=$productVersionExpected" -d "ProjectDir=$root" -d "SourceDir=$sourceDir" -o $msi
     if ($LASTEXITCODE -ne 0) { throw 'WiX build failed' }
     wix msi validate $msi

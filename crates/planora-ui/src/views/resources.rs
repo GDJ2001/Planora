@@ -375,13 +375,9 @@ impl Default for ResourcesViewState {
 impl ResourcesViewState {
     pub fn priority_history_keys(&self, sensors: &[SensorReading]) -> BTreeSet<String> {
         let mut keys = BTreeSet::new();
-        // Retain history for the actively visible sensor trend group
-        keys.extend(
-            sensors
-                .iter()
-                .filter(|sensor| self.selected_sensor_trend.matches_sensor(sensor))
-                .map(crate::history::sensor_series_key),
-        );
+        // Retain 60s history for all active hardware sensors so that left-rail
+        // selector sparklines and instant selection switching are always available.
+        keys.extend(sensors.iter().map(crate::history::sensor_series_key));
         if let Some(resource) = self.selected_resource.as_deref() {
             if resource.starts_with("sensor:") {
                 keys.insert(resource.to_owned());
