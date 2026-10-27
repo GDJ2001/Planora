@@ -35,20 +35,26 @@ impl InstanceGuard {
         if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
             unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
             if replace {
-                close_existing();
-                // Wait briefly for the previous instance to terminate and release the mutex
-                for _ in 0..40 {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                    let retry_handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
-                    if !retry_handle.is_null() {
-                        if unsafe { GetLastError() } != ERROR_ALREADY_EXISTS {
-                            return Ok(Some(Self(retry_handle)));
-                        }
-                        unsafe { windows_sys::Win32::Foundation::CloseHandle(retry_handle) };
+                terminate_other_planora_processes();
+            } else if activate_existing() {
+                return Ok(None);
+            } else {
+                // If another process held the mutex but has NO visible window after waiting,
+                // it is a stranded background process. Terminate it to recover normal UI.
+                terminate_other_planora_processes();
+            }
+
+            // Retry acquiring the mutex after cleaning up the existing instance
+            for _ in 0..40 {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                let retry_handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+                if !retry_handle.is_null() {
+                    if unsafe { GetLastError() } != ERROR_ALREADY_EXISTS {
+                        return Ok(Some(Self(retry_handle)));
                     }
+                    unsafe { windows_sys::Win32::Foundation::CloseHandle(retry_handle) };
                 }
             }
-            activate_existing();
             Ok(None)
         } else {
             Ok(Some(Self(handle)))
@@ -102,25 +108,32 @@ fn current_user_sid() -> std::io::Result<String> {
 }
 
 #[cfg(windows)]
-fn close_existing() {
+fn terminate_other_planora_processes() {
     use windows_sys::Win32::{
         Foundation::CloseHandle,
-        System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE},
-        UI::WindowsAndMessaging::{FindWindowW, GetWindowThreadProcessId, PostMessageW, WM_CLOSE},
+        System::{
+            Diagnostics::ToolHelp::{
+                CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+                TH32CS_SNAPPROCESS,
+            },
+            Threading::{GetCurrentProcessId, OpenProcess, TerminateProcess, PROCESS_TERMINATE},
+        },
     };
-    let title: Vec<u16> = "Planora".encode_utf16().chain(std::iter::once(0)).collect();
-    for _ in 0..10 {
-        let hwnd = unsafe { FindWindowW(std::ptr::null(), title.as_ptr()) };
-        if !hwnd.is_null() {
-            let mut pid = 0u32;
-            unsafe {
-                GetWindowThreadProcessId(hwnd, &mut pid);
-                PostMessageW(hwnd, WM_CLOSE, 0, 0);
-            }
-            // Give the process 500ms to gracefully exit on WM_CLOSE
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            if pid != 0 {
-                let proc = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+    let my_pid = unsafe { GetCurrentProcessId() };
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot.is_null() {
+        return;
+    }
+    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+    if unsafe { Process32FirstW(snapshot, &mut entry) } != 0 {
+        loop {
+            let name_len = (0..entry.szExeFile.len())
+                .find(|&i| entry.szExeFile[i] == 0)
+                .unwrap_or(entry.szExeFile.len());
+            let name = String::from_utf16_lossy(&entry.szExeFile[..name_len]);
+            if name.eq_ignore_ascii_case("planora.exe") && entry.th32ProcessID != my_pid {
+                let proc = unsafe { OpenProcess(PROCESS_TERMINATE, 0, entry.th32ProcessID) };
                 if !proc.is_null() {
                     unsafe {
                         TerminateProcess(proc, 0);
@@ -128,14 +141,16 @@ fn close_existing() {
                     }
                 }
             }
-            return;
+            if unsafe { Process32NextW(snapshot, &mut entry) } == 0 {
+                break;
+            }
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
     }
+    unsafe { CloseHandle(snapshot) };
 }
 
 #[cfg(windows)]
-fn activate_existing() {
+fn activate_existing() -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         FindWindowW, SW_RESTORE, SetForegroundWindow, ShowWindow,
     };
@@ -149,10 +164,11 @@ fn activate_existing() {
                 ShowWindow(hwnd, SW_RESTORE);
                 SetForegroundWindow(hwnd);
             }
-            return;
+            return true;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
+    false
 }
 
 #[cfg(windows)]
