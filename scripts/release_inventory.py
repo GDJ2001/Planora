@@ -62,7 +62,11 @@ def main() -> None:
         raise SystemExit(f"Dependencies without declared licenses: {', '.join(missing)}")
 
     version = next(p["version"] for p in dependencies if p["name"] == "planora-ui" and p["workspace"])
-    version_tokens = {version, version.replace("-", "-0.", 1)}
+    version_tokens = {
+        version,
+        version.replace("-", "-0.", 1),  # RPM prerelease
+        version.replace("-beta.", "~beta."),  # Debian prerelease
+    }
     artifacts = []
     for path in sorted(dist.iterdir()):
         if not path.is_file() or path.name in {"SHA256SUMS.txt", "provenance.json"}:
