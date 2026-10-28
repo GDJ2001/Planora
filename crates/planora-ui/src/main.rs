@@ -79,9 +79,9 @@ pub struct App {
     replay_input: String,
     record_selected_process: bool,
     recording_error: Option<String>,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     authorization_child: Option<std::process::Child>,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     authorization_error: Option<String>,
 
     // Navigation & View states
@@ -113,7 +113,7 @@ pub struct App {
     window_work_area: WorkArea,
     #[cfg(windows)]
     native_handle: isize,
-    last_monitor_geometry: Option<(Option<Rect>, Option<f32>)>,
+    last_monitor_geometry: Option<(Option<Rect>, Option<f32>, Option<Vec2>)>,
     normal_window: bool,
     window_recovered: bool,
     startup_connected_logged: bool,
@@ -160,6 +160,35 @@ fn show_page_scroll<R>(
 }
 
 impl App {
+    #[cfg(target_os = "linux")]
+    fn launch_linux_authorization(&mut self, revoke: bool) {
+        if self.authorization_child.is_some() {
+            return;
+        }
+        let executable = if revoke {
+            "/usr/libexec/planora/revoke-user"
+        } else {
+            "/usr/libexec/planora/authorize-user"
+        };
+        if !std::path::Path::new(executable).is_file() {
+            self.authorization_error =
+                Some("Install the Linux package to manage helper authorization.".into());
+            return;
+        }
+        match std::process::Command::new("/usr/bin/pkexec")
+            .arg(executable)
+            .spawn()
+        {
+            Ok(child) => {
+                self.authorization_child = Some(child);
+                self.authorization_error = None;
+            }
+            Err(error) => {
+                self.authorization_error =
+                    Some(format!("Could not request administrator approval: {error}"))
+            }
+        }
+    }
     fn reset_history(&mut self) {
         self.history_epoch = self.history_epoch.wrapping_add(1);
         self.history_last_enqueued = None;
@@ -347,10 +376,12 @@ impl App {
             replay_input: String::new(),
             record_selected_process: false,
             recording_error: None,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             authorization_child: None,
             #[cfg(windows)]
             authorization_error: STARTUP_AUTH_ERROR.get().cloned(),
+            #[cfg(target_os = "linux")]
+            authorization_error: None,
             page: Page::Performance,
             selected: None,
             display_pause: DisplayPause::default(),
@@ -393,6 +424,14 @@ impl App {
             self.settings.theme
         };
         let is_dark = theme_is_dark(preference, ctx.system_theme());
+        #[cfg(target_os = "linux")]
+        let is_dark = if self.normal_window {
+            self.applied_appearance
+                .and_then(|appearance| appearance.preferred_dark)
+                .unwrap_or(is_dark)
+        } else {
+            is_dark
+        };
         accessible_palette(
             is_dark,
             self.applied_appearance.unwrap_or_default().contrast,
@@ -405,12 +444,25 @@ impl App {
         } else {
             self.settings.theme
         };
-        ctx.set_theme(match preference {
+        let snapshot = self.appearance.snapshot();
+        let selected_theme = match preference {
             theme::Theme::System => egui::ThemePreference::System,
             theme::Theme::Dark => egui::ThemePreference::Dark,
             theme::Theme::Light => egui::ThemePreference::Light,
-        });
-        let snapshot = self.appearance.snapshot();
+        };
+        #[cfg(target_os = "linux")]
+        let selected_theme = if self.normal_window {
+            snapshot.preferred_dark.map_or(selected_theme, |dark| {
+                if dark {
+                    egui::ThemePreference::Dark
+                } else {
+                    egui::ThemePreference::Light
+                }
+            })
+        } else {
+            selected_theme
+        };
+        ctx.set_theme(selected_theme);
         if self.applied_appearance != Some(snapshot) {
             ctx.set_zoom_factor(1.0); // OS DPI is supplied by winit; discard stored app zoom.
             ctx.options_mut(|options| options.zoom_with_keyboard = false);
@@ -597,7 +649,7 @@ impl App {
         self.recorder.request_stop();
         self.exporter.request_cancel();
         self.replay.stop();
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         if let Some(mut child) = self.authorization_child.take() {
             let _ = child.kill();
             let _ = child.wait();
@@ -706,6 +758,12 @@ impl App {
     }
 
     pub fn render_ui(&mut self, root: &mut egui::Ui) {
+        #[cfg(target_os = "linux")]
+        if instance::take_activation() {
+            root.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            root.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
         if self.lifecycle == LifecycleState::Starting {
             self.lifecycle = LifecycleState::Running;
         }
@@ -739,8 +797,28 @@ impl App {
         }
         if self.normal_window {
             let viewport = root.ctx().input(|input| input.viewport().clone());
-            let geometry = (viewport.outer_rect, viewport.native_pixels_per_point);
+            let geometry = (
+                viewport.outer_rect,
+                viewport.native_pixels_per_point,
+                viewport.monitor_size,
+            );
             if self.last_monitor_geometry != Some(geometry) {
+                #[cfg(target_os = "linux")]
+                if let Some(size) = viewport
+                    .monitor_size
+                    .filter(|size| size.x.is_finite() && size.y.is_finite())
+                {
+                    self.window_work_area = WorkArea {
+                        min: [0.0, 0.0],
+                        max: [size.x, size.y],
+                    };
+                    self.window_placement = self.window_placement.validate(self.window_work_area);
+                    root.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::MinInnerSize(Vec2::new(
+                            window_placement::MIN_SIZE[0].min(size.x),
+                            window_placement::MIN_SIZE[1].min(size.y),
+                        )));
+                }
                 #[cfg(windows)]
                 if self.native_handle != 0 {
                     self.window_work_area = window_placement::window_work_area(self.native_handle);
@@ -773,11 +851,14 @@ impl App {
                 self.window_recovered = true;
             }
             if self.frames_rendered >= 3 {
-                self.window_placement
-                    .observe(&viewport, self.window_work_area);
+                self.window_placement.observe(
+                    &viewport,
+                    root.ctx().content_rect().size(),
+                    self.window_work_area,
+                );
             }
         }
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         if let Some(child) = self.authorization_child.as_mut() {
             match child.try_wait() {
                 Ok(Some(status)) => {
@@ -861,7 +942,7 @@ impl App {
         let p = self.palette(&ctx);
 
         self.replay.poll();
-        let (mut app_state, mut frame_opt, mut topo_opt, mut caps, shared_copy) = {
+        let (mut app_state, mut frame_opt, mut topo_opt, caps, shared_copy) = {
             let shared = self.shared.lock().unwrap();
             let state = shared.state.clone().unwrap_or(AppState::Connecting);
             let frame = shared.frame.clone();
@@ -879,6 +960,7 @@ impl App {
                 sensor_capabilities: shared.sensor_capabilities.clone(),
                 benchmark_state: shared.benchmark_state.clone(),
                 profile_state: shared.profile_state.clone(),
+                pmu_sources: shared.pmu_sources.clone(),
                 sampling_effective_ms: shared.sampling_effective_ms,
                 diagnostic_logs: shared.diagnostic_logs.clone(),
                 affinity: shared.affinity.clone(),
@@ -891,7 +973,11 @@ impl App {
             (state, frame, topo, caps, shared_copy)
         };
         #[cfg(windows)]
-        caps.extend(shared_copy.sensor_capabilities.iter().cloned());
+        let caps = {
+            let mut caps = caps;
+            caps.extend(shared_copy.sensor_capabilities.iter().cloned());
+            caps
+        };
 
         if self.replay.is_active() {
             app_state = AppState::Replay;
@@ -1002,9 +1088,16 @@ impl App {
                 }
             }
         } else {
+            #[cfg(windows)]
             let priority = self
                 .resources_state
                 .priority_history_keys(live_sensors.as_ref());
+            #[cfg(not(windows))]
+            let priority = self.resources_state.priority_history_keys(
+                frame_opt
+                    .as_ref()
+                    .map_or(&[], |frame| frame.sensors.as_slice()),
+            );
             let mut shared = self.shared.lock().unwrap();
             shared.live_history_enabled = true;
             shared.history_epoch = self.history_epoch;
@@ -1299,6 +1392,15 @@ impl App {
                                 {
                                     ui.colored_label(p.error, "Registration failed; check Console.app for details.");
                                 }
+                                #[cfg(target_os = "linux")]
+                                {
+                                    if ui.add_enabled(self.authorization_child.is_none(),
+                                        egui::Button::new("Authorize this account…").min_size(Vec2::new(220.0, 36.0))).clicked() {
+                                        self.launch_linux_authorization(false);
+                                    }
+                                    if self.authorization_child.is_some() { ui.label("Waiting for administrator approval…"); }
+                                    if let Some(error) = &self.authorization_error { ui.colored_label(p.error, error); }
+                                }
                                 ui.add_space(14.0);
                                 ui.colored_label(p.secondary, "Only local IPC is used. No network listener or automatic recording is started.");
                             });
@@ -1505,6 +1607,7 @@ impl App {
                             ui,
                             shared_copy.benchmark_state.as_ref(),
                             shared_copy.profile_state.as_ref(),
+                            &shared_copy.pmu_sources,
                             self.selected.as_ref(),
                             &mut self.benchmarks_state,
                             &app_state,
@@ -1544,6 +1647,17 @@ impl App {
                             ui.label("Revoking stops the local helper until an administrator authorizes it again.");
                             if ui.add_enabled(self.authorization_child.is_none(), egui::Button::new("Revoke Helper Authorization")).clicked() {
                                 self.launch_helper_script("Revoke-Planora.ps1");
+                            }
+                            if self.authorization_child.is_some() { ui.label("Waiting for administrator approval…"); }
+                            if let Some(error) = &self.authorization_error { ui.colored_label(p.error, error); }
+                        }
+                        #[cfg(target_os = "linux")]
+                        {
+                            ui.separator();
+                            ui.strong("Helper authorization");
+                            if ui.add_enabled(self.authorization_child.is_none(),
+                                egui::Button::new("Revoke authorization for this account…")).clicked() {
+                                self.launch_linux_authorization(true);
                             }
                             if self.authorization_child.is_some() { ui.label("Waiting for administrator approval…"); }
                             if let Some(error) = &self.authorization_error { ui.colored_label(p.error, error); }
@@ -1618,10 +1732,11 @@ impl Drop for App {
                     worker.thread().unpark();
                     let _ = worker.join();
                 }
-                if let Some(mut child) = self.authorization_child.take() {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                }
+            }
+            #[cfg(any(windows, target_os = "linux"))]
+            if let Some(mut child) = self.authorization_child.take() {
+                let _ = child.kill();
+                let _ = child.wait();
             }
         }
     }
@@ -1812,11 +1927,27 @@ fn main() -> eframe::Result<()> {
     }
 
     let capture_mode = screenshot_out.is_some();
+    #[cfg(not(windows))]
+    let _ = replace_existing;
     #[cfg(windows)]
     let _instance_guard = if capture_mode || native_fixture {
         None
     } else {
         match instance::InstanceGuard::acquire_or_replace(replace_existing) {
+            Ok(Some(guard)) => Some(guard),
+            Ok(None) => return Ok(()),
+            Err(error) => {
+                startup::record(&format!("instance-lock-error {error}"));
+                startup::show_fatal(&format!("Could not open the application window: {error}"));
+                return Ok(());
+            }
+        }
+    };
+    #[cfg(target_os = "linux")]
+    let _instance_guard = if capture_mode || native_fixture {
+        None
+    } else {
+        match instance::InstanceGuard::acquire_or_replace(false) {
             Ok(Some(guard)) => Some(guard),
             Ok(None) => return Ok(()),
             Err(error) => {
@@ -2205,6 +2336,7 @@ mod tests {
             .set_fixture_snapshot(appearance::SystemAppearance {
                 text_scale: 1.5,
                 animations: false,
+                preferred_dark: None,
                 contrast: Some((Color32::WHITE, Color32::BLACK)),
             });
         app.apply_theme(&ctx);

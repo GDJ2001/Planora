@@ -1,5 +1,138 @@
-//! Keep one normal UI per Windows logon session. Command-line tools and native
-//! fixtures never acquire this lock.
+//! Keep one normal UI per graphical user session. Command-line tools and
+//! native fixtures never acquire this lock.
+#[cfg(unix)]
+pub struct InstanceGuard {
+    file: std::fs::File,
+    socket_path: std::path::PathBuf,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(unix)]
+static ACTIVATION_PENDING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(unix)]
+pub fn take_activation() -> bool {
+    ACTIVATION_PENDING.swap(false, std::sync::atomic::Ordering::AcqRel)
+}
+
+#[cfg(unix)]
+impl InstanceGuard {
+    pub fn acquire_or_replace(_replace: bool) -> std::io::Result<Option<Self>> {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+        let mut runtime = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(std::path::PathBuf::from)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "XDG_RUNTIME_DIR is unavailable",
+                )
+            })?;
+        let mut metadata = std::fs::symlink_metadata(&runtime)?;
+        // WSLg may supply a runtime directory owned by its compositor user,
+        // not the distribution account. Keep the lock in a private local
+        // directory rather than trusting a shared or foreign-owned path.
+        if metadata.uid() != unsafe { libc::geteuid() }
+            && std::env::var_os("WSL_DISTRO_NAME").is_some()
+        {
+            runtime = std::env::temp_dir()
+                .join(format!("planora-runtime-{}", unsafe { libc::geteuid() }));
+            match std::fs::create_dir(&runtime) {
+                Ok(()) => {
+                    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700))?
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+            metadata = std::fs::symlink_metadata(&runtime)?;
+        }
+        if !metadata.is_dir()
+            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.mode() & 0o077 != 0
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "XDG_RUNTIME_DIR must belong to this user and be private",
+            ));
+        }
+        let session = std::env::var("XDG_SESSION_ID").unwrap_or_else(|_| "default".into());
+        let session: String = session
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
+            .take(32)
+            .collect();
+        let session = if session.is_empty() {
+            "default"
+        } else {
+            &session
+        };
+        let path = runtime.join(format!("planora-ui-{session}.lock"));
+        let socket_path = runtime.join(format!("planora-ui-{session}.sock"));
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .open(path)?;
+        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if result == 0 {
+            use std::os::unix::net::UnixDatagram;
+            let _ = std::fs::remove_file(&socket_path);
+            let socket = UnixDatagram::bind(&socket_path)?;
+            std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
+            socket.set_read_timeout(Some(std::time::Duration::from_millis(250)))?;
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let worker_stop = stop.clone();
+            let worker = std::thread::Builder::new()
+                .name("planora-activation".into())
+                .spawn(move || {
+                    let mut message = [0u8; 16];
+                    while !worker_stop.load(std::sync::atomic::Ordering::Acquire) {
+                        if let Ok((count, _)) = socket.recv_from(&mut message)
+                            && &message[..count] == b"activate"
+                        {
+                            ACTIVATION_PENDING.store(true, std::sync::atomic::Ordering::Release);
+                        }
+                    }
+                })?;
+            Ok(Some(Self {
+                file,
+                socket_path,
+                stop,
+                worker: Some(worker),
+            }))
+        } else if std::io::Error::last_os_error().kind() == std::io::ErrorKind::WouldBlock {
+            use std::os::unix::net::UnixDatagram;
+            let sender = UnixDatagram::unbound()?;
+            for _ in 0..4 {
+                if sender.send_to(b"activate", &socket_path).is_ok() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Ok(None)
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for InstanceGuard {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+        let _ = std::fs::remove_file(&self.socket_path);
+        unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
 #[cfg(windows)]
 pub struct InstanceGuard(windows_sys::Win32::Foundation::HANDLE);
 

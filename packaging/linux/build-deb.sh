@@ -2,16 +2,23 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 version="${PLANORA_VERSION:-$(cargo pkgid --manifest-path "$root/Cargo.toml" -p planora-ui | sed 's/.*[#@]//')}"
+case "$version" in
+  *-beta.*) deb_version="${version/-beta./~beta.}-1" ;;
+  *) deb_version="$version-1" ;;
+esac
 release_dir="${CARGO_TARGET_DIR:-$root/target}/release"
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 install -Dm755 "$release_dir/planora" "$stage/usr/bin/planora"
 install -Dm755 "$release_dir/planora-helper" "$stage/usr/libexec/planora/planora-helper"
 install -Dm755 "$root/packaging/linux/authorize-user" "$stage/usr/libexec/planora/authorize-user"
+install -Dm755 "$root/packaging/linux/revoke-user" "$stage/usr/libexec/planora/revoke-user"
 install -Dm644 "$root/packaging/linux/planora-helper.service" "$stage/usr/lib/systemd/system/planora-helper.service"
 install -Dm644 "$root/packaging/linux/planora.sysusers" "$stage/usr/lib/sysusers.d/planora.conf"
 install -Dm644 "$root/packaging/linux/org.planora.authorize.policy" "$stage/usr/share/polkit-1/actions/org.planora.authorize.policy"
+install -Dm644 "$root/packaging/linux/org.planora.revoke.policy" "$stage/usr/share/polkit-1/actions/org.planora.revoke.policy"
 install -Dm644 "$root/packaging/linux/planora.desktop" "$stage/usr/share/applications/planora.desktop"
+install -Dm644 "$root/packaging/linux/org.planora.Planora.metainfo.xml" "$stage/usr/share/metainfo/org.planora.planora.metainfo.xml"
 for license_file in LICENSE-MIT LICENSE-APACHE NOTICE; do
   install -Dm644 "$root/$license_file" "$stage/usr/share/doc/planora/$license_file"
 done
@@ -22,10 +29,10 @@ install -Dm644 "$root/assets/brand/platforms/linux/planora.svg" "$stage/usr/shar
 mkdir -p "$stage/DEBIAN" "$root/dist"
 cat > "$stage/DEBIAN/control" <<EOF
 Package: planora
-Version: $version
+Version: $deb_version
 Architecture: amd64
 Maintainer: Planora <maintainers@invalid.example>
-Depends: libc6, libgcc-s1, libx11-6, libwayland-client0, libpolkit-gobject-1-0, pkexec, systemd
+Depends: libc6, libgcc-s1, libx11-6, libxkbcommon-x11-0, libwayland-client0, libpolkit-gobject-1-0, pkexec, systemd
 Section: utils
 Priority: optional
 Description: Native hardware visualizer and resource monitor
@@ -36,6 +43,9 @@ cat > "$stage/DEBIAN/postinst" <<'EOF'
 set -e
 systemd-sysusers /usr/lib/sysusers.d/planora.conf
 systemctl daemon-reload
+if [ "${2:-}" ]; then
+  systemctl try-restart planora-helper.service || true
+fi
 systemctl enable --now planora-helper.service
 EOF
 cat > "$stage/DEBIAN/prerm" <<'EOF'
@@ -47,10 +57,13 @@ cat > "$stage/DEBIAN/postrm" <<'EOF'
 #!/bin/sh
 set -e
 systemctl daemon-reload || true
+if [ "$1" = remove ] || [ "$1" = purge ]; then
+  rm -rf /var/lib/planora/authorized-uids
+fi
 if [ "$1" = purge ]; then
   userdel planora 2>/dev/null || true
   groupdel planora-users 2>/dev/null || true
 fi
 EOF
 chmod 755 "$stage/DEBIAN/"{postinst,prerm,postrm}
-dpkg-deb --build --root-owner-group "$stage" "$root/dist/planora_${version}_amd64.deb"
+dpkg-deb --build --root-owner-group "$stage" "$root/dist/planora_${deb_version}_amd64.deb"

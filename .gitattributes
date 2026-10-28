@@ -3,3 +3,5 @@
 *.sh text eol=lf
 packaging/macos/scripts/* text eol=lf
 packaging/linux/authorize-user text eol=lf
+packaging/linux/revoke-user text eol=lf
+packaging/linux/*.service text eol=lf

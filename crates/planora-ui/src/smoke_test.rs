@@ -263,6 +263,7 @@ pub fn create_test_app(theme: Theme, page: Page) -> App {
         ],
         benchmark_state: Some(planora_core::BenchmarkState::Idle),
         profile_state: None,
+        pmu_sources: Vec::new(),
         sampling_effective_ms: Some(100),
         diagnostic_logs: Vec::new(),
         affinity: None,
@@ -296,9 +297,9 @@ pub fn create_test_app(theme: Theme, page: Page) -> App {
         replay_input: String::new(),
         record_selected_process: false,
         recording_error: None,
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         authorization_child: None,
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         authorization_error: None,
         page,
         selected: None,

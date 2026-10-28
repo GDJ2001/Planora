@@ -87,7 +87,12 @@ impl Placement {
         builder
     }
 
-    pub fn observe(&mut self, viewport: &egui::ViewportInfo, work: WorkArea) {
+    pub fn observe(
+        &mut self,
+        viewport: &egui::ViewportInfo,
+        observed_size: egui::Vec2,
+        work: WorkArea,
+    ) {
         if viewport.minimized == Some(true) || viewport.fullscreen == Some(true) {
             return;
         }
@@ -95,10 +100,11 @@ impl Placement {
             self.maximized = true;
             return;
         }
-        let Some(inner) = viewport.inner_rect else {
-            return;
-        };
-        let size = inner.size();
+        // Wayland does not expose an absolute inner rectangle; the current
+        // viewport content size still gives the last normal window size.
+        let size = viewport
+            .inner_rect
+            .map_or(observed_size, |inner| inner.size());
         let proposed = Self {
             version: VERSION,
             position: viewport.outer_rect.map(|r| [r.min.x, r.min.y]),

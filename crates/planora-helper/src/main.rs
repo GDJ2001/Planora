@@ -35,10 +35,14 @@ struct ConnectionGuard {
     caller_id: u64,
     connection_id: u64,
     sampling: Arc<SamplingCoordinator>,
+    benchmarks: Arc<BenchmarkManager>,
+    profiling: Arc<ProfileManager>,
 }
 
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
+        self.benchmarks.cancel_owned(self.connection_id);
+        self.profiling.cancel_owned(self.connection_id);
         self.sampling.remove(self.connection_id);
         ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::SeqCst);
         let mut map = CALLER_CONNECTIONS.lock().unwrap();
@@ -116,6 +120,7 @@ impl DiagnosticLogger {
 
 struct BenchmarkManager {
     current_job_id: AtomicU64,
+    owner_connection: AtomicU64,
     state: Mutex<BenchmarkState>,
     cancel: Mutex<Arc<AtomicBool>>,
     worker: Mutex<Option<thread::JoinHandle<()>>>,
@@ -125,6 +130,7 @@ impl BenchmarkManager {
     fn new() -> Self {
         Self {
             current_job_id: AtomicU64::new(0),
+            owner_connection: AtomicU64::new(0),
             state: Mutex::new(BenchmarkState::Idle),
             cancel: Mutex::new(Arc::new(AtomicBool::new(false))),
             worker: Mutex::new(None),
@@ -133,6 +139,16 @@ impl BenchmarkManager {
 
     fn status(&self) -> BenchmarkState {
         self.state.lock().unwrap().clone()
+    }
+
+    fn cancel_owned(&self, connection_id: u64) {
+        let mut state = self.state.lock().unwrap();
+        if self.owner_connection.load(Ordering::SeqCst) == connection_id
+            && let BenchmarkState::Running { job_id, .. } = *state
+        {
+            self.cancel.lock().unwrap().store(true, Ordering::SeqCst);
+            *state = BenchmarkState::Cancelling { job_id };
+        }
     }
 
     fn cancel(&self, job_id: u64) -> Response {
@@ -178,6 +194,7 @@ impl BenchmarkManager {
 
 struct ProfileManager {
     current_job_id: AtomicU64,
+    owner_connection: AtomicU64,
     started_at: Mutex<Option<Instant>>,
     state: Mutex<ProfileState>,
     cancel: Mutex<Arc<AtomicBool>>,
@@ -188,6 +205,7 @@ impl ProfileManager {
     fn new() -> Self {
         Self {
             current_job_id: AtomicU64::new(0),
+            owner_connection: AtomicU64::new(0),
             started_at: Mutex::new(None),
             state: Mutex::new(ProfileState::Idle),
             cancel: Mutex::new(Arc::new(AtomicBool::new(false))),
@@ -203,6 +221,16 @@ impl ProfileManager {
             *elapsed_ms = started.elapsed().as_millis() as u64;
         }
         status
+    }
+
+    fn cancel_owned(&self, connection_id: u64) {
+        let mut state = self.state.lock().unwrap();
+        if self.owner_connection.load(Ordering::SeqCst) == connection_id
+            && let ProfileState::Running { job_id, .. } = *state
+        {
+            self.cancel.lock().unwrap().store(true, Ordering::SeqCst);
+            *state = ProfileState::Cancelling { job_id };
+        }
     }
 
     fn cancel(&self, job_id: u64) -> Response {
@@ -320,14 +348,18 @@ fn capabilities(frame: &TelemetryFrame) -> Vec<Capability> {
     let advanced_present = false;
 
     let now = planora_telemetry::unix_ms();
+    #[cfg(not(target_os = "linux"))]
     let pmu_sources_discovered = profiler::enumerate_pmu_sources().len();
+    #[cfg(not(target_os = "linux"))]
     let pmu_reason = if cfg!(windows) {
         format!(
             "Windows exposes {pmu_sources_discovered} profiling sources, but the sampled-event collector is not implemented"
         )
     } else {
-        "PMU sampled profiling requires Windows ETW profiling".to_owned()
+        "PMU sampling is unavailable on this OS".to_owned()
     };
+    #[cfg(target_os = "linux")]
+    let pmu_probe = profiler::probe_pmu();
     let make = |name: &str,
                 scope: &str,
                 provider: &str,
@@ -342,93 +374,188 @@ fn capabilities(frame: &TelemetryFrame) -> Vec<Capability> {
         reason: reason.map(str::to_owned),
         recovery_action: recovery.map(str::to_owned),
     };
-    let result = vec![
-        make(
-            "CPU and process telemetry",
-            "System and processes",
-            "OS telemetry",
-            CapabilityState::Available,
-            None,
-            None,
-        ),
-        make(
-            "GPU engine utilization",
-            "GPU engines",
-            "Windows PDH / platform provider",
+    let result =
+        vec![
+            make(
+                "CPU and process telemetry",
+                "System and processes",
+                "OS telemetry",
+                CapabilityState::Available,
+                None,
+                None,
+            ),
+            make(
+                "GPU engine utilization",
+                "GPU engines",
+                if cfg!(windows) {
+                    "Windows PDH"
+                } else {
+                    "Linux DRM"
+                },
+                if cfg!(windows) && gpu {
+                    CapabilityState::Available
+                } else {
+                    CapabilityState::NotImplemented
+                },
+                (!gpu && cfg!(windows))
+                    .then_some("No supported GPU engine counter was returned")
+                    .or((!cfg!(windows))
+                        .then_some("No Linux physical-engine collector is implemented")),
+                None,
+            ),
+            make(
+                "Package power",
+                "CPU package",
+                "Platform energy provider",
+                if power {
+                    CapabilityState::Available
+                } else {
+                    CapabilityState::Unsupported
+                },
+                (!power).then_some(if cfg!(windows) && !advanced_present {
+                    "Advanced sensors is not installed"
+                } else {
+                    "No supported CPU package energy counter was found"
+                }),
+                None,
+            ),
+            make(
+                "GPU memory telemetry",
+                "GPU adapters",
+                if cfg!(windows) {
+                    "Windows DXGI / PDH"
+                } else {
+                    "Linux DRM"
+                },
+                if (cfg!(windows) && gpu)
+                    || (cfg!(target_os = "linux")
+                        && frame.gpu_adapters.iter().any(|adapter| {
+                            adapter.dedicated_total_bytes.value.is_some()
+                                || adapter.shared_total_bytes.value.is_some()
+                        }))
+                {
+                    CapabilityState::Available
+                } else if cfg!(target_os = "linux") {
+                    CapabilityState::Unsupported
+                } else {
+                    CapabilityState::NotImplemented
+                },
+                (cfg!(windows) && !gpu)
+                    .then_some("No supported GPU adapter counters were returned")
+                    .or((cfg!(target_os = "linux")
+                        && frame.gpu_adapters.iter().all(|adapter| {
+                            adapter.dedicated_total_bytes.value.is_none()
+                                && adapter.shared_total_bytes.value.is_none()
+                        }))
+                    .then_some("This DRM driver exposes no supported adapter memory counters")),
+                None,
+            ),
+            make(
+                "PMU sampled profiling",
+                "Selected process",
+                if cfg!(windows) {
+                    "Windows ETW"
+                } else {
+                    "Linux perf"
+                },
+                {
+                    #[cfg(target_os = "linux")]
+                    {
+                        match &pmu_probe {
+                            Ok(()) => CapabilityState::Available,
+                            Err((ErrorCode::Unauthorized, _)) => CapabilityState::PermissionDenied,
+                            Err((ErrorCode::Unsupported, _)) => CapabilityState::Unsupported,
+                            Err(_) => CapabilityState::TemporarilyFailed,
+                        }
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        CapabilityState::NotImplemented
+                    }
+                },
+                {
+                    #[cfg(target_os = "linux")]
+                    {
+                        pmu_probe.as_ref().err().map(|(_, reason)| reason.as_str())
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        Some(&pmu_reason)
+                    }
+                },
+                #[cfg(target_os = "linux")]
+                Some(
+                    "The profiling worker needs CAP_PERFMON; ask an administrator to enable the packaged worker",
+                ),
+                #[cfg(not(target_os = "linux"))]
+                None,
+            ),
+            make(
+                "Disk I/O profiling",
+                "System and processes",
+                if cfg!(windows) {
+                    "Windows ETW"
+                } else {
+                    "Linux block tracing"
+                },
+                if cfg!(windows) {
+                    CapabilityState::Available
+                } else {
+                    CapabilityState::NotImplemented
+                },
+                (!cfg!(windows)).then_some("Linux attributed disk tracing is not implemented"),
+                None,
+            ),
+            make(
+                "Process affinity editing",
+                "Selected process",
+                "OS affinity API",
+                if cfg!(windows) {
+                    CapabilityState::Available
+                } else {
+                    CapabilityState::Unsupported
+                },
+                (!cfg!(windows))
+                    .then_some("Process-wide affinity editing is not supported on this platform"),
+                None,
+            ),
+        ];
+    #[cfg(target_os = "linux")]
+    {
+        let mut result = result;
+        result.push(make(
+            "AMD aggregate GPU busy",
+            "AMD DRM device",
+            "Linux amdgpu sysfs",
             if gpu {
                 CapabilityState::Available
             } else {
                 CapabilityState::Unsupported
             },
-            (!gpu).then_some("No supported GPU engine counter was returned"),
-            (!gpu).then_some("Refresh capabilities after updating the GPU driver"),
-        ),
-        make(
-            "Package power",
-            "CPU package",
-            "Platform energy provider",
-            if power {
-                CapabilityState::Available
-            } else {
-                CapabilityState::Unsupported
-            },
-            (!power).then_some(if cfg!(windows) && !advanced_present {
-                "Advanced sensors is not installed"
-            } else {
-                "No supported CPU package energy counter was found"
-            }),
+            (!gpu).then_some("No readable single-device amdgpu busy counter was found"),
             None,
-        ),
-        make(
-            "GPU memory telemetry",
-            "GPU adapters",
-            "Windows DXGI / PDH",
-            if gpu {
-                CapabilityState::Available
-            } else {
-                CapabilityState::Unsupported
-            },
-            (!gpu).then_some("No supported GPU adapter counters were returned"),
-            None,
-        ),
-        make(
-            "PMU sampled profiling",
-            "Selected process",
-            "Windows ETW profiling",
-            if cfg!(windows) {
-                CapabilityState::NotImplemented
-            } else {
-                CapabilityState::Unsupported
-            },
-            Some(&pmu_reason),
-            None,
-        ),
-        make(
-            "Disk I/O profiling",
-            "System and processes",
-            "Windows ETW profiling",
-            if cfg!(windows) {
-                CapabilityState::Available
-            } else {
-                CapabilityState::Unsupported
-            },
-            (!cfg!(windows)).then_some("Disk I/O profiling requires Windows ETW profiling"),
-            None,
-        ),
-        make(
-            "Process affinity editing",
-            "Selected process",
-            "OS affinity API",
-            if cfg!(windows) {
-                CapabilityState::Available
-            } else {
-                CapabilityState::Unsupported
-            },
-            (!cfg!(windows))
-                .then_some("Process-wide affinity editing is not supported on this platform"),
-            None,
-        ),
-    ];
+        ));
+        for sensor in frame.sensors.iter().take(128) {
+            result.push(Capability {
+                name: format!("{} — {}", sensor.device_name, sensor.name),
+                scope: sensor.scope.clone(),
+                provider: sensor.provider.clone(),
+                state: if sensor.value.value.is_some() {
+                    CapabilityState::Available
+                } else {
+                    CapabilityState::TemporarilyFailed
+                },
+                last_probed_at_ms: sensor.value.sampled_at_ms,
+                reason: sensor
+                    .value
+                    .unavailable_reason
+                    .as_ref()
+                    .map(ToString::to_string),
+                recovery_action: None,
+            });
+        }
+        result
+    }
     #[cfg(windows)]
     {
         let mut result = result;
@@ -500,7 +627,7 @@ fn capabilities(frame: &TelemetryFrame) -> Vec<Capability> {
         }
         result
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         result
     }
@@ -750,6 +877,10 @@ fn dispatch(command: Command, req_id: u64, connection_id: u64, state: &State) ->
                 .benchmarks
                 .current_job_id
                 .store(job_id, Ordering::SeqCst);
+            state
+                .benchmarks
+                .owner_connection
+                .store(connection_id, Ordering::SeqCst);
             *bm_state = BenchmarkState::Running {
                 job_id,
                 elapsed_ms: 0,
@@ -855,6 +986,10 @@ fn dispatch(command: Command, req_id: u64, connection_id: u64, state: &State) ->
                 .benchmarks
                 .current_job_id
                 .store(job_id, Ordering::SeqCst);
+            state
+                .benchmarks
+                .owner_connection
+                .store(connection_id, Ordering::SeqCst);
             *bm_state = BenchmarkState::Running {
                 job_id,
                 elapsed_ms: 0,
@@ -909,12 +1044,13 @@ fn dispatch(command: Command, req_id: u64, connection_id: u64, state: &State) ->
         Command::CancelBenchmark { job_id } => state.benchmarks.cancel(job_id),
         Command::BenchmarkStatus => Response::BenchmarkStatus(state.benchmarks.status()),
         Command::StartProfile { job_id, target } => {
-            if matches!(&target, ProfileTarget::PmuSampling { .. }) {
+            if cfg!(windows) && matches!(&target, ProfileTarget::PmuSampling { .. }) {
                 return Response::Error {
                     code: ErrorCode::Unsupported,
                     message: "PMU sampled profiling is not implemented; source discovery alone cannot produce samples".into(),
                 };
             }
+            #[cfg(windows)]
             if let ProfileTarget::DiskIo {
                 target_process: Some(process),
                 ..
@@ -1024,15 +1160,15 @@ fn dispatch(command: Command, req_id: u64, connection_id: u64, state: &State) ->
                     message: "profile duration cannot exceed 60 seconds".into(),
                 };
             }
-            if !cfg!(windows) {
+            if !cfg!(any(windows, target_os = "linux")) {
                 state.diagnostics.log(
                     req_id,
                     ErrorCode::Unsupported,
-                    "profile start rejected: profiling requires Windows ETW",
+                    "profile start rejected: profiling is unavailable on this OS",
                 );
                 return Response::Error {
                     code: ErrorCode::Unsupported,
-                    message: "profiling requires Windows ETW".into(),
+                    message: "profiling is unavailable on this OS".into(),
                 };
             }
             let duration_seconds = if duration_raw == 0 { 15 } else { duration_raw };
@@ -1043,6 +1179,10 @@ fn dispatch(command: Command, req_id: u64, connection_id: u64, state: &State) ->
                 .profiling
                 .current_job_id
                 .store(job_id, Ordering::SeqCst);
+            state
+                .profiling
+                .owner_connection
+                .store(connection_id, Ordering::SeqCst);
             *state.profiling.started_at.lock().unwrap() = Some(Instant::now());
             *prof_state = ProfileState::Running {
                 job_id,
@@ -1098,6 +1238,7 @@ fn dispatch(command: Command, req_id: u64, connection_id: u64, state: &State) ->
         }
         Command::CancelProfile { job_id } => state.profiling.cancel(job_id),
         Command::ProfileStatus => Response::ProfileStatus(state.profiling.status()),
+        Command::PmuSources => Response::PmuSources(profiler::enumerate_pmu_sources()),
         Command::GetAffinity { process } => match get_affinity(&process) {
             Ok(logical_cpus) => Response::Affinity {
                 process,
@@ -1329,6 +1470,8 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
                 caller_id: cid,
                 connection_id,
                 sampling: state.sampling.clone(),
+                benchmarks: state.benchmarks.clone(),
+                profiling: state.profiling.clone(),
             };
             state.diagnostics.log(
                 0,
@@ -1377,13 +1520,18 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
                 return;
             }
 
-            // 2. Active request loop with 30-second idle deadline per request
-            const CLIENT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+            // A short idle deadline also closes a revoked client's owned work
+            // even if it stops sending commands after authorization is removed.
+            const CLIENT_IDLE_TIMEOUT: Duration = Duration::from_secs(2);
             while !STOP.load(Ordering::Relaxed) {
                 let req_deadline = Instant::now() + CLIENT_IDLE_TIMEOUT;
                 let Ok(request) = receive_request_deadline(&mut stream, req_deadline) else {
                     break;
                 };
+                // Recheck each command so revocation also closes existing sessions.
+                if !peer_authorized(&stream) {
+                    break;
+                }
 
                 let resp = dispatch(request.command, request.request_id, connection_id, &state);
                 let env = ResponseEnvelope {
@@ -1677,6 +1825,39 @@ mod lifecycle_tests {
                 code: ErrorCode::NotFound,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn client_loss_cancels_only_its_owned_jobs() {
+        let benchmark = BenchmarkManager::new();
+        benchmark.owner_connection.store(7, Ordering::SeqCst);
+        *benchmark.state.lock().unwrap() = BenchmarkState::Running {
+            job_id: 41,
+            elapsed_ms: 0,
+        };
+        benchmark.cancel_owned(8);
+        assert!(matches!(benchmark.status(), BenchmarkState::Running { .. }));
+        benchmark.cancel_owned(7);
+        assert!(matches!(
+            benchmark.status(),
+            BenchmarkState::Cancelling { job_id: 41 }
+        ));
+
+        let profile = ProfileManager::new();
+        profile.owner_connection.store(12, Ordering::SeqCst);
+        *profile.state.lock().unwrap() = ProfileState::Running {
+            job_id: 42,
+            target_desc: "selected process".into(),
+            elapsed_ms: 0,
+            duration_seconds: 15,
+        };
+        profile.cancel_owned(11);
+        assert!(matches!(profile.status(), ProfileState::Running { .. }));
+        profile.cancel_owned(12);
+        assert!(matches!(
+            profile.status(),
+            ProfileState::Cancelling { job_id: 42 }
         ));
     }
 

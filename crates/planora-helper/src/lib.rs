@@ -733,7 +733,15 @@ pub fn listener() -> io::Result<interprocess::local_socket::Listener> {
             std::fs::create_dir_all(directory)?;
         }
 
+        #[cfg(target_os = "linux")]
+        let result = options.mode(0o666).create_sync()?;
+        #[cfg(not(target_os = "linux"))]
         let result = options.mode(0o660).create_sync()?;
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(ENDPOINT, std::fs::Permissions::from_mode(0o666))?;
+        }
 
         #[cfg(target_os = "macos")]
         {
@@ -787,7 +795,32 @@ pub fn peer_authorized(stream: &Stream) -> bool {
             .and_then(|text| text.trim().parse::<u32>().ok());
         return peer_uid.is_some() && peer_uid == approved_uid;
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let Some(uid) = peer_uid.filter(|uid| *uid != 0) else {
+            return false;
+        };
+        let directory = std::path::Path::new("/var/lib/planora/authorized-uids");
+        let Ok(parent) = std::fs::symlink_metadata(directory) else {
+            return false;
+        };
+        if !parent.file_type().is_dir() || parent.uid() != 0 || parent.mode() & 0o022 != 0 {
+            return false;
+        }
+        let record = directory.join(uid.to_string());
+        let Ok(metadata) = std::fs::symlink_metadata(&record) else {
+            return false;
+        };
+        metadata.file_type().is_file()
+            && metadata.uid() == 0
+            && metadata.mode() & 0o022 == 0
+            && metadata.len() <= 32
+            && std::fs::read_to_string(&record)
+                .ok()
+                .is_some_and(|text| text.trim() == uid.to_string())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         peer_uid.is_some()
     }

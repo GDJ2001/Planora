@@ -1,7 +1,7 @@
 //! Portable versioned contracts shared by the UI, helper, and collectors.
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 pub const SUPPORTED_SAMPLE_INTERVALS_MS: [u64; 5] = [100, 250, 500, 1_000, 2_000];
 pub const MAX_REQUEST_SIZE: usize = 64 * 1024;
 pub const MAX_RESPONSE_SIZE: usize = 8 * 1024 * 1024;
@@ -1134,9 +1134,29 @@ pub struct PmuProfileRecord {
     pub target_identity: Option<ProcessIdentity>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PmuSourceInfo {
+    pub id: u32,
+    pub name: String,
+    pub min_interval: u32,
+    pub max_interval: u32,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub sampling_unit: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ProfileResult {
     pub target_desc: String,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub sampling_semantics: Option<String>,
+    #[serde(default)]
+    pub effective_sample_hz: Option<u32>,
+    #[serde(default)]
+    pub complete: Option<bool>,
     pub duration_seconds: u32,
     pub elapsed_ms: u64,
     pub events_traced: u64,
@@ -1228,6 +1248,7 @@ pub enum Command {
         job_id: u64,
     },
     ProfileStatus,
+    PmuSources,
     GetAffinity {
         process: ProcessIdentity,
     },
@@ -1254,6 +1275,7 @@ pub enum Response {
     Capabilities(Vec<Capability>),
     BenchmarkStatus(BenchmarkState),
     ProfileStatus(ProfileState),
+    PmuSources(Vec<PmuSourceInfo>),
     Affinity {
         process: ProcessIdentity,
         logical_cpus: Vec<u16>,

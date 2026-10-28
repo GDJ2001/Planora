@@ -6,8 +6,8 @@ use crate::{
 };
 use eframe::egui::{self, CornerRadius, Pos2, Rect, Shape, Stroke, Vec2};
 use planora_core::{
-    BenchmarkPoint, BenchmarkResult, BenchmarkState, Command, ProcessIdentity, ProfileState,
-    ProfileTarget,
+    BenchmarkPoint, BenchmarkResult, BenchmarkState, Command, PmuSourceInfo, ProcessIdentity,
+    ProfileState, ProfileTarget,
 };
 use std::sync::mpsc::SyncSender;
 
@@ -18,6 +18,7 @@ pub struct BenchmarksViewState {
     // Profiling options:
     pub duration_seconds: u32,
     pub profile_selected_process: bool,
+    pub pmu_selected: Vec<String>,
 }
 
 impl Default for BenchmarksViewState {
@@ -28,6 +29,7 @@ impl Default for BenchmarksViewState {
             active_tab: 0,
             duration_seconds: 15,
             profile_selected_process: false,
+            pmu_selected: Vec::new(),
         }
     }
 }
@@ -36,6 +38,7 @@ pub fn render_benchmarks_view(
     ui: &mut egui::Ui,
     benchmark_state: Option<&BenchmarkState>,
     profile_state: Option<&ProfileState>,
+    pmu_sources: &[PmuSourceInfo],
     selected_process: Option<&ProcessIdentity>,
     state: &mut BenchmarksViewState,
     app_state: &AppState,
@@ -85,6 +88,7 @@ pub fn render_benchmarks_view(
         render_profiling_section(
             ui,
             profile_state,
+            pmu_sources,
             benchmark_state,
             selected_process,
             state,
@@ -256,6 +260,7 @@ fn render_probes_section(
 fn render_profiling_section(
     ui: &mut egui::Ui,
     profile_state: Option<&ProfileState>,
+    pmu_sources: &[PmuSourceInfo],
     benchmark_state: Option<&BenchmarkState>,
     selected_process: Option<&ProcessIdentity>,
     state: &mut BenchmarksViewState,
@@ -263,16 +268,30 @@ fn render_profiling_section(
     tx: &SyncSender<Command>,
     p: Palette,
 ) {
+    #[cfg(not(target_os = "linux"))]
+    let _ = pmu_sources;
     egui::Frame::group(ui.style())
         .fill(p.surface)
         .stroke(Stroke::new(1.0, p.border))
         .corner_radius(CornerRadius::same(CORNER_RADIUS as u8))
         .inner_margin(egui::Margin::same(14))
         .show(ui, |ui| {
+            #[cfg(windows)]
             ui.heading("Disk I/O profiling · Windows ETW");
+            #[cfg(target_os = "linux")]
+            ui.heading("PMU sampled profiling · Linux perf");
+            #[cfg(not(any(windows, target_os = "linux")))]
+            ui.heading("Advanced profiling");
+            #[cfg(windows)]
             ui.label("An explicit, bounded trace of physical disk read and write events. Attribution uses issuing-thread and process creation identity; event loss and unattributed activity remain visible.");
+            #[cfg(target_os = "linux")]
+            ui.label("Sample a selected process with up to two OS-exposed CPU PMU sources. Results are samples, not exact instruction or cycle counts.");
+            #[cfg(windows)]
             ui.colored_label(p.warning, "Experimental: native attribution and cancellation acceptance is still in progress.");
+            #[cfg(windows)]
             ui.label("PMU sampled profiling is not implemented. Source discovery is not a measurement.");
+            #[cfg(target_os = "linux")]
+            ui.colored_label(p.warning, "Attributed physical disk tracing needs the packaged block collector and is not available yet.");
         });
 
     ui.add_space(12.0);
@@ -286,6 +305,53 @@ fn render_profiling_section(
         Some(BenchmarkState::Running { .. } | BenchmarkState::Cancelling { .. })
     );
     let can_start = *app_state == AppState::Live && !profile_busy && !benchmark_busy;
+
+    #[cfg(target_os = "linux")]
+    {
+        if ui.button("Refresh PMU sources").clicked() {
+            let _ = tx.try_send(Command::PmuSources);
+        }
+        if pmu_sources.is_empty() {
+            ui.label("No PMU sources loaded. Refresh to query this kernel; permission is checked when a session starts.");
+        }
+        ui.horizontal_wrapped(|ui| {
+            for source in pmu_sources {
+                let mut checked = state.pmu_selected.contains(&source.name);
+                if ui
+                    .checkbox(&mut checked, &source.name)
+                    .on_hover_text(
+                        source
+                            .description
+                            .as_deref()
+                            .unwrap_or("Sampled hardware event"),
+                    )
+                    .changed()
+                {
+                    if checked && state.pmu_selected.len() < 2 {
+                        state.pmu_selected.push(source.name.clone());
+                    } else if !checked {
+                        state.pmu_selected.retain(|name| name != &source.name);
+                    }
+                }
+            }
+        });
+        if ui
+            .add_enabled(
+                can_start && selected_process.is_some() && !state.pmu_selected.is_empty(),
+                egui::Button::new("Start PMU sample"),
+            )
+            .clicked()
+        {
+            let _ = tx.try_send(Command::StartProfile {
+                job_id: planora_telemetry::unix_ms(),
+                target: ProfileTarget::PmuSampling {
+                    target_process: selected_process.cloned(),
+                    duration_seconds: state.duration_seconds,
+                    sources: state.pmu_selected.clone(),
+                },
+            });
+        }
+    }
 
     if selected_process.is_none() {
         state.profile_selected_process = false;
@@ -318,7 +384,10 @@ fn render_profiling_section(
     });
     ui.add_space(6.0);
     ui.horizontal(|ui| {
-        let button = ui.add_enabled(can_start, egui::Button::new("Start disk I/O profile"));
+        let button = ui.add_enabled(
+            can_start && cfg!(windows),
+            egui::Button::new("Start disk I/O profile"),
+        );
         if button.clicked() {
             let job_id = planora_telemetry::unix_ms();
             let target_process = state
@@ -376,6 +445,37 @@ fn render_profiling_section(
             ui.colored_label(p.warning, format!("Profile #{job_id} was cancelled."));
         }
         ProfileState::Completed { result, .. } => {
+            if !result.pmu_records.is_empty() {
+                ui.heading("PMU sample result");
+                ui.label(format!(
+                    "Elapsed: {:.1} s · lost records: {}",
+                    result.elapsed_ms as f64 / 1000.0,
+                    result.events_lost
+                ));
+                if let Some(semantics) = &result.sampling_semantics {
+                    ui.label(semantics);
+                }
+                if let Some(hz) = result.effective_sample_hz {
+                    ui.label(format!(
+                        "Requested frequency: {hz} Hz per thread; the kernel may adjust it."
+                    ));
+                }
+                if result.complete == Some(false) {
+                    ui.colored_label(
+                        p.warning,
+                        "The target exited or records were lost; this profile is incomplete.",
+                    );
+                }
+                for record in &result.pmu_records {
+                    ui.label(format!(
+                        "{}: {} samples · PID {}",
+                        record.source,
+                        record.sample_count,
+                        record.target_pid.unwrap_or_default()
+                    ));
+                }
+                return;
+            }
             ui.heading("Disk I/O result");
             ui.horizontal_wrapped(|ui| {
                 ui.label(format!(

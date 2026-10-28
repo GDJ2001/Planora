@@ -7,6 +7,10 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sysinfo::{Disks, Networks, ProcessRefreshKind, ProcessesToUpdate, System};
 
+#[cfg(target_os = "linux")]
+mod linux_gpu;
+#[cfg(target_os = "linux")]
+pub mod linux_sensors;
 #[cfg(windows)]
 pub mod vendor_sensors;
 #[cfg(windows)]
@@ -122,7 +126,9 @@ fn rapl_zones() -> Result<Vec<(String, u64, u64)>, String> {
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         // Root RAPL zones describe packages; subzones would double-count energy.
-        if !name.starts_with("intel-rapl:") || name.matches(':').count() != 1 {
+        if !(name.starts_with("intel-rapl:") || name.starts_with("amd-rapl:"))
+            || name.matches(':').count() != 1
+        {
             continue;
         }
         let read = |file: &str| -> Result<u64, String> {
@@ -137,7 +143,7 @@ fn rapl_zones() -> Result<Vec<(String, u64, u64)>, String> {
         zones.push((name, energy, maximum));
     }
     if zones.is_empty() {
-        Err("no Intel RAPL package zones exposed by Linux powercap".into())
+        Err("no readable package RAPL zones exposed by Linux powercap".into())
     } else {
         zones.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(zones)
@@ -147,6 +153,57 @@ fn rapl_zones() -> Result<Vec<(String, u64, u64)>, String> {
 #[cfg(target_os = "linux")]
 pub fn linux_rapl_available() -> bool {
     rapl_zones().is_ok()
+}
+
+#[cfg(target_os = "linux")]
+fn linux_commit_bytes() -> Option<(u64, u64)> {
+    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let mut committed = None;
+    let mut limit = None;
+    for line in text.lines() {
+        let (key, value) = line.split_once(':')?;
+        if key != "Committed_AS" && key != "CommitLimit" {
+            continue;
+        }
+        let kib = value.split_whitespace().next()?.parse::<u64>().ok()?;
+        match key {
+            "Committed_AS" => committed = kib.checked_mul(1024),
+            "CommitLimit" => limit = kib.checked_mul(1024),
+            _ => {}
+        }
+    }
+    Some((committed?, limit?))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_interface_details(
+    name: &str,
+    stamp: u64,
+) -> (
+    Option<bool>,
+    Option<u32>,
+    Option<String>,
+    Option<Metric<u64>>,
+) {
+    // sysinfo provides traffic, while sysfs supplies kernel-owned link metadata.
+    let base = std::path::Path::new("/sys/class/net").join(name);
+    if !base.exists() {
+        return (None, None, None, None);
+    }
+    let read = |field: &str| {
+        std::fs::read_to_string(base.join(field))
+            .ok()
+            .map(|s| s.trim().to_owned())
+    };
+    let hardware = base.join("device").exists();
+    let kind = read("type").and_then(|s| s.parse::<u32>().ok());
+    let state = read("operstate");
+    let speed = read("speed")
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|mbps| *mbps > 0)
+        .and_then(|mbps| mbps.checked_mul(1_000_000))
+        .map(|bps| Metric::available(bps, "bits/s", "Linux sysfs interface speed", stamp));
+    (Some(hardware), kind, state, speed)
 }
 
 #[cfg(target_os = "linux")]
@@ -331,6 +388,10 @@ pub struct Sampler {
     prev_windows_net_instant: Option<Instant>,
     #[cfg(target_os = "linux")]
     rapl: HashMap<String, RaplSample>,
+    #[cfg(target_os = "linux")]
+    last_sensor_refresh: Option<Instant>,
+    #[cfg(target_os = "linux")]
+    cached_sensors: Vec<planora_core::SensorReading>,
     #[cfg(windows)]
     windows_gpu: Option<windows_gpu::WindowsGpu>,
     #[cfg(windows)]
@@ -376,6 +437,10 @@ impl Sampler {
             prev_windows_net_instant: None,
             #[cfg(target_os = "linux")]
             rapl: HashMap::new(),
+            #[cfg(target_os = "linux")]
+            last_sensor_refresh: None,
+            #[cfg(target_os = "linux")]
+            cached_sensors: Vec::new(),
             #[cfg(windows)]
             windows_gpu: windows_gpu::WindowsGpu::new().ok(),
             #[cfg(windows)]
@@ -446,7 +511,7 @@ impl Sampler {
         let delta = elapsed.unwrap_or_default();
         let proc_count = self.system.cpus().len().max(1) as f32;
 
-        let mut processes = if process_due || self.cached_processes.is_empty() {
+        let processes = if process_due || self.cached_processes.is_empty() {
             #[cfg(windows)]
             let basic_processes = query_windows_basic_processes().ok();
             #[cfg(windows)]
@@ -672,6 +737,8 @@ impl Sampler {
         } else {
             self.cached_processes.clone()
         };
+        #[cfg(windows)]
+        let mut processes = processes;
 
         let live: HashSet<_> = processes.iter().map(|p| &p.identity).collect();
         self.process_cpu
@@ -994,7 +1061,15 @@ impl Sampler {
             )
         });
 
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
+        let (gpu_adapters, gpu_engines, gpu_engine_unavailable_reason) = (
+            linux_gpu::adapters(stamp),
+            Vec::new(),
+            Some(AvailabilityReason::Unsupported(
+                "this Linux provider does not expose physical-engine utilization".into(),
+            )),
+        );
+        #[cfg(not(any(windows, target_os = "linux")))]
         let (gpu_adapters, gpu_engines, gpu_engine_unavailable_reason) = (
             Vec::new(),
             Vec::new(),
@@ -1259,7 +1334,7 @@ impl Sampler {
                     ),
                 ),
             };
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "linux")))]
         let (mem_used, mem_avail, mem_total, commit_used, commit_total) = (
             Metric::available(
                 self.system.used_memory(),
@@ -1293,6 +1368,62 @@ impl Sampler {
             ),
         );
 
+        #[cfg(target_os = "linux")]
+        let (mem_used, mem_avail, mem_total, commit_used, commit_total) = {
+            let (committed, limit) = linux_commit_bytes()
+                .map_or_else(|| (None, None), |(used, total)| (Some(used), Some(total)));
+            let commit_metric = |value| match value {
+                Some(value) => Metric::available(
+                    value,
+                    planora_core::UNIT_BYTES,
+                    "Linux /proc/meminfo committed address space",
+                    stamp,
+                ),
+                None => Metric::unavailable(
+                    planora_core::UNIT_BYTES,
+                    "Linux /proc/meminfo",
+                    stamp,
+                    AvailabilityReason::TemporarilyFailed(
+                        "commit counters could not be read".into(),
+                    ),
+                ),
+            };
+            (
+                Metric::available(
+                    self.system.used_memory(),
+                    planora_core::UNIT_BYTES,
+                    "sysinfo physical memory",
+                    stamp,
+                ),
+                Metric::available(
+                    self.system.available_memory(),
+                    planora_core::UNIT_BYTES,
+                    "sysinfo available memory",
+                    stamp,
+                ),
+                Metric::available(
+                    self.system.total_memory(),
+                    planora_core::UNIT_BYTES,
+                    "sysinfo physical memory",
+                    stamp,
+                ),
+                commit_metric(committed),
+                commit_metric(limit),
+            )
+        };
+
+        #[cfg(target_os = "linux")]
+        let sensors = {
+            if self
+                .last_sensor_refresh
+                .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(1))
+            {
+                self.cached_sensors = linux_sensors::sample(stamp);
+                self.last_sensor_refresh = Some(now);
+            }
+            self.cached_sensors.clone()
+        };
+        #[cfg(not(target_os = "linux"))]
         let sensors = Vec::new();
 
         let mut frame = TelemetryFrame {
@@ -1496,6 +1627,12 @@ impl Sampler {
                 ),
             };
 
+            #[cfg(target_os = "linux")]
+            let (is_hardware_interface, interface_type, link_state, link_speed_bps) =
+                linux_interface_details(name, stamp);
+            #[cfg(not(target_os = "linux"))]
+            let (is_hardware_interface, interface_type, link_state, link_speed_bps) =
+                (None, None, None, None);
             network_interfaces.push(planora_core::ResourceDeviceSample {
                 id: name.clone(),
                 label: name.clone(),
@@ -1503,10 +1640,10 @@ impl Sampler {
                 write_bytes_per_sec: metric(device_delta.map(|d| d.1)),
                 latency_ms: None,
                 queue_depth: None,
-                link_speed_bps: None,
-                is_hardware_interface: None,
-                interface_type: None,
-                link_state: None,
+                link_speed_bps,
+                is_hardware_interface,
+                interface_type,
+                link_state,
             });
             self.prev_networks.insert(name.clone(), (curr_rx, curr_tx));
         }
@@ -1559,13 +1696,13 @@ impl Sampler {
             Metric::available(
                 watts as f32,
                 "W",
-                "Linux powercap Intel RAPL package energy delta",
+                "Linux powercap RAPL package energy delta",
                 stamp,
             )
         } else {
             Metric::unavailable(
                 "W",
-                "Linux powercap Intel RAPL",
+                "Linux powercap RAPL",
                 stamp,
                 AvailabilityReason::WarmingUp,
             )

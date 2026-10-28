@@ -2,8 +2,8 @@
 <!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN" "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
 <policyconfig>
   <action id="org.planora.authorize">
-    <description>Authorize Planora monitoring for this user</description>
-    <message>Administrator approval is required to use the Planora hardware helper.</message>
+    <description>Authorize Planora monitoring and profiling for this user</description>
+    <message>Administrator approval is required to use Planora monitoring and explicit profiling.</message>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>

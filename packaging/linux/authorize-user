@@ -4,9 +4,16 @@ if [ "$(id -u)" -ne 0 ]; then
   exec pkexec /usr/libexec/planora/authorize-user
 fi
 case "${PKEXEC_UID:-}" in
-  ''|*[!0-9]*) echo 'Run this command through pkexec from the user session.' >&2; exit 1 ;;
+  ''|0|0*|*[!0-9]*) echo 'Run from a local user session through pkexec.' >&2; exit 1 ;;
 esac
-user_name=$(getent passwd "$PKEXEC_UID" | cut -d: -f1)
-[ -n "$user_name" ] || { echo 'User not found.' >&2; exit 1; }
-/usr/sbin/usermod -aG planora-users "$user_name"
-echo 'Planora authorization added. Sign out and back in for group membership to take effect.'
+getent passwd "$PKEXEC_UID" >/dev/null || { echo 'User not found.' >&2; exit 1; }
+directory=/var/lib/planora/authorized-uids
+install -d -o root -g root -m 0755 "$directory"
+record="$directory/$PKEXEC_UID"
+temporary=$(mktemp "$directory/.authorization.XXXXXXXX")
+trap 'rm -f "$temporary"' EXIT HUP INT TERM
+printf '%s\n' "$PKEXEC_UID" > "$temporary"
+chown root:root "$temporary"
+chmod 0644 "$temporary"
+mv -f "$temporary" "$record"
+echo 'Planora authorized for this account. No sign-out is needed.'

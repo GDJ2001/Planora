@@ -2383,7 +2383,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "planora-bench"
-version = "0.3.0-beta.33"
+version = "0.3.0-beta.34"
 dependencies = [
  "core_affinity",
  "libc",
@@ -2393,7 +2393,7 @@ dependencies = [
 
 [[package]]
 name = "planora-core"
-version = "0.3.0-beta.33"
+version = "0.3.0-beta.34"
 dependencies = [
  "serde",
  "serde_json",
@@ -2402,7 +2402,7 @@ dependencies = [
 
 [[package]]
 name = "planora-helper"
-version = "0.3.0-beta.33"
+version = "0.3.0-beta.34"
 dependencies = [
  "interprocess",
  "libc",
@@ -2418,7 +2418,7 @@ dependencies = [
 
 [[package]]
 name = "planora-telemetry"
-version = "0.3.0-beta.33"
+version = "0.3.0-beta.34"
 dependencies = [
  "planora-bench",
  "planora-core",
@@ -2431,7 +2431,7 @@ dependencies = [
 
 [[package]]
 name = "planora-topology"
-version = "0.3.0-beta.33"
+version = "0.3.0-beta.34"
 dependencies = [
  "libc",
  "planora-core",
@@ -2441,12 +2441,13 @@ dependencies = [
 
 [[package]]
 name = "planora-ui"
-version = "0.3.0-beta.33"
+version = "0.3.0-beta.34"
 dependencies = [
  "cc",
  "eframe",
  "image",
  "interprocess",
+ "libc",
  "planora-core",
  "planora-helper",
  "planora-telemetry",

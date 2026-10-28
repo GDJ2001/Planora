@@ -4,7 +4,7 @@ use crate::{
 };
 use planora_core::{
     BenchmarkState, Capability, Command, DiagnosticEntry, ErrorCode, PROTOCOL_VERSION,
-    ProfileState, Request, Response, ResponseEnvelope, TelemetryFrame, Topology,
+    PmuSourceInfo, ProfileState, Request, Response, ResponseEnvelope, TelemetryFrame, Topology,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -287,6 +287,7 @@ pub struct Shared {
     pub sensor_capabilities: Arc<Vec<Capability>>,
     pub benchmark_state: Option<BenchmarkState>,
     pub profile_state: Option<planora_core::ProfileState>,
+    pub pmu_sources: Vec<PmuSourceInfo>,
     pub sampling_effective_ms: Option<u64>,
     pub diagnostic_logs: Vec<DiagnosticEntry>,
     pub affinity: Option<(planora_core::ProcessIdentity, Vec<u16>)>,
@@ -358,6 +359,9 @@ fn handle_response(
         }
         Response::ProfileStatus(ps) => {
             shared.profile_state = Some(ps);
+        }
+        Response::PmuSources(sources) => {
+            shared.pmu_sources = sources;
         }
         Response::Capabilities(caps) => {
             shared.capabilities = caps;

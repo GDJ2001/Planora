@@ -1,7 +1,10 @@
 //! ETW Disk I/O and PMU profiling collector for Windows.
 #[cfg(windows)]
 use planora_core::{DiskIoProfileRecord, IdentitySource};
-use planora_core::{ErrorCode, ProcessIdentity, ProfileResult, ProfileTarget};
+use planora_core::{ErrorCode, PmuSourceInfo, ProcessIdentity, ProfileResult, ProfileTarget};
+#[cfg(target_os = "linux")]
+#[path = "linux_perf.rs"]
+mod linux_perf;
 use std::sync::{Arc, atomic::AtomicBool};
 #[cfg(windows)]
 use std::{
@@ -9,14 +12,6 @@ use std::{
     sync::{Mutex, atomic::Ordering},
     time::{Duration, Instant},
 };
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct PmuSourceInfo {
-    pub id: u32,
-    pub name: String,
-    pub min_interval: u32,
-    pub max_interval: u32,
-}
 
 #[cfg(windows)]
 pub fn enumerate_pmu_sources() -> Vec<PmuSourceInfo> {
@@ -79,6 +74,8 @@ pub fn enumerate_pmu_sources() -> Vec<PmuSourceInfo> {
             name,
             min_interval,
             max_interval,
+            description: None,
+            sampling_unit: None,
         });
 
         if next_offset == 0 {
@@ -90,7 +87,15 @@ pub fn enumerate_pmu_sources() -> Vec<PmuSourceInfo> {
     sources
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+pub fn enumerate_pmu_sources() -> Vec<PmuSourceInfo> {
+    linux_perf::enumerate_sources()
+}
+#[cfg(target_os = "linux")]
+pub fn probe_pmu() -> Result<(), (ErrorCode, String)> {
+    linux_perf::probe()
+}
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn enumerate_pmu_sources() -> Vec<PmuSourceInfo> {
     Vec::new()
 }
@@ -612,6 +617,10 @@ fn run_disk_io_profile(
 
     Ok(ProfileResult {
         target_desc,
+        provider: Some("Windows ETW".into()),
+        sampling_semantics: Some("Attributed physical disk events".into()),
+        effective_sample_hz: None,
+        complete: Some(events_lost == 0),
         duration_seconds: duration_sec,
         elapsed_ms,
         events_traced,
@@ -651,7 +660,17 @@ fn run_disk_io_profile(
     ))
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+fn run_pmu_sampling_profile(
+    _job_id: u64,
+    target_process: Option<ProcessIdentity>,
+    duration_seconds: u32,
+    sources: Vec<String>,
+    cancel: Arc<AtomicBool>,
+) -> Result<ProfileResult, (ErrorCode, String)> {
+    linux_perf::sample(target_process, duration_seconds, &sources, &cancel)
+}
+#[cfg(not(any(windows, target_os = "linux")))]
 fn run_pmu_sampling_profile(
     _job_id: u64,
     _target_process: Option<ProcessIdentity>,
@@ -661,7 +680,7 @@ fn run_pmu_sampling_profile(
 ) -> Result<ProfileResult, (ErrorCode, String)> {
     Err((
         ErrorCode::Unsupported,
-        "PMU sampled profiling is only supported on Windows".into(),
+        "PMU profiling is unavailable on this OS".into(),
     ))
 }
 
