@@ -8,6 +8,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sysinfo::{Disks, Networks, ProcessRefreshKind, ProcessesToUpdate, System};
 
 #[cfg(target_os = "linux")]
+mod linux_block;
+#[cfg(target_os = "linux")]
 mod linux_gpu;
 #[cfg(target_os = "linux")]
 pub mod linux_sensors;
@@ -379,6 +381,7 @@ pub struct Sampler {
     last_cpu: Option<Instant>,
     system_cpu: Option<Metric<f32>>,
     process_cpu: HashMap<ProcessIdentity, Metric<f32>>,
+    #[cfg(not(target_os = "linux"))]
     prev_disks: HashMap<String, (u64, u64)>,
     prev_networks: HashMap<String, (u64, u64)>,
     last_logical_cpus: Vec<planora_core::LogicalCpuSample>,
@@ -388,6 +391,8 @@ pub struct Sampler {
     prev_windows_net_instant: Option<Instant>,
     #[cfg(target_os = "linux")]
     rapl: HashMap<String, RaplSample>,
+    #[cfg(target_os = "linux")]
+    block: linux_block::BlockCollector,
     #[cfg(target_os = "linux")]
     last_sensor_refresh: Option<Instant>,
     #[cfg(target_os = "linux")]
@@ -428,6 +433,7 @@ impl Sampler {
             last_cpu: None,
             system_cpu: None,
             process_cpu: HashMap::new(),
+            #[cfg(not(target_os = "linux"))]
             prev_disks: HashMap::new(),
             prev_networks: HashMap::new(),
             last_logical_cpus: Vec::new(),
@@ -437,6 +443,8 @@ impl Sampler {
             prev_windows_net_instant: None,
             #[cfg(target_os = "linux")]
             rapl: HashMap::new(),
+            #[cfg(target_os = "linux")]
+            block: linux_block::BlockCollector::default(),
             #[cfg(target_os = "linux")]
             last_sensor_refresh: None,
             #[cfg(target_os = "linux")]
@@ -900,7 +908,9 @@ impl Sampler {
                 self.sample_sysinfo_disks(first, delta, stamp)
             }
         };
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
+        let (disk_read_metric, disk_write_metric, disk_devices) = self.block.sample(delta, stamp);
+        #[cfg(all(not(windows), not(target_os = "linux")))]
         let (disk_read_metric, disk_write_metric, disk_devices) =
             self.sample_sysinfo_disks(first, delta, stamp);
 
@@ -1461,6 +1471,7 @@ impl Sampler {
         frame
     }
 
+    #[cfg(not(target_os = "linux"))]
     fn sample_sysinfo_disks(
         &mut self,
         first: bool,

@@ -460,6 +460,9 @@ fn render_profiling_section(
                         "Requested frequency: {hz} Hz per thread; the kernel may adjust it."
                     ));
                 }
+                if let Some(percent) = result.pmu_scheduled_percent {
+                    ui.label(format!("PMU scheduled: {percent:.1}% of enabled time"));
+                }
                 if result.complete == Some(false) {
                     ui.colored_label(
                         p.warning,

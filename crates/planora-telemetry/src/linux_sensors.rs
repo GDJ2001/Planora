@@ -55,6 +55,18 @@ pub fn sample_at(root: &Path, stamp: u64) -> Vec<SensorReading> {
                         _ => SensorType::ThermalZoneCelsius,
                     };
                     (kind, planora_core::UNIT_CELSIUS, 1000.0)
+                } else if driver == "amdgpu"
+                    && filename.starts_with("freq")
+                    && filename.ends_with("_input")
+                {
+                    // AMD's documented hwmon GPU clocks are in hertz. Other
+                    // drivers can use different frequency units.
+                    (SensorType::ClockMhz, planora_core::UNIT_MHZ, 1_000_000.0)
+                } else if driver == "amdgpu"
+                    && filename.starts_with("in")
+                    && filename.ends_with("_input")
+                {
+                    (SensorType::VoltageVolts, planora_core::UNIT_VOLTS, 1000.0)
                 } else {
                     continue;
                 };
@@ -155,6 +167,30 @@ mod tests {
         assert_eq!(readings[0].hardware_category, HardwareCategory::Cpu);
         std::fs::write(chip.join("fan1_fault"), "1\n").unwrap();
         assert!(sample_at(&root, 124)[0].value.value.is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn amd_gpu_clocks_and_voltage_keep_units_and_gpu_scope() {
+        let root = std::env::temp_dir().join(format!("planora-amd-hwmon-{}", std::process::id()));
+        let chip = root.join("hwmon0");
+        std::fs::create_dir_all(&chip).unwrap();
+        std::fs::write(chip.join("name"), "amdgpu\n").unwrap();
+        std::fs::write(chip.join("freq1_input"), "1800000000\n").unwrap();
+        std::fs::write(chip.join("in0_input"), "925\n").unwrap();
+        let readings = sample_at(&root, 77);
+        assert_eq!(readings.len(), 2);
+        let clock = readings
+            .iter()
+            .find(|s| s.sensor_type == SensorType::ClockMhz)
+            .unwrap();
+        let voltage = readings
+            .iter()
+            .find(|s| s.sensor_type == SensorType::VoltageVolts)
+            .unwrap();
+        assert_eq!(clock.value.value, Some(1800.0));
+        assert_eq!(voltage.value.value, Some(0.925));
+        assert_eq!(clock.hardware_category, HardwareCategory::Gpu);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

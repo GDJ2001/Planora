@@ -31,10 +31,10 @@ impl InstanceGuard {
                 )
             })?;
         let mut metadata = std::fs::symlink_metadata(&runtime)?;
-        // WSLg may supply a runtime directory owned by its compositor user,
-        // not the distribution account. Keep the lock in a private local
-        // directory rather than trusting a shared or foreign-owned path.
-        if metadata.uid() != unsafe { libc::geteuid() }
+        // WSLg may supply a runtime directory owned by its compositor user
+        // or with permissions unsuitable for an application socket. Keep
+        // both winit and the lock in one private local directory.
+        if (metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0)
             && std::env::var_os("WSL_DISTRO_NAME").is_some()
         {
             runtime = std::env::temp_dir()
@@ -47,6 +47,9 @@ impl InstanceGuard {
                 Err(error) => return Err(error),
             }
             metadata = std::fs::symlink_metadata(&runtime)?;
+            // Normal launch reaches this before creating any application
+            // workers, so updating the process environment is safe here.
+            unsafe { std::env::set_var("XDG_RUNTIME_DIR", &runtime) };
         }
         if !metadata.is_dir()
             || metadata.uid() != unsafe { libc::geteuid() }

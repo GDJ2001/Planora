@@ -620,6 +620,7 @@ fn run_disk_io_profile(
         provider: Some("Windows ETW".into()),
         sampling_semantics: Some("Attributed physical disk events".into()),
         effective_sample_hz: None,
+        pmu_scheduled_percent: None,
         complete: Some(events_lost == 0),
         duration_seconds: duration_sec,
         elapsed_ms,

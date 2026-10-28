@@ -79,19 +79,29 @@ pub(super) fn probe() -> Result<(), (ErrorCode, String)> {
         return Err((ErrorCode::Internal, "invalid system page size".to_owned()));
     }
     let tid = unsafe { libc::syscall(libc::SYS_gettid) } as u32;
-    let ring = open_ring(tid, source.id as u64, 0, page as usize)?;
+    let ring = open_ring(
+        tid,
+        process_start_ticks(tid).unwrap_or_default(),
+        source.id as u64,
+        0,
+        page as usize,
+    )?;
     drop(ring);
     Ok(())
 }
 
-fn process_start_ticks(pid: u32) -> Option<u64> {
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+fn start_ticks_at(path: &str) -> Option<u64> {
+    let stat = fs::read_to_string(path).ok()?;
     let fields = stat
         .rsplit_once(") ")?
         .1
         .split_whitespace()
         .collect::<Vec<_>>();
     fields.get(19)?.parse().ok() // field 22, after state at field 3
+}
+
+fn process_start_ticks(pid: u32) -> Option<u64> {
+    start_ticks_at(&format!("/proc/{pid}/stat"))
 }
 
 fn identity_valid(identity: &ProcessIdentity) -> bool {
@@ -101,7 +111,7 @@ fn identity_valid(identity: &ProcessIdentity) -> bool {
         && process_start_ticks(identity.pid) == Some(identity.started)
 }
 
-fn thread_ids(pid: u32) -> Result<Vec<u32>, (ErrorCode, String)> {
+fn thread_ids(pid: u32) -> Result<Vec<(u32, u64)>, (ErrorCode, String)> {
     let mut ids = Vec::new();
     for entry in fs::read_dir(format!("/proc/{pid}/task")).map_err(|e| {
         (
@@ -110,8 +120,10 @@ fn thread_ids(pid: u32) -> Result<Vec<u32>, (ErrorCode, String)> {
         )
     })? {
         let entry = entry.map_err(|e| (ErrorCode::Internal, e.to_string()))?;
-        if let Ok(id) = entry.file_name().to_string_lossy().parse::<u32>() {
-            ids.push(id);
+        if let Ok(id) = entry.file_name().to_string_lossy().parse::<u32>()
+            && let Some(started) = start_ticks_at(&format!("/proc/{pid}/task/{id}/stat"))
+        {
+            ids.push((id, started));
         }
         if ids.len() > MAX_THREADS {
             return Err((
@@ -129,6 +141,7 @@ struct Ring {
     mapping: *mut u8,
     length: usize,
     source: usize,
+    thread_started: u64,
 }
 
 impl Drop for Ring {
@@ -141,6 +154,7 @@ impl Drop for Ring {
 
 fn open_ring(
     tid: u32,
+    thread_started: u64,
     config: u64,
     source: usize,
     page: usize,
@@ -151,7 +165,9 @@ fn open_ring(
         config,
         sample_freq: SAMPLE_HZ,
         sample_type: (1 << 1) | (1 << 2), // PERF_SAMPLE_TID | PERF_SAMPLE_TIME
-        read_format: 0,
+        // PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING:
+        // report when the PMU had to multiplex the requested events.
+        read_format: 3,
         // disabled, exclude kernel/hypervisor, frequency mode
         flags: 1 | (1 << 5) | (1 << 6) | (1 << 10),
         wakeup_events: 1,
@@ -201,6 +217,7 @@ fn open_ring(
         mapping: mapping.cast(),
         length,
         source,
+        thread_started,
     };
     // PERF_EVENT_IOC_ENABLE = _IO('$', 0); setting it after mmap avoids losing
     // the first sample before the consumer is ready.
@@ -282,6 +299,18 @@ fn drain(ring: &Ring, samples: &mut [u64], lost: &mut u64) {
     }
 }
 
+fn scheduled_times(ring: &Ring) -> Option<(u64, u64)> {
+    let mut counters = [0u64; 3];
+    let bytes = unsafe {
+        libc::read(
+            ring.fd.as_raw_fd(),
+            counters.as_mut_ptr().cast(),
+            std::mem::size_of_val(&counters),
+        )
+    };
+    (bytes == std::mem::size_of_val(&counters) as isize).then_some((counters[1], counters[2]))
+}
+
 pub(super) fn sample(
     target: Option<ProcessIdentity>,
     duration_seconds: u32,
@@ -326,6 +355,8 @@ pub(super) fn sample(
     let mut rings: HashMap<(u32, usize), Ring> = HashMap::new();
     let mut samples = vec![0u64; sources.len()];
     let mut lost = 0u64;
+    let mut enabled = 0u128;
+    let mut running = 0u128;
     while started.elapsed() < duration {
         if cancel.load(Ordering::Relaxed) {
             return Err((ErrorCode::Cancelled, "PMU sampling cancelled".to_owned()));
@@ -334,21 +365,43 @@ pub(super) fn sample(
             break;
         }
         let tids = thread_ids(target.pid)?;
-        let live: HashSet<_> = tids.iter().copied().collect();
+        let live: HashMap<_, _> = tids.iter().copied().collect();
         rings.retain(|(tid, _), ring| {
-            if live.contains(tid) {
+            if live.get(tid) == Some(&ring.thread_started) {
                 true
             } else {
                 drain(ring, &mut samples, &mut lost);
+                if let Some((event_enabled, event_running)) = scheduled_times(ring) {
+                    enabled = enabled.saturating_add(u128::from(event_enabled));
+                    running = running.saturating_add(u128::from(event_running));
+                }
                 false
             }
         });
-        for tid in tids {
+        for (tid, thread_started) in tids {
             for (index, source) in sources.iter().enumerate() {
                 if let std::collections::hash_map::Entry::Vacant(entry) = rings.entry((tid, index))
                 {
-                    let ring = open_ring(tid, source_config(source).unwrap(), index, page)?;
-                    entry.insert(ring);
+                    let path = format!("/proc/{}/task/{tid}/stat", target.pid);
+                    if start_ticks_at(&path) != Some(thread_started) {
+                        continue;
+                    }
+                    match open_ring(
+                        tid,
+                        thread_started,
+                        source_config(source).unwrap(),
+                        index,
+                        page,
+                    ) {
+                        Ok(ring) if start_ticks_at(&path) == Some(thread_started) => {
+                            entry.insert(ring);
+                        }
+                        Ok(_) => {}
+                        Err(error) if start_ticks_at(&path) == Some(thread_started) => {
+                            return Err(error);
+                        }
+                        Err(_) => {}
+                    }
                 }
             }
         }
@@ -360,6 +413,14 @@ pub(super) fn sample(
     for ring in rings.values() {
         drain(ring, &mut samples, &mut lost);
     }
+    for ring in rings.values() {
+        if let Some((event_enabled, event_running)) = scheduled_times(ring) {
+            enabled = enabled.saturating_add(u128::from(event_enabled));
+            running = running.saturating_add(u128::from(event_running));
+        }
+    }
+    let pmu_scheduled_percent =
+        (enabled > 0).then(|| (100.0 * running as f64 / enabled as f64).clamp(0.0, 100.0) as f32);
     let events_traced: u64 = samples.iter().sum();
     let complete = lost == 0 && identity_valid(&target);
     let coverage = if events_traced.saturating_add(lost) == 0 {
@@ -374,6 +435,7 @@ pub(super) fn sample(
             "Adaptive per-thread sampled hardware events; counts are not exact event totals".into(),
         ),
         effective_sample_hz: Some(SAMPLE_HZ as u32),
+        pmu_scheduled_percent,
         complete: Some(complete),
         duration_seconds: duration.as_secs() as u32,
         elapsed_ms: started.elapsed().as_millis() as u64,

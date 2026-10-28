@@ -1155,6 +1155,10 @@ pub struct ProfileResult {
     pub sampling_semantics: Option<String>,
     #[serde(default)]
     pub effective_sample_hz: Option<u32>,
+    /// Percentage of the enabled interval during which Linux scheduled the
+    /// requested PMU event. None when the provider does not report it.
+    #[serde(default)]
+    pub pmu_scheduled_percent: Option<f32>,
     #[serde(default)]
     pub complete: Option<bool>,
     pub duration_seconds: u32,
