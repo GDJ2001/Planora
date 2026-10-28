@@ -1,3 +1,7 @@
+# Linux internal preview: 0.3.0-beta.35
+
+The Linux branch at beta.35 adds protocol-v6 authorization, native Linux measurements, sampled PMU profiling, desktop integration, and DEB/RPM packages. [Linux beta.35 evidence](release-evidence-linux-beta35.md) separates passing Ubuntu 24.04 WSL checks from open native Linux PC, Fedora, attributed disk profiling, GPU, and long-run gates. It is not a completed public Linux release. The Windows matrix below remains historical.
+
 # Latest chart and sensor-navigation update: 0.3.0-beta.33
 
 The current internal update is documented in [beta.33 evidence](release-evidence-0.3.0-beta.33.md). It unifies chart presentation, categorizes sensor navigation, and uses Windows interface metadata for network prominence. The installed beta.32 broker on the reference laptop reports no fan RPM, so that measurement remains explicitly unavailable. The matrix below is a historical beta.23 feature baseline, not a claim that every item was reverified for beta.33.

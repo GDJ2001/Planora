@@ -21,7 +21,7 @@ pub fn take_activation() -> bool {
 impl InstanceGuard {
     pub fn acquire_or_replace(_replace: bool) -> std::io::Result<Option<Self>> {
         use std::os::fd::AsRawFd;
-        use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
         let mut runtime = std::env::var_os("XDG_RUNTIME_DIR")
             .map(std::path::PathBuf::from)
             .ok_or_else(|| {
@@ -31,26 +31,41 @@ impl InstanceGuard {
                 )
             })?;
         let mut metadata = std::fs::symlink_metadata(&runtime)?;
-        // WSLg may supply a runtime directory owned by its compositor user
-        // or with permissions unsuitable for an application socket. Keep
-        // both winit and the lock in one private local directory.
-        if (metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0)
-            && std::env::var_os("WSL_DISTRO_NAME").is_some()
-        {
-            runtime = std::env::temp_dir()
+        let is_wsl = std::env::var_os("WSL_DISTRO_NAME").is_some();
+        // WSLg's runtime directory can change ownership or mode while a UI
+        // is open. Always put the instance lock in the same private directory
+        // so a second launch cannot bypass the first one's lock after that
+        // change. Only redirect winit when its original runtime is invalid.
+        let lock_runtime = if is_wsl {
+            let private = std::env::temp_dir()
                 .join(format!("planora-runtime-{}", unsafe { libc::geteuid() }));
-            match std::fs::create_dir(&runtime) {
-                Ok(()) => {
-                    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700))?
-                }
+            let mut builder = std::fs::DirBuilder::new();
+            match builder.mode(0o700).create(&private) {
+                Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(error) => return Err(error),
             }
-            metadata = std::fs::symlink_metadata(&runtime)?;
-            // Normal launch reaches this before creating any application
-            // workers, so updating the process environment is safe here.
-            unsafe { std::env::set_var("XDG_RUNTIME_DIR", &runtime) };
-        }
+            let private_metadata = std::fs::symlink_metadata(&private)?;
+            if !private_metadata.is_dir()
+                || private_metadata.uid() != unsafe { libc::geteuid() }
+                || private_metadata.mode() & 0o077 != 0
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "Planora's private runtime directory must belong to this user and be private",
+                ));
+            }
+            if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0 {
+                runtime = private.clone();
+                metadata = private_metadata;
+                // Normal launch reaches this before creating any application
+                // workers, so updating the process environment is safe here.
+                unsafe { std::env::set_var("XDG_RUNTIME_DIR", &runtime) };
+            }
+            private
+        } else {
+            runtime.clone()
+        };
         if !metadata.is_dir()
             || metadata.uid() != unsafe { libc::geteuid() }
             || metadata.mode() & 0o077 != 0
@@ -71,8 +86,8 @@ impl InstanceGuard {
         } else {
             &session
         };
-        let path = runtime.join(format!("planora-ui-{session}.lock"));
-        let socket_path = runtime.join(format!("planora-ui-{session}.sock"));
+        let path = lock_runtime.join(format!("planora-ui-{session}.lock"));
+        let socket_path = lock_runtime.join(format!("planora-ui-{session}.sock"));
         let file = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
