@@ -6,6 +6,10 @@ License: (MIT OR Apache-2.0) AND (MIT OR GPL-2.0-only)
 BuildArch: x86_64
 Requires: systemd, polkit, libxkbcommon-x11, libbpf, elfutils-libelf, zlib
 
+# The CO-RE object needs its BTF relocation sections. The standard RPM ELF
+# strip pass treats eBPF as a host binary and fails (or removes that metadata).
+%global __brp_strip /bin/true
+
 %description
 Planora shows process and system resources with an authorized local helper.
 
