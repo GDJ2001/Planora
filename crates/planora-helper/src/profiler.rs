@@ -6,7 +6,7 @@ use planora_core::{ErrorCode, PmuSourceInfo, ProcessIdentity, ProfileResult, Pro
 #[path = "linux_disk.rs"]
 mod linux_disk;
 #[cfg(target_os = "linux")]
-#[path = "linux_perf.rs"]
+#[path = "linux_pmu_client.rs"]
 mod linux_perf;
 use std::sync::{Arc, atomic::AtomicBool};
 #[cfg(windows)]

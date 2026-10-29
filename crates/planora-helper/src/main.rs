@@ -10,6 +10,10 @@ use planora_helper::{
     receive_request_deadline, send_response_deadline,
 };
 use planora_telemetry::Sampler;
+#[cfg(target_os = "linux")]
+mod linux_pmu_wire;
+#[cfg(target_os = "linux")]
+mod linux_pmu_worker;
 mod profiler;
 use std::{
     collections::{HashMap, VecDeque},
@@ -1717,6 +1721,10 @@ fn main() -> io::Result<()> {
             })
         );
         return Ok(());
+    }
+    #[cfg(target_os = "linux")]
+    if std::env::args().any(|arg| arg == "--pmu-worker") {
+        return linux_pmu_worker::serve();
     }
     #[cfg(windows)]
     if std::env::args().any(|arg| arg == "--service") {

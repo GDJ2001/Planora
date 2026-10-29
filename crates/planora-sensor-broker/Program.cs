@@ -99,7 +99,7 @@ public static class Program
 {
     public static readonly string AppVersion = typeof(Program).Assembly
         .GetCustomAttributes<AssemblyMetadataAttribute>()
-        .FirstOrDefault(attribute => attribute.Key == "PlanoraVersion")?.Value ?? "0.3.0-beta.39";
+        .FirstOrDefault(attribute => attribute.Key == "PlanoraVersion")?.Value ?? "0.3.0-beta.40";
 
     public static readonly string BuildCommit = typeof(Program).Assembly
         .GetCustomAttributes<AssemblyMetadataAttribute>()

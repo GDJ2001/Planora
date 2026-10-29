@@ -1,0 +1,25 @@
+[Unit]
+Description=Planora isolated PMU sampling worker
+After=local-fs.target
+
+[Service]
+Type=simple
+User=planora
+Group=planora-users
+ExecStart=/usr/libexec/planora/planora-helper --pmu-worker
+Restart=on-failure
+RuntimeDirectory=planora-pmu
+RuntimeDirectoryMode=0700
+UMask=0077
+AmbientCapabilities=CAP_PERFMON
+CapabilityBoundingSet=CAP_PERFMON
+MemoryMax=268435456
+TasksMax=16
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

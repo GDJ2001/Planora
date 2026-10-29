@@ -165,6 +165,16 @@ fn start_ticks(start_ns: u64, hertz: u64) -> Option<u64> {
     u64::try_from(ticks).ok().filter(|ticks| *ticks > 0)
 }
 
+fn process_start_ticks(pid: u32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    stat.rsplit_once(") ")?
+        .1
+        .split_whitespace()
+        .nth(19)?
+        .parse()
+        .ok()
+}
+
 pub(super) fn sample(
     target: Option<ProcessIdentity>,
     duration_seconds: u32,
@@ -180,7 +190,7 @@ pub(super) fn sample(
         && (identity.pid == 0
             || identity.started == 0
             || identity.source != IdentitySource::LinuxProcStartTicks
-            || super::linux_perf::process_start_ticks(identity.pid) != Some(identity.started))
+            || process_start_ticks(identity.pid) != Some(identity.started))
     {
         return Err((
             ErrorCode::PidReused,

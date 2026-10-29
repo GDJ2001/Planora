@@ -22,6 +22,7 @@ install -Dm755 %{planora_root}/packaging/linux/authorize-user %{buildroot}/usr/l
 install -Dm755 %{planora_root}/packaging/linux/revoke-user %{buildroot}/usr/libexec/planora/revoke-user
 install -Dm644 %{planora_root}/packaging/linux/planora-helper.service %{buildroot}/usr/lib/systemd/system/planora-helper.service
 install -Dm644 %{planora_root}/packaging/linux/planora-profiler.service %{buildroot}/usr/lib/systemd/system/planora-profiler.service
+install -Dm644 %{planora_root}/packaging/linux/planora-pmu.service %{buildroot}/usr/lib/systemd/system/planora-pmu.service
 install -Dm644 %{planora_root}/packaging/linux/planora.sysusers %{buildroot}/usr/lib/sysusers.d/planora.conf
 install -Dm644 %{planora_root}/packaging/linux/org.planora.authorize.policy %{buildroot}/usr/share/polkit-1/actions/org.planora.authorize.policy
 install -Dm644 %{planora_root}/packaging/linux/org.planora.revoke.policy %{buildroot}/usr/share/polkit-1/actions/org.planora.revoke.policy
@@ -42,12 +43,15 @@ systemd-sysusers /usr/lib/sysusers.d/planora.conf
 systemctl daemon-reload || true
 if [ "$1" -gt 1 ]; then systemctl try-restart planora-helper.service || true; fi
 if [ "$1" -gt 1 ]; then systemctl try-restart planora-profiler.service || true; fi
+if [ "$1" -gt 1 ]; then systemctl try-restart planora-pmu.service || true; fi
 systemctl enable --now planora-profiler.service || true
+systemctl enable --now planora-pmu.service || true
 systemctl enable --now planora-helper.service || true
 
 %preun
 if [ "$1" -eq 0 ]; then
   systemctl disable --now planora-profiler.service || true
+  systemctl disable --now planora-pmu.service || true
   systemctl disable --now planora-helper.service || true
 fi
 
@@ -68,6 +72,7 @@ fi
 /usr/libexec/planora/revoke-user
 /usr/lib/systemd/system/planora-helper.service
 /usr/lib/systemd/system/planora-profiler.service
+/usr/lib/systemd/system/planora-pmu.service
 /usr/lib/sysusers.d/planora.conf
 /usr/share/polkit-1/actions/org.planora.authorize.policy
 /usr/share/polkit-1/actions/org.planora.revoke.policy

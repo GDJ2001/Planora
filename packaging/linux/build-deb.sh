@@ -18,6 +18,7 @@ install -Dm755 "$root/packaging/linux/authorize-user" "$stage/usr/libexec/planor
 install -Dm755 "$root/packaging/linux/revoke-user" "$stage/usr/libexec/planora/revoke-user"
 install -Dm644 "$root/packaging/linux/planora-helper.service" "$stage/usr/lib/systemd/system/planora-helper.service"
 install -Dm644 "$root/packaging/linux/planora-profiler.service" "$stage/usr/lib/systemd/system/planora-profiler.service"
+install -Dm644 "$root/packaging/linux/planora-pmu.service" "$stage/usr/lib/systemd/system/planora-pmu.service"
 install -Dm644 "$root/packaging/linux/planora.sysusers" "$stage/usr/lib/sysusers.d/planora.conf"
 install -Dm644 "$root/packaging/linux/org.planora.authorize.policy" "$stage/usr/share/polkit-1/actions/org.planora.authorize.policy"
 install -Dm644 "$root/packaging/linux/org.planora.revoke.policy" "$stage/usr/share/polkit-1/actions/org.planora.revoke.policy"
@@ -52,8 +53,10 @@ systemctl daemon-reload
 if [ "${2:-}" ]; then
   systemctl try-restart planora-helper.service || true
   systemctl try-restart planora-profiler.service || true
+  systemctl try-restart planora-pmu.service || true
 fi
 systemctl enable --now planora-profiler.service
+systemctl enable --now planora-pmu.service
 systemctl enable --now planora-helper.service
 EOF
 cat > "$stage/DEBIAN/prerm" <<'EOF'
@@ -61,6 +64,7 @@ cat > "$stage/DEBIAN/prerm" <<'EOF'
 set -e
 if [ "$1" = remove ]; then
   systemctl disable --now planora-profiler.service || true
+  systemctl disable --now planora-pmu.service || true
   systemctl disable --now planora-helper.service || true
 fi
 EOF
