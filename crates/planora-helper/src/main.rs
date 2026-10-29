@@ -293,28 +293,36 @@ struct State {
     sampling: Arc<SamplingCoordinator>,
 }
 
-// The Linux systemd unit uses an unprivileged service account
-// with CAP_PERFMON. Privileged affinity writes remain disabled on Linux.
+// The monitoring service runs as the dedicated, unprivileged Planora account.
+// Profiling capabilities belong only to its separate workers.
 #[cfg(target_os = "linux")]
-fn has_effective_capability(status: &str, capability: u32) -> bool {
-    if capability >= u64::BITS {
-        return false;
-    }
+fn effective_capabilities(status: &str) -> Option<u64> {
     status
         .lines()
         .find_map(|line| line.strip_prefix("CapEff:"))
         .and_then(|value| u64::from_str_radix(value.trim(), 16).ok())
-        .is_some_and(|bits| bits & (1_u64 << capability) != 0)
+}
+
+#[cfg(target_os = "linux")]
+fn service_identity_allowed(euid: u32, planora_uid: u32, status: &str) -> bool {
+    euid == planora_uid && effective_capabilities(status) == Some(0)
 }
 
 #[cfg(target_os = "linux")]
 fn elevated() -> bool {
-    const CAP_PERFMON: u32 = 38;
-    let is_root = unsafe { libc::geteuid() == 0 };
-    is_root
-        || std::fs::read_to_string("/proc/self/status")
-            .ok()
-            .is_some_and(|status| has_effective_capability(&status, CAP_PERFMON))
+    let euid = unsafe { libc::geteuid() };
+    if euid == 0 {
+        return true;
+    }
+    let service = std::ffi::CString::new("planora").expect("static account name");
+    let entry = unsafe { libc::getpwnam(service.as_ptr()) };
+    if entry.is_null() {
+        return false;
+    }
+    let service_uid = unsafe { (*entry).pw_uid };
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .is_some_and(|status| service_identity_allowed(euid, service_uid, &status))
 }
 
 #[cfg(target_os = "macos")]
@@ -1334,7 +1342,7 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
     if !elevated() {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "Planora helper requires administrator/root or approved Linux service capabilities",
+            "Planora helper requires administrator/root or the dedicated Linux service account without profiling capabilities",
         ));
     }
 
@@ -1915,19 +1923,31 @@ mod lifecycle_tests {
 
 #[cfg(all(test, target_os = "linux"))]
 mod linux_service_tests {
-    use super::has_effective_capability;
+    use super::{effective_capabilities, service_identity_allowed};
 
     #[test]
-    fn cap_perfmon_is_accepted_without_root() {
-        let status = "Name:\tplanora-helper\nCapEff:\t0000004000000000\n";
-        assert!(has_effective_capability(status, 38));
+    fn dedicated_account_without_capabilities_is_accepted() {
+        assert!(service_identity_allowed(
+            1002,
+            1002,
+            "CapEff:\t0000000000000000\n"
+        ));
     }
 
     #[test]
-    fn missing_or_unrelated_capability_is_denied() {
-        assert!(!has_effective_capability("CapEff:\t0000000000800000\n", 38));
-        assert!(!has_effective_capability("Name:\tplanora-helper\n", 38));
-        assert!(!has_effective_capability("CapEff:\tnot-hex\n", 38));
-        assert!(!has_effective_capability("CapEff:\tffffffffffffffff\n", 64));
+    fn other_account_or_privileged_monitor_is_denied() {
+        assert!(!service_identity_allowed(1001, 1002, "CapEff:\t0\n"));
+        assert!(!service_identity_allowed(
+            1002,
+            1002,
+            "CapEff:\t0000004000000000\n"
+        ));
+        assert!(!service_identity_allowed(1002, 1002, "CapEff:\tnot-hex\n"));
+        assert!(!service_identity_allowed(
+            1002,
+            1002,
+            "Name:\tplanora-helper\n"
+        ));
+        assert_eq!(effective_capabilities("CapEff:\t0\n"), Some(0));
     }
 }
