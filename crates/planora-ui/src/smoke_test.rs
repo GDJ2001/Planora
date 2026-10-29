@@ -368,6 +368,7 @@ pub fn create_native_fixture_app(theme: Theme, page: Page) -> App {
         physical_adapter: None,
         name: "Intel Iris Xe Graphics".into(),
         busiest_engine_percent: Metric::available(22.5, "%", "Fixture data", timestamp),
+        aggregate_busy_percent: None,
         dedicated_used_bytes: Metric::unavailable(
             "bytes",
             "Fixture data",

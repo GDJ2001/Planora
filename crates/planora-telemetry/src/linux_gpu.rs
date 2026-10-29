@@ -34,7 +34,57 @@ fn bytes_metric(path: &Path, stamp: u64) -> Metric<u64> {
 }
 
 pub(super) fn adapters(stamp: u64) -> Vec<GpuAdapterSample> {
-    let Ok(entries) = fs::read_dir("/sys/class/drm") else {
+    adapters_at(Path::new("/sys/class/drm"), stamp)
+}
+
+fn aggregate_busy_metric(
+    device: &Path,
+    vendor: &str,
+    driver: &str,
+    stamp: u64,
+) -> Option<Metric<f32>> {
+    if vendor != "0x1002" || driver != "amdgpu" {
+        return None;
+    }
+    let path = device.join("gpu_busy_percent");
+    let reading = match fs::read_to_string(path) {
+        Ok(raw) => match raw.trim().parse::<f32>() {
+            Ok(value) if value.is_finite() && (0.0..=100.0).contains(&value) => {
+                return Some(Metric::available(
+                    value,
+                    UNIT_PERCENT,
+                    "Linux amdgpu gpu_busy_percent",
+                    stamp,
+                ));
+            }
+            _ => AvailabilityReason::TemporarilyFailed(
+                "The AMD driver returned an invalid aggregate busy reading".into(),
+            ),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            AvailabilityReason::Unsupported(
+                "This AMD driver exposes no aggregate busy counter".into(),
+            )
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            AvailabilityReason::PermissionDenied(
+                "Cannot read the AMD aggregate busy counter".into(),
+            )
+        }
+        Err(_) => AvailabilityReason::TemporarilyFailed(
+            "The AMD aggregate busy counter could not be read".into(),
+        ),
+    };
+    Some(Metric::unavailable(
+        UNIT_PERCENT,
+        "Linux amdgpu gpu_busy_percent",
+        stamp,
+        reading,
+    ))
+}
+
+fn adapters_at(root: &Path, stamp: u64) -> Vec<GpuAdapterSample> {
+    let Ok(entries) = fs::read_dir(root) else {
         return Vec::new();
     };
     let mut found = Vec::new();
@@ -71,6 +121,7 @@ pub(super) fn adapters(stamp: u64) -> Vec<GpuAdapterSample> {
                 UNIT_PERCENT, "Linux DRM", stamp,
                 AvailabilityReason::Unsupported("Physical-engine load is not exposed by this provider; aggregate device busy is a different measurement".into()),
             ),
+            aggregate_busy_percent: aggregate_busy_metric(&device, &vendor, &driver, stamp),
             dedicated_used_bytes: bytes_metric(&device.join("mem_info_vram_used"), stamp),
             dedicated_total_bytes: bytes_metric(&device.join("mem_info_vram_total"), stamp),
             shared_used_bytes: bytes_metric(&device.join("mem_info_gtt_used"), stamp),
@@ -103,5 +154,49 @@ mod tests {
             stable_hash("/sys/devices/pci0000:00/0000:00:02.0"),
             stable_hash("/sys/devices/pci0000:00/0000:01:00.0")
         );
+    }
+
+    #[test]
+    fn amd_busy_is_per_adapter_and_never_called_an_engine() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!(
+            "planora-gpu-fixture-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        for (index, busy) in [(0, "12"), (1, "83")] {
+            let device = root.join(format!("card{index}/device"));
+            fs::create_dir_all(&device).unwrap();
+            fs::write(device.join("vendor"), "0x1002\n").unwrap();
+            fs::write(device.join("gpu_busy_percent"), busy).unwrap();
+            symlink("/sys/bus/pci/drivers/amdgpu", device.join("driver")).unwrap();
+        }
+        let adapters = adapters_at(&root, 42);
+        assert_eq!(adapters.len(), 2);
+        let values: Vec<_> = adapters
+            .iter()
+            .map(|adapter| adapter.activity_percent().0.value.unwrap())
+            .collect();
+        assert_eq!(values, [12.0, 83.0]);
+        assert!(adapters.iter().all(|adapter| {
+            adapter.busiest_engine_percent.value.is_none()
+                && adapter.activity_percent().1 == "Aggregate device busy"
+                && adapter.activity_history_key().ends_with(":aggregate")
+        }));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn invalid_busy_is_unavailable_and_other_vendors_are_not_mislabeled() {
+        let root = std::env::temp_dir().join(format!("planora-gpu-invalid-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("gpu_busy_percent"), "101").unwrap();
+        let invalid = aggregate_busy_metric(&root, "0x1002", "amdgpu", 42).unwrap();
+        assert!(invalid.value.is_none());
+        assert!(aggregate_busy_metric(&root, "0x8086", "i915", 42).is_none());
+        fs::remove_dir_all(root).unwrap();
     }
 }

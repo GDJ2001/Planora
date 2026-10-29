@@ -738,14 +738,15 @@ pub fn choices(
     let mut adapters: Vec<_> = frame.gpu_adapters.iter().collect();
     adapters.sort_by_key(|adapter| (adapter.adapter_luid, adapter.physical_adapter));
     for adapter in adapters {
-        let is_ok = adapter.busiest_engine_percent.value.is_some();
+        let (activity, _, _) = adapter.activity_percent();
+        let is_ok = activity.value.is_some();
         rows.push(Choice {
             id: format!(
                 "gpu:{}:{:?}",
                 adapter.adapter_luid, adapter.physical_adapter
             ),
             label: adapter.name.clone(),
-            value: format_percent(adapter.busiest_engine_percent.value),
+            value: format_percent(activity.value),
             status_text: if is_ok {
                 "Active".into()
             } else {
@@ -758,13 +759,9 @@ pub fn choices(
             device: String::new(),
             family: String::new(),
             color: p.gpu,
-            series_key: format!(
-                "gpu:{}:{:?}:busiest",
-                adapter.adapter_luid, adapter.physical_adapter
-            ),
-            source: adapter.busiest_engine_percent.source.clone(),
-            unavailable_reason: adapter
-                .busiest_engine_percent
+            series_key: adapter.activity_history_key(),
+            source: activity.source.clone(),
+            unavailable_reason: activity
                 .unavailable_reason
                 .as_ref()
                 .map(ToString::to_string),
@@ -1990,9 +1987,13 @@ fn render_selected(
                         );
                         if item.category == 2 {
                             ui.label(
-                                egui::RichText::new("Busiest engine")
-                                    .small()
-                                    .color(p.secondary),
+                                egui::RichText::new(if item.series_key.ends_with(":aggregate") {
+                                    "Aggregate device busy"
+                                } else {
+                                    "Busiest engine"
+                                })
+                                .small()
+                                .color(p.secondary),
                             );
                         }
                         ui.label(
@@ -2923,7 +2924,11 @@ fn render_gpu_tab(ui: &mut egui::Ui, frame: &TelemetryFrame, p: Palette) {
     ui.heading("GPU Adapters & Engines");
     ui.label(
         egui::RichText::new(
-            "Physical graphics adapters discovered via DXGI and engine load from Windows PDH.",
+            if cfg!(target_os = "linux") {
+                "Graphics adapters discovered via DRM. AMD aggregate busy is device-wide and is not physical-engine utilization."
+            } else {
+                "Physical graphics adapters discovered via DXGI and engine load from Windows PDH."
+            },
         )
         .size(11.5 * crate::appearance::text_scale(ui.ctx()))
         .color(p.secondary),
@@ -2944,8 +2949,12 @@ fn render_gpu_tab(ui: &mut egui::Ui, frame: &TelemetryFrame, p: Palette) {
                     .min_row_height(32.0)
                     .show(ui, |ui| {
                         ui.strong("Adapter");
-                        ui.strong("LUID");
-                        ui.strong("Busiest Engine");
+                        ui.strong(if cfg!(target_os = "linux") {
+                            "Adapter ID"
+                        } else {
+                            "LUID"
+                        });
+                        ui.strong("Activity");
                         ui.strong("Dedicated VRAM (Used / Capacity)");
                         ui.strong("Shared Memory (Used / Capacity)");
                         ui.strong("Budget");
@@ -2954,7 +2963,9 @@ fn render_gpu_tab(ui: &mut egui::Ui, frame: &TelemetryFrame, p: Palette) {
                         for adapter in &frame.gpu_adapters {
                             ui.label(&adapter.name);
                             ui.monospace(format!("0x{:x}", adapter.adapter_luid));
-                            ui.monospace(format_percent(adapter.busiest_engine_percent.value));
+                            let (activity, activity_name, _) = adapter.activity_percent();
+                            ui.monospace(format_percent(activity.value))
+                                .on_hover_text(activity_name);
 
                             let ded_str = match (
                                 adapter.dedicated_used_bytes.value,

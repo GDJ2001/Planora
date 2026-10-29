@@ -403,10 +403,8 @@ fn resource_cards(
         ),
     ];
     if let Some(adapter) = frame.gpu_adapters.first() {
-        let gpu_series_key = format!(
-            "gpu:{}:{:?}:busiest",
-            adapter.adapter_luid, adapter.physical_adapter
-        );
+        let gpu_series_key = adapter.activity_history_key();
+        let (activity, _, suffix) = adapter.activity_percent();
         let series = histories.detail(&gpu_series_key).unwrap_or(&empty_series);
         let gpu_sub = if adapter.dedicated_total_bytes.value == Some(0) {
             "Shared memory (UMA)".into()
@@ -416,13 +414,16 @@ fn resource_cards(
         ) {
             format!("VRAM {} / {}", format_bytes(u), format_bytes(t))
         } else {
-            "GPU engine".into()
+            "GPU activity".into()
         };
         cards.push((
-            "GPU · busiest",
+            if suffix == "aggregate" {
+                "GPU · aggregate"
+            } else {
+                "GPU · busiest"
+            },
             "gpu",
-            adapter
-                .busiest_engine_percent
+            activity
                 .value
                 .map(|v| format!("{v:.1}%"))
                 .unwrap_or_else(|| "Unavailable".into()),
@@ -647,18 +648,19 @@ pub fn render_overview_view(
             },
         ];
         if let Some(adapter) = frame.gpu_adapters.first() {
-            let key = format!(
-                "gpu:{}:{:?}:busiest",
-                adapter.adapter_luid, adapter.physical_adapter
-            );
+            let key = adapter.activity_history_key();
+            let (activity, _, suffix) = adapter.activity_percent();
             rows.push(SummaryRow {
-                label: "GPU · busiest",
-                current: metric_percent(&adapter.busiest_engine_percent),
+                label: if suffix == "aggregate" {
+                    "GPU · aggregate"
+                } else {
+                    "GPU · busiest"
+                },
+                current: metric_percent(activity),
                 series: histories.detail(&key).unwrap_or(&empty_gpu_series),
                 unit: "%",
                 color: p.gpu,
-                reason: adapter
-                    .busiest_engine_percent
+                reason: activity
                     .unavailable_reason
                     .as_ref()
                     .map(ToString::to_string),

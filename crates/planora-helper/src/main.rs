@@ -338,7 +338,12 @@ fn elevated() -> bool {
 fn capabilities(frame: &TelemetryFrame) -> Vec<Capability> {
     #[cfg(target_os = "linux")]
     let (gpu, power) = (
-        planora_telemetry::linux_amd_gpu_busy_available(),
+        frame.gpu_adapters.iter().any(|adapter| {
+            adapter
+                .aggregate_busy_percent
+                .as_ref()
+                .is_some_and(|metric| metric.value.is_some())
+        }),
         planora_telemetry::linux_rapl_available(),
     );
     #[cfg(windows)]
@@ -567,14 +572,14 @@ fn capabilities(frame: &TelemetryFrame) -> Vec<Capability> {
         let mut result = result;
         result.push(make(
             "AMD aggregate GPU busy",
-            "AMD DRM device",
+            "AMD DRM adapters",
             "Linux amdgpu sysfs",
             if gpu {
                 CapabilityState::Available
             } else {
                 CapabilityState::Unsupported
             },
-            (!gpu).then_some("No readable single-device amdgpu busy counter was found"),
+            (!gpu).then_some("No readable per-adapter amdgpu busy counter was found"),
             None,
         ));
         for sensor in frame.sensors.iter().take(128) {

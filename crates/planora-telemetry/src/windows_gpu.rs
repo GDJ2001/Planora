@@ -684,6 +684,7 @@ impl WindowsGpu {
                 physical_adapter,
                 name: dxgi.name.clone(),
                 busiest_engine_percent: busiest,
+                aggregate_busy_percent: None,
                 dedicated_used_bytes,
                 dedicated_total_bytes: Metric::available(
                     dxgi.dedicated_video_bytes,

@@ -631,12 +631,9 @@ impl ResourceHistories {
             );
         }
         for adapter in &frame.gpu_adapters {
-            let metric = &adapter.busiest_engine_percent;
+            let (metric, _, _) = adapter.activity_percent();
             self.push_detail(
-                format!(
-                    "gpu:{}:{:?}:busiest",
-                    adapter.adapter_luid, adapter.physical_adapter
-                ),
+                adapter.activity_history_key(),
                 measurement_instant(now, wall_clock_now_ms, metric.sampled_at_ms),
                 metric.sampled_at_ms,
                 metric.value,

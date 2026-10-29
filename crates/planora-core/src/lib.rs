@@ -277,12 +277,34 @@ pub struct GpuAdapterSample {
     pub physical_adapter: Option<u32>,
     pub name: String,
     pub busiest_engine_percent: Metric<f32>,
+    /// Device-wide busy time, distinct from physical-engine utilization.
+    #[serde(default)]
+    pub aggregate_busy_percent: Option<Metric<f32>>,
     pub dedicated_used_bytes: Metric<u64>,
     pub dedicated_total_bytes: Metric<u64>,
     pub shared_used_bytes: Metric<u64>,
     pub shared_total_bytes: Metric<u64>,
     #[serde(default)]
     pub budget_bytes: Option<Metric<u64>>,
+}
+
+impl GpuAdapterSample {
+    pub fn activity_percent(&self) -> (&Metric<f32>, &'static str, &'static str) {
+        match &self.aggregate_busy_percent {
+            Some(aggregate) if self.busiest_engine_percent.value.is_none() => {
+                (aggregate, "Aggregate device busy", "aggregate")
+            }
+            _ => (&self.busiest_engine_percent, "Busiest engine", "busiest"),
+        }
+    }
+
+    pub fn activity_history_key(&self) -> String {
+        let (_, _, suffix) = self.activity_percent();
+        format!(
+            "gpu:{}:{:?}:{suffix}",
+            self.adapter_luid, self.physical_adapter
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -608,6 +630,9 @@ impl TelemetryFrame {
                 &adapter.busiest_engine_percent,
                 "gpu_adapter.busiest_engine_percent",
             )?;
+            if let Some(aggregate) = &adapter.aggregate_busy_percent {
+                validate_pct(aggregate, "gpu_adapter.aggregate_busy_percent")?;
+            }
             validate_metric(
                 &adapter.dedicated_used_bytes,
                 "gpu_adapter.dedicated_used_bytes",
@@ -953,6 +978,9 @@ impl TelemetryFrame {
         }
         for adapter in &mut self.gpu_adapters {
             sanitize_pct_metric(&mut adapter.busiest_engine_percent, "GPU adapter");
+            if let Some(aggregate) = &mut adapter.aggregate_busy_percent {
+                sanitize_pct_metric(aggregate, "GPU aggregate busy");
+            }
             canonicalize_metric_unit(&mut adapter.dedicated_used_bytes);
             canonicalize_metric_unit(&mut adapter.dedicated_total_bytes);
             canonicalize_metric_unit(&mut adapter.shared_used_bytes);
@@ -1784,6 +1812,7 @@ mod tests {
                     physical_adapter: Some(0),
                     name: "Integrated UMA GPU".into(),
                     busiest_engine_percent: Metric::available(100.2, "%", "pdh", 1000),
+                    aggregate_busy_percent: None,
                     dedicated_used_bytes: Metric::available(0, "bytes", "pdh", 1000),
                     dedicated_total_bytes: Metric::available(0, "bytes", "dxgi", 1000),
                     shared_used_bytes: Metric::available(512, "bytes", "pdh", 1000),
@@ -1795,6 +1824,7 @@ mod tests {
                     physical_adapter: Some(0),
                     name: "Discrete GPU".into(),
                     busiest_engine_percent: Metric::available(99.0, "%", "pdh", 1000),
+                    aggregate_busy_percent: None,
                     dedicated_used_bytes: Metric::available(8_050_000_000, "bytes", "pdh", 1000),
                     dedicated_total_bytes: Metric::available(8_000_000_000, "bytes", "dxgi", 1000),
                     shared_used_bytes: Metric::available(128, "bytes", "pdh", 1000),
@@ -1837,5 +1867,13 @@ mod tests {
             frame.gpu_adapters[1].dedicated_used_bytes.value,
             Some(8_000_000_000)
         );
+        let mut legacy_adapter = serde_json::to_value(&frame.gpu_adapters[0]).unwrap();
+        legacy_adapter
+            .as_object_mut()
+            .unwrap()
+            .remove("aggregate_busy_percent");
+        let restored: GpuAdapterSample = serde_json::from_value(legacy_adapter).unwrap();
+        assert!(restored.aggregate_busy_percent.is_none());
+        assert_eq!(restored.activity_percent().1, "Busiest engine");
     }
 }
