@@ -360,6 +360,8 @@ fn capabilities(frame: &TelemetryFrame) -> Vec<Capability> {
     };
     #[cfg(target_os = "linux")]
     let pmu_probe = profiler::probe_pmu();
+    #[cfg(target_os = "linux")]
+    let disk_probe = profiler::probe_disk_io();
     let make = |name: &str,
                 scope: &str,
                 provider: &str,
@@ -498,12 +500,40 @@ fn capabilities(frame: &TelemetryFrame) -> Vec<Capability> {
                 } else {
                     "Linux block tracing"
                 },
-                if cfg!(windows) {
-                    CapabilityState::Available
-                } else {
-                    CapabilityState::NotImplemented
+                {
+                    #[cfg(target_os = "linux")]
+                    {
+                        match &disk_probe {
+                            Ok(()) => CapabilityState::Available,
+                            Err((ErrorCode::PermissionDenied, _)) => {
+                                CapabilityState::PermissionDenied
+                            }
+                            Err((ErrorCode::Unsupported, _)) => CapabilityState::Unsupported,
+                            Err(_) => CapabilityState::TemporarilyFailed,
+                        }
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        if cfg!(windows) {
+                            CapabilityState::Available
+                        } else {
+                            CapabilityState::NotImplemented
+                        }
+                    }
                 },
-                (!cfg!(windows)).then_some("Linux attributed disk tracing is not implemented"),
+                {
+                    #[cfg(target_os = "linux")]
+                    {
+                        disk_probe.as_ref().err().map(|(_, reason)| reason.as_str())
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        (!cfg!(windows)).then_some("Disk tracing is unavailable on this OS")
+                    }
+                },
+                #[cfg(target_os = "linux")]
+                Some("Ask an administrator to start the packaged Planora profiling worker"),
+                #[cfg(not(target_os = "linux"))]
                 None,
             ),
             make(

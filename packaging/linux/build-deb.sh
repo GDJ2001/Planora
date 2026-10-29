@@ -7,21 +7,27 @@ case "$version" in
   *) deb_version="$version-1" ;;
 esac
 release_dir="${CARGO_TARGET_DIR:-$root/target}/release"
+bash "$root/packaging/linux/build-profiler.sh"
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 install -Dm755 "$release_dir/planora" "$stage/usr/bin/planora"
 install -Dm755 "$release_dir/planora-helper" "$stage/usr/libexec/planora/planora-helper"
+install -Dm755 "$release_dir/planora-disk-profile" "$stage/usr/libexec/planora/planora-disk-profile"
+install -Dm644 "$release_dir/planora-disk-profile.bpf.o" "$stage/usr/libexec/planora/planora-disk-profile.bpf.o"
 install -Dm755 "$root/packaging/linux/authorize-user" "$stage/usr/libexec/planora/authorize-user"
 install -Dm755 "$root/packaging/linux/revoke-user" "$stage/usr/libexec/planora/revoke-user"
 install -Dm644 "$root/packaging/linux/planora-helper.service" "$stage/usr/lib/systemd/system/planora-helper.service"
+install -Dm644 "$root/packaging/linux/planora-profiler.service" "$stage/usr/lib/systemd/system/planora-profiler.service"
 install -Dm644 "$root/packaging/linux/planora.sysusers" "$stage/usr/lib/sysusers.d/planora.conf"
 install -Dm644 "$root/packaging/linux/org.planora.authorize.policy" "$stage/usr/share/polkit-1/actions/org.planora.authorize.policy"
 install -Dm644 "$root/packaging/linux/org.planora.revoke.policy" "$stage/usr/share/polkit-1/actions/org.planora.revoke.policy"
 install -Dm644 "$root/packaging/linux/planora.desktop" "$stage/usr/share/applications/planora.desktop"
 install -Dm644 "$root/packaging/linux/org.planora.Planora.metainfo.xml" "$stage/usr/share/metainfo/org.planora.planora.metainfo.xml"
-for license_file in LICENSE-MIT LICENSE-APACHE NOTICE; do
+for license_file in LICENSE-MIT LICENSE-APACHE LICENSE-GPL-2.0 NOTICE; do
   install -Dm644 "$root/$license_file" "$stage/usr/share/doc/planora/$license_file"
 done
+install -Dm644 "$root/packaging/linux/planora-disk-profile.bpf.c" "$stage/usr/share/doc/planora/source/planora-disk-profile.bpf.c"
+install -Dm644 "$root/packaging/linux/planora-disk-profile.c" "$stage/usr/share/doc/planora/source/planora-disk-profile.c"
 for size in 16 24 32 48 64 128 256 512; do
   install -Dm644 "$root/assets/brand/platforms/linux/planora-$size.png" "$stage/usr/share/icons/hicolor/${size}x${size}/apps/planora.png"
 done
@@ -32,7 +38,7 @@ Package: planora
 Version: $deb_version
 Architecture: amd64
 Maintainer: Planora <maintainers@invalid.example>
-Depends: libc6, libgcc-s1, libx11-6, libxkbcommon-x11-0, libwayland-client0, libpolkit-gobject-1-0, pkexec, systemd
+Depends: libc6, libgcc-s1, libx11-6, libxkbcommon-x11-0, libwayland-client0, libpolkit-gobject-1-0, pkexec, systemd, libbpf1, libelf1t64 | libelf1, zlib1g
 Section: utils
 Priority: optional
 Description: Native hardware visualizer and resource monitor
@@ -45,13 +51,18 @@ systemd-sysusers /usr/lib/sysusers.d/planora.conf
 systemctl daemon-reload
 if [ "${2:-}" ]; then
   systemctl try-restart planora-helper.service || true
+  systemctl try-restart planora-profiler.service || true
 fi
+systemctl enable --now planora-profiler.service
 systemctl enable --now planora-helper.service
 EOF
 cat > "$stage/DEBIAN/prerm" <<'EOF'
 #!/bin/sh
 set -e
-if [ "$1" = remove ]; then systemctl disable --now planora-helper.service || true; fi
+if [ "$1" = remove ]; then
+  systemctl disable --now planora-profiler.service || true
+  systemctl disable --now planora-helper.service || true
+fi
 EOF
 cat > "$stage/DEBIAN/postrm" <<'EOF'
 #!/bin/sh

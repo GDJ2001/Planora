@@ -5,6 +5,7 @@ version="${PLANORA_VERSION:-$(cargo pkgid --manifest-path "$root/Cargo.toml" -p 
 rpm_version="${version%%-*}"
 if [ "$rpm_version" = "$version" ]; then rpm_release=1; else rpm_release="0.${version#*-}"; fi
 release_dir="${CARGO_TARGET_DIR:-$root/target}/release"
+bash "$root/packaging/linux/build-profiler.sh"
 mkdir -p "$root/dist" "$root/target/rpmbuild"/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
 # A Windows checkout may give the spec CRLF endings. rpm copies %install
 # commands verbatim into /bin/sh, where a trailing CR breaks shell loops.

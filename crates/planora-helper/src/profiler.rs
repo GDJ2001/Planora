@@ -3,6 +3,9 @@
 use planora_core::{DiskIoProfileRecord, IdentitySource};
 use planora_core::{ErrorCode, PmuSourceInfo, ProcessIdentity, ProfileResult, ProfileTarget};
 #[cfg(target_os = "linux")]
+#[path = "linux_disk.rs"]
+mod linux_disk;
+#[cfg(target_os = "linux")]
 #[path = "linux_perf.rs"]
 mod linux_perf;
 use std::sync::{Arc, atomic::AtomicBool};
@@ -94,6 +97,10 @@ pub fn enumerate_pmu_sources() -> Vec<PmuSourceInfo> {
 #[cfg(target_os = "linux")]
 pub fn probe_pmu() -> Result<(), (ErrorCode, String)> {
     linux_perf::probe()
+}
+#[cfg(target_os = "linux")]
+pub fn probe_disk_io() -> Result<(), (ErrorCode, String)> {
+    linux_disk::probe()
 }
 #[cfg(not(any(windows, target_os = "linux")))]
 pub fn enumerate_pmu_sources() -> Vec<PmuSourceInfo> {
@@ -648,7 +655,17 @@ fn run_pmu_sampling_profile(
         "PMU source discovery is available, but no ETW sampled-event collector is implemented; no sample count can be reported.".into(),
     ))
 }
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+fn run_disk_io_profile(
+    _job_id: u64,
+    target_process: Option<ProcessIdentity>,
+    duration_seconds: u32,
+    cancel: Arc<AtomicBool>,
+) -> Result<ProfileResult, (ErrorCode, String)> {
+    linux_disk::sample(target_process, duration_seconds, &cancel)
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn run_disk_io_profile(
     _job_id: u64,
     _target_process: Option<ProcessIdentity>,

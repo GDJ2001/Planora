@@ -100,7 +100,7 @@ fn start_ticks_at(path: &str) -> Option<u64> {
     fields.get(19)?.parse().ok() // field 22, after state at field 3
 }
 
-fn process_start_ticks(pid: u32) -> Option<u64> {
+pub(super) fn process_start_ticks(pid: u32) -> Option<u64> {
     start_ticks_at(&format!("/proc/{pid}/stat"))
 }
 
