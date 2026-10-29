@@ -1,5 +1,7 @@
 //! ETW Disk I/O and PMU profiling collector for Windows.
 #[cfg(windows)]
+use planora_core::ProfileKind;
+#[cfg(windows)]
 use planora_core::{DiskIoProfileRecord, IdentitySource};
 use planora_core::{ErrorCode, PmuSourceInfo, ProcessIdentity, ProfileResult, ProfileTarget};
 #[cfg(target_os = "linux")]
@@ -623,6 +625,7 @@ fn run_disk_io_profile(
     };
 
     Ok(ProfileResult {
+        kind: Some(ProfileKind::DiskIo),
         target_desc,
         provider: Some("Windows ETW".into()),
         sampling_semantics: Some("Attributed physical disk events".into()),

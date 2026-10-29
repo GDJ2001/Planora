@@ -1113,6 +1113,12 @@ pub enum ProfileTarget {
     },
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ProfileKind {
+    DiskIo,
+    PmuSampling,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct DiskIoProfileRecord {
     pub pid: u32,
@@ -1149,6 +1155,8 @@ pub struct PmuSourceInfo {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ProfileResult {
     pub target_desc: String,
+    #[serde(default)]
+    pub kind: Option<ProfileKind>,
     #[serde(default)]
     pub provider: Option<String>,
     #[serde(default)]
@@ -1299,6 +1307,28 @@ pub enum Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_kind_is_optional_for_legacy_results() {
+        let mut old_result = serde_json::json!({
+            "target_desc": "legacy disk trace",
+            "duration_seconds": 3,
+            "elapsed_ms": 3000,
+            "events_traced": 0,
+            "events_lost": 0,
+            "attribution_coverage_percent": 0.0,
+            "disk_records": [],
+            "pmu_records": [],
+            "unattributed_read_bytes": 0,
+            "unattributed_write_bytes": 0
+        });
+        let legacy: ProfileResult = serde_json::from_value(old_result.clone()).unwrap();
+        assert_eq!(legacy.kind, None);
+        old_result["kind"] = serde_json::json!("PmuSampling");
+        let new_result: ProfileResult = serde_json::from_value(old_result).unwrap();
+        assert_eq!(new_result.kind, Some(ProfileKind::PmuSampling));
+        assert!(new_result.pmu_records.is_empty());
+    }
 
     #[test]
     fn privileged_windows_action_requires_comparable_creation_identity() {

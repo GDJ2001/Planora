@@ -338,6 +338,7 @@ pub(super) fn sample(
         )
     });
     Ok(ProfileResult {
+        kind: Some(planora_core::ProfileKind::DiskIo),
         target_desc: target.map_or_else(|| "System-wide disk I/O profile".into(), |id| format!("Disk I/O profile (PID {})", id.pid)),
         provider: Some("Linux libbpf CO-RE block tracing".into()),
         sampling_semantics: Some("Completed physical block requests; kernel writeback and unverified process identities remain unattributed".into()),

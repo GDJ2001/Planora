@@ -429,6 +429,7 @@ pub(super) fn sample(
         100.0 * events_traced as f32 / events_traced.saturating_add(lost) as f32
     };
     Ok(ProfileResult {
+        kind: Some(planora_core::ProfileKind::PmuSampling),
         target_desc: format!("Linux perf sampled profile (PID {})", target.pid),
         provider: Some("Linux perf_event_open".into()),
         sampling_semantics: Some(
