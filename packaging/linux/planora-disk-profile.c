@@ -21,7 +21,7 @@
 #ifndef PLANORA_BPF_OBJECT
 #define PLANORA_BPF_OBJECT "/usr/libexec/planora/planora-disk-profile.bpf.o"
 #endif
-#define PLANORA_PROFILE_SOCKET "/run/planora/planora-profile.sock"
+#define PLANORA_PROFILE_SOCKET "/run/planora-profile/planora-profile.sock"
 #define MAX_EVENTS 1400000
 
 struct disk_event {

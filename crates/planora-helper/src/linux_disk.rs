@@ -13,7 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const SOCKET: &str = "/run/planora/planora-profile.sock";
+const SOCKET: &str = "/run/planora-profile/planora-profile.sock";
 const MAX_EVENTS: u64 = 1_400_000;
 const MAX_PROCESSES: usize = 10_000;
 const EVENT_SIZE: usize = 72;
