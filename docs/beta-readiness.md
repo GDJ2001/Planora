@@ -1,6 +1,6 @@
-# Linux internal preview: 0.3.0-beta.35
+# Linux internal preview: 0.3.0-beta.36
 
-The Linux branch at beta.35 adds protocol-v6 authorization, native Linux measurements, sampled PMU profiling, desktop integration, and DEB/RPM packages. [Linux beta.35 evidence](release-evidence-linux-beta35.md) separates passing Ubuntu 24.04 WSL checks from open native Linux PC, Fedora, attributed disk profiling, GPU, and long-run gates. It is not a completed public Linux release. The Windows matrix below remains historical.
+The Linux branch at beta.35 adds protocol-v6 authorization, native Linux measurements, sampled PMU profiling, desktop integration, and DEB/RPM packages. [Linux beta.35 evidence](release-evidence-linux-beta35.md) separates passing Ubuntu 24.04 WSL checks from open native Linux PC, Fedora, attributed disk profiling, GPU, and long-run gates. [Beta.36 evidence](release-evidence-linux-beta36.md) records the WSL single-instance fix and installed upgrade. It is not a completed public Linux release. The Windows matrix below remains historical.
 
 # Latest chart and sensor-navigation update: 0.3.0-beta.33
 
