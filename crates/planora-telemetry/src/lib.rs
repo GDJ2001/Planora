@@ -3,7 +3,7 @@ use planora_core::{
     AvailabilityReason, IdentitySource, Metric, PROTOCOL_VERSION, ProcessIdentity, ProcessRecord,
     TelemetryFrame,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sysinfo::{Disks, Networks, ProcessRefreshKind, ProcessesToUpdate, System};
 
@@ -473,6 +473,8 @@ impl Sampler {
     pub fn sample(&mut self) -> TelemetryFrame {
         let now = Instant::now();
         let stamp = unix_ms();
+        let mut provider_durations_ms = BTreeMap::new();
+        let t_refresh = Instant::now();
         let elapsed = self.last.map(|last| now.duration_since(last));
         let cpu_due = self
             .last_cpu
@@ -514,11 +516,17 @@ impl Sampler {
             self.networks.refresh(true);
         }
 
+        provider_durations_ms.insert(
+            "refresh".to_string(),
+            t_refresh.elapsed().as_secs_f32() * 1000.0,
+        );
+
         self.sequence += 1;
         let first = elapsed.is_none();
         let delta = elapsed.unwrap_or_default();
         let proc_count = self.system.cpus().len().max(1) as f32;
 
+        let t_procs = Instant::now();
         let processes = if process_due || self.cached_processes.is_empty() {
             #[cfg(windows)]
             let basic_processes = query_windows_basic_processes().ok();
@@ -752,6 +760,15 @@ impl Sampler {
         self.process_cpu
             .retain(|identity, _| live.contains(identity));
 
+        provider_durations_ms.insert(
+            "processes".to_string(),
+            t_procs.elapsed().as_secs_f32() * 1000.0,
+        );
+
+        let mut dur_gpu = Duration::ZERO;
+        #[cfg(windows)]
+        let t_gpu_sample = Instant::now();
+
         #[cfg(windows)]
         let (gpu_adapters, gpu_engines, gpu_engine_unavailable_reason) =
             match self.windows_gpu.as_mut() {
@@ -781,6 +798,12 @@ impl Sampler {
                     )),
                 ),
             };
+        #[cfg(windows)]
+        {
+            dur_gpu += t_gpu_sample.elapsed();
+        }
+
+        let t_disks = Instant::now();
 
         #[cfg(windows)]
         let (disk_read_metric, disk_write_metric, disk_devices) = {
@@ -913,6 +936,13 @@ impl Sampler {
         #[cfg(all(not(windows), not(target_os = "linux")))]
         let (disk_read_metric, disk_write_metric, disk_devices) =
             self.sample_sysinfo_disks(first, delta, stamp);
+
+        provider_durations_ms.insert(
+            "disks".to_string(),
+            t_disks.elapsed().as_secs_f32() * 1000.0,
+        );
+
+        let t_network = Instant::now();
 
         // 3. Network: prioritize native Windows IP Helper interface enumeration without filter duplicates
         #[cfg(windows)]
@@ -1054,6 +1084,14 @@ impl Sampler {
             )
         };
 
+        provider_durations_ms.insert(
+            "network".to_string(),
+            t_network.elapsed().as_secs_f32() * 1000.0,
+        );
+
+        let mut dur_cpu = Duration::ZERO;
+        let t_cpu1 = Instant::now();
+
         if cpu_due {
             self.system_cpu = Some(Metric::available(
                 self.system.global_cpu_usage().clamp(0.0, 100.0),
@@ -1070,6 +1108,9 @@ impl Sampler {
                 AvailabilityReason::WarmingUp,
             )
         });
+        dur_cpu += t_cpu1.elapsed();
+
+        let t_gpu_match = Instant::now();
 
         #[cfg(target_os = "linux")]
         let (gpu_adapters, gpu_engines, gpu_engine_unavailable_reason) = (
@@ -1199,6 +1240,11 @@ impl Sampler {
             ),
         );
 
+        dur_gpu += t_gpu_match.elapsed();
+        provider_durations_ms.insert("gpu".to_string(), dur_gpu.as_secs_f32() * 1000.0);
+
+        let t_cpu2 = Instant::now();
+
         #[cfg(target_os = "linux")]
         let package_power = self.sample_rapl(now, stamp);
         #[cfg(not(target_os = "linux"))]
@@ -1274,6 +1320,11 @@ impl Sampler {
         } else {
             self.last_logical_cpus.clone()
         };
+
+        dur_cpu += t_cpu2.elapsed();
+        provider_durations_ms.insert("cpu".to_string(), dur_cpu.as_secs_f32() * 1000.0);
+
+        let t_mem = Instant::now();
 
         // 5. Memory: atomic snapshot from single OS call
         #[cfg(windows)]
@@ -1422,6 +1473,10 @@ impl Sampler {
             )
         };
 
+        provider_durations_ms.insert("memory".to_string(), t_mem.elapsed().as_secs_f32() * 1000.0);
+
+        let t_sensors = Instant::now();
+
         #[cfg(target_os = "linux")]
         let sensors = {
             if self
@@ -1435,6 +1490,11 @@ impl Sampler {
         };
         #[cfg(not(target_os = "linux"))]
         let sensors = Vec::new();
+
+        provider_durations_ms.insert(
+            "sensors".to_string(),
+            t_sensors.elapsed().as_secs_f32() * 1000.0,
+        );
 
         let mut frame = TelemetryFrame {
             protocol_version: PROTOCOL_VERSION,
@@ -1463,6 +1523,7 @@ impl Sampler {
             package_power_watts: package_power,
             sensors,
             processes,
+            provider_durations_ms,
         };
         frame.sanitize_provider_anomalies();
         frame.sampled_at_ms = unix_ms();

@@ -4,7 +4,7 @@ use std::{
     collections::BTreeSet,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU32, AtomicU64, Ordering},
         mpsc::{self, SyncSender, TrySendError},
     },
     thread::{self, JoinHandle},
@@ -51,6 +51,7 @@ pub struct HistoryWorker {
     output: PublishedHistory,
     thread: Option<JoinHandle<()>>,
     dropped: Arc<AtomicU64>,
+    last_pub_ms: Arc<AtomicU32>,
 }
 
 impl HistoryWorker {
@@ -61,6 +62,8 @@ impl HistoryWorker {
         let output = Arc::new(Mutex::new(None));
         let worker_output = Arc::clone(&output);
         let dropped = Arc::new(AtomicU64::new(0));
+        let last_pub_ms = Arc::new(AtomicU32::new(0));
+        let worker_pub_ms = Arc::clone(&last_pub_ms);
         let thread = thread::Builder::new()
             .name("planora-history".into())
             .spawn(move || {
@@ -104,9 +107,12 @@ impl HistoryWorker {
                             || selected_changed
                             || last_publish.elapsed() >= Duration::from_millis(250))
                     {
+                        let t_pub = Instant::now();
                         histories.enforce_budget();
                         let snapshot = Arc::new(histories.clone());
                         *worker_output.lock().unwrap() = Some((epoch, snapshot));
+                        let pub_ms = t_pub.elapsed().as_secs_f32() * 1000.0;
+                        worker_pub_ms.store(pub_ms.to_bits(), Ordering::Relaxed);
                         last_publish = Instant::now();
                         pending_publish = false;
                     }
@@ -118,6 +124,7 @@ impl HistoryWorker {
             output,
             thread: Some(thread),
             dropped,
+            last_pub_ms,
         }
     }
 
@@ -144,6 +151,10 @@ impl HistoryWorker {
 
     pub fn dropped(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
+    }
+
+    pub fn last_publish_duration_ms(&self) -> f32 {
+        f32::from_bits(self.last_pub_ms.load(Ordering::Relaxed))
     }
 
     pub fn stop(&mut self) {
@@ -218,6 +229,7 @@ mod tests {
             ),
             sensors: Vec::new(),
             processes: Vec::new(),
+            provider_durations_ms: Default::default(),
         }
     }
 

@@ -385,7 +385,7 @@ struct PlotCacheKey {
     range: HistoryRange,
     width: u32,
     scale_bits: u32,
-    series: Vec<(usize, u64)>,
+    series: Vec<(u64, u64)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -492,7 +492,7 @@ fn draw_time_plot(
             .iter()
             .map(|item| {
                 (
-                    item.samples.samples.len(),
+                    item.samples.generation,
                     item.samples
                         .samples
                         .back()
@@ -505,6 +505,7 @@ fn draw_time_plot(
         now < cached_at || now.saturating_duration_since(cached_at) >= Duration::from_secs(1)
     });
     if state.cache_key.as_ref() != Some(&key) || expired {
+        let t_prep = Instant::now();
         let gap = gap_policy.gap_threshold();
         state.cached_segments = series
             .iter()
@@ -515,6 +516,8 @@ fn draw_time_plot(
             .collect();
         state.cache_key = Some(key);
         state.cache_now = Some(now);
+        let prep_ms = t_prep.elapsed().as_secs_f32() * 1000.0;
+        crate::CHART_PREP_RING.with(|r| r.borrow_mut().record(prep_ms));
     }
     let segments = &state.cached_segments;
 

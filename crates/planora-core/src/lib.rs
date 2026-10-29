@@ -1,5 +1,8 @@
 //! Portable versioned contracts shared by the UI, helper, and collectors.
+pub mod perf;
+pub use perf::{LatencyRing, LatencyStats, PerformanceReport};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 pub const PROTOCOL_VERSION: u32 = 6;
 pub const SUPPORTED_SAMPLE_INTERVALS_MS: [u64; 5] = [100, 250, 500, 1_000, 2_000];
@@ -533,6 +536,8 @@ pub struct TelemetryFrame {
     #[serde(default)]
     pub sensors: Vec<SensorReading>,
     pub processes: Vec<ProcessRecord>,
+    #[serde(default)]
+    pub provider_durations_ms: std::collections::BTreeMap<String, f32>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq)]
@@ -619,6 +624,13 @@ impl TelemetryFrame {
             return Err(FrameValidationError::NonFiniteFloat {
                 field: "collection_duration_ms",
             });
+        }
+        for &duration in self.provider_durations_ms.values() {
+            if !duration.is_finite() || duration < 0.0 {
+                return Err(FrameValidationError::NonFiniteFloat {
+                    field: "provider_durations_ms",
+                });
+            }
         }
         validate_pct(&self.cpu_percent, "cpu_percent")?;
         for cpu in &self.logical_cpus {
@@ -1307,7 +1319,7 @@ pub enum Response {
         helper_authorized: bool,
     },
     Topology(Topology),
-    Snapshot(Box<TelemetryFrame>),
+    Snapshot(Arc<TelemetryFrame>),
     SamplingStatus {
         requested_ms: u64,
         effective_ms: u64,
@@ -1482,6 +1494,7 @@ mod tests {
             ),
             sensors: Vec::new(),
             processes: vec![],
+            provider_durations_ms: Default::default(),
         };
 
         assert!(valid_frame.validate().is_ok());
@@ -1715,6 +1728,7 @@ mod tests {
                 },
             ],
             processes: Vec::new(),
+            provider_durations_ms: Default::default(),
         };
 
         // Before sanitization, frame validation fails on bad_fan / corrupted latency / bad link speed
@@ -1844,6 +1858,7 @@ mod tests {
             ),
             sensors: Vec::new(),
             processes: Vec::new(),
+            provider_durations_ms: Default::default(),
         };
 
         assert!(matches!(

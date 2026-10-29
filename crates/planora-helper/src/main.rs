@@ -879,7 +879,7 @@ fn dispatch(command: Command, req_id: u64, connection_id: u64, state: &State) ->
         }
         Command::Snapshot => {
             let frame = Arc::clone(&*state.latest_frame.read().unwrap());
-            Response::Snapshot(Box::new((*frame).clone()))
+            Response::Snapshot(frame)
         }
         Command::Capabilities | Command::RefreshCapabilities => {
             let frame = Arc::clone(&*state.latest_frame.read().unwrap());

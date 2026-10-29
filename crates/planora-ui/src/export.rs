@@ -136,6 +136,19 @@ impl ExportManager {
         self.worker.as_ref().is_none_or(|w| w.is_finished())
     }
 
+    pub fn performance_report(
+        &mut self,
+        report: planora_core::PerformanceReport,
+    ) -> io::Result<()> {
+        self.start("performance", "json", move |path, _cancel| {
+            fs::create_dir_all(path.parent().unwrap())?;
+            let mut writer =
+                BufWriter::new(OpenOptions::new().create_new(true).write(true).open(path)?);
+            serde_json::to_writer_pretty(&mut writer, &report)?;
+            writer.flush()
+        })
+    }
+
     pub fn cancel(&mut self) {
         self.request_cancel();
         if let Some(worker) = self.worker.take() {
@@ -244,7 +257,7 @@ impl ExportManager {
                     ));
                 }
                 let cutoff = now.checked_sub(range.duration()).unwrap_or(now);
-                for sample in &series.samples {
+                for sample in series.samples.iter() {
                     if sample.time < cutoff || sample.time > now {
                         continue;
                     }
@@ -305,7 +318,7 @@ impl ExportManager {
                         "export cancelled",
                     ));
                 }
-                for sample in &series.samples {
+                for sample in series.samples.iter() {
                     if sample.time < cutoff || sample.time > now {
                         continue;
                     }

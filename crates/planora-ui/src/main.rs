@@ -50,6 +50,96 @@ use views::{
 };
 use window_placement::{Placement, WorkArea};
 
+thread_local! {
+    pub static CHART_PREP_RING: std::cell::RefCell<planora_core::LatencyRing<128>> = std::cell::RefCell::new(planora_core::LatencyRing::new());
+    pub static PROCESS_SORT_RING: std::cell::RefCell<planora_core::LatencyRing<128>> = std::cell::RefCell::new(planora_core::LatencyRing::new());
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct UiPerfCounters {
+    pub start_time: Option<Instant>,
+    pub first_paint_ms: Option<f32>,
+    pub ui_frame_ring: planora_core::LatencyRing<128>,
+    pub helper_total_ring: planora_core::LatencyRing<128>,
+    pub helper_provider_rings: std::collections::BTreeMap<String, planora_core::LatencyRing<128>>,
+    pub history_pub_ring: planora_core::LatencyRing<128>,
+    pub chart_prep_ring: planora_core::LatencyRing<128>,
+    pub process_sort_ring: planora_core::LatencyRing<128>,
+    pub recording_write_ring: planora_core::LatencyRing<128>,
+}
+
+impl UiPerfCounters {
+    pub fn build_report(&self) -> planora_core::PerformanceReport {
+        let (rss, vms) = current_process_memory();
+        planora_core::PerformanceReport {
+            format_version: 1,
+            application_version: env!("CARGO_PKG_VERSION").to_string(),
+            source_commit: state::BUILD_INFO.git_commit.to_string(),
+            target: state::BUILD_INFO.target.to_string(),
+            timestamp_ms: planora_telemetry::unix_ms(),
+            process_resident_memory_bytes: rss,
+            process_virtual_memory_bytes: vms,
+            first_paint_ms: self.first_paint_ms,
+            ui_frame: self.ui_frame_ring.stats(),
+            helper_collection_total: self.helper_total_ring.stats(),
+            helper_collection_by_provider: self
+                .helper_provider_rings
+                .iter()
+                .map(|(k, v)| (k.clone(), v.stats()))
+                .collect(),
+            ipc_serialization: planora_core::LatencyStats::default(),
+            history_publication: self.history_pub_ring.stats(),
+            chart_preparation: self.chart_prep_ring.stats(),
+            process_filtering_sorting: self.process_sort_ring.stats(),
+            recording_write: self.recording_write_ring.stats(),
+        }
+    }
+}
+
+#[cfg(windows)]
+fn current_process_memory() -> (Option<u64>, Option<u64>) {
+    use windows_sys::Win32::System::ProcessStatus::{
+        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    unsafe {
+        let mut counters: PROCESS_MEMORY_COUNTERS = std::mem::zeroed();
+        counters.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+        if GetProcessMemoryInfo(
+            GetCurrentProcess(),
+            &mut counters,
+            std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+        ) != 0
+        {
+            (
+                Some(counters.WorkingSetSize as u64),
+                Some(counters.PagefileUsage as u64),
+            )
+        } else {
+            (None, None)
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn current_process_memory() -> (Option<u64>, Option<u64>) {
+    if let Ok(statm) = std::fs::read_to_string("/proc/self/statm") {
+        let mut parts = statm.split_whitespace();
+        if let (Some(vms_pages), Some(rss_pages)) = (parts.next(), parts.next()) {
+            let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
+            let vms = vms_pages.parse::<u64>().ok().map(|p| p * page_size);
+            let rss = rss_pages.parse::<u64>().ok().map(|p| p * page_size);
+            return (rss, vms);
+        }
+    }
+    (None, None)
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn current_process_memory() -> (Option<u64>, Option<u64>) {
+    (None, None)
+}
+
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
     fn planora_register_daemon() -> i32;
@@ -120,6 +210,11 @@ pub struct App {
     pub lifecycle: LifecycleState,
     shutdown_started: Option<Instant>,
     shutdown_completed: bool,
+    perf_counters: UiPerfCounters,
+    focus_lost_at: Option<Instant>,
+    last_adaptive_poll_ms: u64,
+    last_recorded_sequence: u64,
+    export_perf_report_path: Option<std::path::PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -353,6 +448,7 @@ impl App {
                 .unwrap_or(0)
         };
         let (placement, work_area) = window_placement::startup_placement();
+        let initial_poll_interval = settings.poll_interval_ms;
         Self {
             shared,
             tx,
@@ -414,6 +510,14 @@ impl App {
             lifecycle: LifecycleState::Starting,
             shutdown_started: None,
             shutdown_completed: false,
+            perf_counters: UiPerfCounters {
+                start_time: Some(Instant::now()),
+                ..Default::default()
+            },
+            focus_lost_at: None,
+            last_adaptive_poll_ms: initial_poll_interval,
+            last_recorded_sequence: 0,
+            export_perf_report_path: None,
         }
     }
 
@@ -700,6 +804,15 @@ impl App {
             }
             self.recorder.join();
             self.exporter.cancel();
+            if let Some(path) = self.export_perf_report_path.take() {
+                let report = self.perf_counters.build_report();
+                if let Ok(text) = serde_json::to_string_pretty(&report) {
+                    if let Some(parent) = path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let _ = std::fs::write(path, text);
+                }
+            }
             self.shutdown_completed = true;
             startup::record("shutdown-complete");
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -758,6 +871,7 @@ impl App {
     }
 
     pub fn render_ui(&mut self, root: &mut egui::Ui) {
+        let frame_start = Instant::now();
         #[cfg(target_os = "linux")]
         if instance::take_activation() {
             root.ctx()
@@ -778,11 +892,17 @@ impl App {
             return;
         }
 
-        if let Some((start, duration)) = self.auto_close
-            && start.elapsed() >= duration
-        {
-            self.begin_shutdown(root.ctx());
-            return;
+        if let Some((start, duration)) = &mut self.auto_close {
+            if self.frames_rendered == 0 {
+                *start = Instant::now();
+            }
+            if start.elapsed() >= *duration {
+                self.begin_shutdown(root.ctx());
+                return;
+            } else {
+                root.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(16));
+            }
         }
 
         if self.normal_window && self.frames_rendered == 0 {
@@ -794,6 +914,35 @@ impl App {
                 viewport.native_pixels_per_point,
                 viewport.maximized,
             ));
+        }
+        if self.perf_counters.first_paint_ms.is_none()
+            && let Some(start) = self.perf_counters.start_time
+        {
+            self.perf_counters.first_paint_ms = Some(start.elapsed().as_secs_f32() * 1000.0);
+        }
+
+        // Adaptive sampling based on focus and minimization states
+        let viewport_input = root.ctx().input(|input| input.viewport().clone());
+        let is_minimized = viewport_input.minimized == Some(true);
+        let is_focused = viewport_input.focused.unwrap_or(true);
+        let saved_poll = self.settings.poll_interval_ms;
+        let target_poll = if is_minimized {
+            self.focus_lost_at = None;
+            saved_poll.max(1000)
+        } else if is_focused {
+            self.focus_lost_at = None;
+            saved_poll
+        } else {
+            let lost_at = *self.focus_lost_at.get_or_insert_with(Instant::now);
+            if lost_at.elapsed() >= std::time::Duration::from_secs(2) {
+                saved_poll.max(500)
+            } else {
+                saved_poll
+            }
+        };
+        if target_poll != self.last_adaptive_poll_ms {
+            self.last_adaptive_poll_ms = target_poll;
+            self.poll_ms.store(target_poll, Ordering::Relaxed);
         }
         if self.normal_window {
             let viewport = root.ctx().input(|input| input.viewport().clone());
@@ -880,18 +1029,6 @@ impl App {
                     self.authorization_child = None;
                 }
             }
-        }
-        if let Some((start, dur)) = self.auto_close
-            && start.elapsed() >= dur
-        {
-            if self.screenshot_out.is_some() || self.screenshot_pending {
-                eprintln!(
-                    "Native screenshot timed out ({} frames rendered)",
-                    self.frames_rendered
-                );
-                std::process::exit(1);
-            }
-            root.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
         let ctx = root.ctx().clone();
@@ -1033,13 +1170,31 @@ impl App {
             }
         }
 
-        // Evaluate staleness if in Live state
-        let current_poll = self.poll_ms.load(Ordering::Relaxed);
+        // Evaluate staleness if in Live state using effective rate
+        let current_poll = shared_copy
+            .sampling_effective_ms
+            .unwrap_or(self.poll_ms.load(Ordering::Relaxed));
         if !self.fixture_mode
             && app_state == AppState::Live
             && let Some(elapsed) = is_data_stale(shared_copy.last_frame_received, current_poll)
         {
             app_state = AppState::Stale(elapsed);
+        }
+
+        if let Some(frame) = &frame_opt
+            && self.last_recorded_sequence != frame.sequence
+        {
+            self.last_recorded_sequence = frame.sequence;
+            self.perf_counters
+                .helper_total_ring
+                .record(frame.collection_duration_ms);
+            for (provider, dur) in &frame.provider_durations_ms {
+                self.perf_counters
+                    .helper_provider_rings
+                    .entry(provider.clone())
+                    .or_default()
+                    .record(*dur);
+            }
         }
 
         // The history worker owns aggregation and publishes a bounded immutable snapshot.
@@ -1686,6 +1841,32 @@ impl App {
                         .max(0.0),
             )));
         }
+
+        if self.settings_state.export_perf_report_requested {
+            self.settings_state.export_perf_report_requested = false;
+            let report = self.perf_counters.build_report();
+            let res = self.exporter.performance_report(report);
+            self.settings_state.status_message = match res {
+                Ok(()) => Some((
+                    false,
+                    "Performance report exported to Exports folder.".into(),
+                )),
+                Err(e) => Some((true, format!("Failed to export performance report: {e}"))),
+            };
+        }
+
+        let frame_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
+        self.perf_counters.ui_frame_ring.record(frame_ms);
+        CHART_PREP_RING.with(|r| self.perf_counters.chart_prep_ring = r.borrow().clone());
+        PROCESS_SORT_RING.with(|r| self.perf_counters.process_sort_ring = r.borrow().clone());
+        let pub_ms = self.history_worker.last_publish_duration_ms();
+        if pub_ms > 0.0 {
+            self.perf_counters.history_pub_ring.record(pub_ms);
+        }
+        let write_ms = self.recorder.status().last_write_duration_ms;
+        if write_ms > 0.0 {
+            self.perf_counters.recording_write_ring.record(write_ms);
+        }
     }
 }
 
@@ -1695,6 +1876,15 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
+        if let Some(path) = self.export_perf_report_path.take() {
+            let report = self.perf_counters.build_report();
+            if let Ok(text) = serde_json::to_string_pretty(&report) {
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(path, text);
+            }
+        }
         if self.normal_window {
             if let Err(error) = window_placement::save(&self.window_placement) {
                 startup::record(&format!("placement-save-error {error}"));
@@ -1713,6 +1903,15 @@ impl eframe::App for App {
 
 impl Drop for App {
     fn drop(&mut self) {
+        if let Some(path) = self.export_perf_report_path.take() {
+            let report = self.perf_counters.build_report();
+            if let Ok(text) = serde_json::to_string_pretty(&report) {
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(path, text);
+            }
+        }
         if !self.shutdown_completed {
             self.client_stop.store(true, Ordering::Release);
             self.recorder.stop();
@@ -1805,6 +2004,51 @@ fn main() -> eframe::Result<()> {
         }
         return Ok(());
     }
+    if std::env::args().any(|a| a == "--perf-report") {
+        #[cfg(windows)]
+        unsafe {
+            use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+            let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+        }
+        let mut sampler = planora_telemetry::Sampler::new();
+        let frame = sampler.sample();
+        let (rss, vms) = current_process_memory();
+        let report = planora_core::PerformanceReport {
+            format_version: 1,
+            application_version: env!("CARGO_PKG_VERSION").to_string(),
+            source_commit: state::BUILD_INFO.git_commit.to_string(),
+            target: state::BUILD_INFO.target.to_string(),
+            timestamp_ms: planora_telemetry::unix_ms(),
+            process_resident_memory_bytes: rss,
+            process_virtual_memory_bytes: vms,
+            first_paint_ms: None,
+            ui_frame: planora_core::LatencyStats::default(),
+            helper_collection_total: planora_core::LatencyStats::compute(
+                &[frame.collection_duration_ms],
+                1,
+            ),
+            helper_collection_by_provider: frame
+                .provider_durations_ms
+                .iter()
+                .map(|(k, &v)| (k.clone(), planora_core::LatencyStats::compute(&[v], 1)))
+                .collect(),
+            ipc_serialization: planora_core::LatencyStats::default(),
+            history_publication: planora_core::LatencyStats::default(),
+            chart_preparation: planora_core::LatencyStats::default(),
+            process_filtering_sorting: planora_core::LatencyStats::default(),
+            recording_write: planora_core::LatencyStats::default(),
+        };
+        let text = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into());
+        println!("{text}");
+        if let Some(out_path) = std::env::args()
+            .position(|a| a == "--export-perf-report" || a == "--output" || a == "-o")
+            .and_then(|idx| std::env::args().nth(idx + 1))
+        {
+            let _ = std::fs::write(out_path, &text);
+        }
+        return Ok(());
+    }
+
     if std::env::args().any(|a| a == "--headless-smoke-test") {
         let out_dir = std::env::args()
             .nth(2)
@@ -1834,6 +2078,11 @@ fn main() -> eframe::Result<()> {
     let mut auto_close_ms = None;
     let mut screenshot_out = None;
     let args: Vec<String> = std::env::args().collect();
+    let export_perf_report_path = args
+        .iter()
+        .position(|a| a == "--export-perf-report")
+        .and_then(|idx| args.get(idx + 1))
+        .map(std::path::PathBuf::from);
     let native_fixture = args.iter().any(|arg| arg == "--native-fixture");
     let fixture_tables_only = args.iter().any(|arg| arg == "--tables-only");
     let mut fixture_resource = None;
@@ -1880,7 +2129,7 @@ fn main() -> eframe::Result<()> {
                 }
                 i += 2;
             }
-            "--auto-close-ms" if i + 1 < args.len() => {
+            "--auto-close-ms" | "--auto-close" if i + 1 < args.len() => {
                 if let Ok(ms) = args[i + 1].parse::<u64>() {
                     auto_close_ms = Some(ms);
                 }
@@ -2044,6 +2293,7 @@ fn main() -> eframe::Result<()> {
             };
             app.normal_window = cfg!(windows) && !capture_mode && !native_fixture;
             app.page = initial_page;
+            app.export_perf_report_path = export_perf_report_path;
             if let Some(resource) = fixture_resource.as_ref() {
                 app.resources_state.selected_resource = Some(resource.clone());
             }
@@ -2190,6 +2440,7 @@ mod tests {
                 ),
                 make(7, 1, "Beta", Metric::available(5.0, "%", "fixture", 1)),
             ],
+            provider_durations_ms: Default::default(),
         }
     }
 

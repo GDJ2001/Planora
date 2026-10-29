@@ -329,7 +329,7 @@ fn handle_response(
                 let receipt_now = Instant::now();
                 let wall_clock_ms = planora_telemetry::unix_ms();
                 shared.last_frame_received = Some(receipt_now);
-                let frame_arc: Arc<TelemetryFrame> = Arc::from(frame);
+                let frame_arc = frame;
                 shared.frame = Some(Arc::clone(&frame_arc));
                 if shared.live_history_enabled
                     && let Some(history) = history_sender
@@ -1043,6 +1043,7 @@ mod tests {
             ),
             sensors: Vec::new(),
             processes: Vec::new(),
+            provider_durations_ms: Default::default(),
         }
     }
 
@@ -1055,7 +1056,7 @@ mod tests {
 
         // Step 2: Receive snapshot -> transitions to Live
         let frame1 = dummy_frame(1);
-        handle_response(Response::Snapshot(Box::new(frame1)), &state, None);
+        handle_response(Response::Snapshot(Arc::new(frame1)), &state, None);
 
         {
             let shared = state.lock().unwrap();
@@ -1087,7 +1088,7 @@ mod tests {
 
         // Step 5: Telemetry recovers -> helper delivers frame 2
         let frame2 = dummy_frame(2);
-        handle_response(Response::Snapshot(Box::new(frame2)), &state, None);
+        handle_response(Response::Snapshot(Arc::new(frame2)), &state, None);
 
         {
             let shared = state.lock().unwrap();
@@ -1104,7 +1105,7 @@ mod tests {
         let state = Arc::new(Mutex::new(Shared::default()));
 
         // Receive snapshot
-        handle_response(Response::Snapshot(Box::new(dummy_frame(1))), &state, None);
+        handle_response(Response::Snapshot(Arc::new(dummy_frame(1))), &state, None);
 
         // Simulate IPC disconnection: since frame exists, transition to Reconnecting
         {
@@ -1125,14 +1126,14 @@ mod tests {
     fn repeated_or_invalid_frame_cannot_freshen_display() {
         let state = Arc::new(Mutex::new(Shared::default()));
         assert!(handle_response(
-            Response::Snapshot(Box::new(dummy_frame(1))),
+            Response::Snapshot(Arc::new(dummy_frame(1))),
             &state,
             None
         ));
         let received = state.lock().unwrap().last_frame_received.unwrap();
         let original = state.lock().unwrap().frame.clone().unwrap();
         assert!(handle_response(
-            Response::Snapshot(Box::new(dummy_frame(1))),
+            Response::Snapshot(Arc::new(dummy_frame(1))),
             &state,
             None
         ));
@@ -1145,7 +1146,7 @@ mod tests {
         let mut invalid = dummy_frame(2);
         invalid.cpu_percent.value = Some(f32::NAN);
         assert!(!handle_response(
-            Response::Snapshot(Box::new(invalid)),
+            Response::Snapshot(Arc::new(invalid)),
             &state,
             None
         ));

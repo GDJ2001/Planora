@@ -27,6 +27,7 @@ enum LocalDataResult {
 pub struct SettingsViewState {
     pub reset_window_requested: bool,
     pub show_confirm_modal: bool,
+    pub export_perf_report_requested: bool,
     preview_files: Vec<(PathBuf, u64)>,
     pub status_message: Option<(bool, String)>,
     local_data_task: Option<Receiver<LocalDataResult>>,
@@ -427,6 +428,12 @@ pub fn render_settings_view(
             if ui.button("Reset window placement").clicked() {
                 state.reset_window_requested = true;
                 state.status_message = Some((false, "Window placement reset to the current display.".into()));
+            }
+            ui.add_space(8.0);
+            ui.strong("Diagnostics & Performance Verification");
+            ui.label("Export a machine-verifiable, redacted JSON report containing latency percentiles, memory usage, and collection timings.");
+            if ui.button("Export Performance Report (JSON)").clicked() {
+                state.export_perf_report_requested = true;
             }
         });
         ui.add_space(14.0);

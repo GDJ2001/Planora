@@ -2,7 +2,7 @@ use crate::{
     components::{
         header::render_page_header,
         plot::{PlotSeries, PlotState, ValueScale, time_plot},
-        table::{ProcessTableState, render_process_table, sort_processes},
+        table::{ProcessTableState, render_process_table, sort_process_indices},
     },
     formatting::{format_bytes, format_percent, format_rate},
     history::{HistoryRange, ResourceHistories},
@@ -30,6 +30,8 @@ pub struct ProcessesViewState {
     pub affinity_initialized: bool,
     pub affinity_error: Option<String>,
     cached_order: Vec<ProcessIdentity>,
+    cached_frame_seq: u64,
+    cached_indices: Vec<usize>,
     last_sorted_at: Option<Instant>,
     last_sort_query: String,
     last_sort_column: crate::components::table::SortColumn,
@@ -183,37 +185,46 @@ pub fn render_processes_view(
         .last_sorted_at
         .is_none_or(|last| last.elapsed() >= Duration::from_secs(1));
     if query_changed || (expired && !ui.input(|i| i.pointer.any_down())) {
-        let mut sorted = sort_processes(
+        let t_sort = Instant::now();
+        let mut sorted_indices = sort_process_indices(
             &frame.processes,
             &state.table_state.search_query,
             state.table_state.sort_column,
             state.table_state.sort_descending,
         );
-        sorted.retain(|process| match state.quick_filter {
-            QuickFilter::All => true,
-            QuickFilter::Selected => selected_identity.as_ref() == Some(&process.identity),
-            QuickFilter::Pinned => state.pinned.contains(&process.identity),
-            QuickFilter::Active => {
-                process.cpu_percent.value.is_some_and(|value| value > 0.0)
-                    || process
-                        .io_read_bytes_per_sec
-                        .value
-                        .is_some_and(|value| value > 0)
-                    || process
-                        .io_write_bytes_per_sec
-                        .value
-                        .is_some_and(|value| value > 0)
-                    || process
-                        .disk_read_bytes_per_sec
-                        .value
-                        .is_some_and(|value| value > 0)
-                    || process
-                        .disk_write_bytes_per_sec
-                        .value
-                        .is_some_and(|value| value > 0)
+        sorted_indices.retain(|&idx| {
+            let process = &frame.processes[idx];
+            match state.quick_filter {
+                QuickFilter::All => true,
+                QuickFilter::Selected => selected_identity.as_ref() == Some(&process.identity),
+                QuickFilter::Pinned => state.pinned.contains(&process.identity),
+                QuickFilter::Active => {
+                    process.cpu_percent.value.is_some_and(|value| value > 0.0)
+                        || process
+                            .io_read_bytes_per_sec
+                            .value
+                            .is_some_and(|value| value > 0)
+                        || process
+                            .io_write_bytes_per_sec
+                            .value
+                            .is_some_and(|value| value > 0)
+                        || process
+                            .disk_read_bytes_per_sec
+                            .value
+                            .is_some_and(|value| value > 0)
+                        || process
+                            .disk_write_bytes_per_sec
+                            .value
+                            .is_some_and(|value| value > 0)
+                }
             }
         });
-        state.cached_order = sorted.iter().map(|p| p.identity.clone()).collect();
+        state.cached_order = sorted_indices
+            .iter()
+            .map(|&idx| frame.processes[idx].identity.clone())
+            .collect();
+        state.cached_indices = sorted_indices;
+        state.cached_frame_seq = frame.sequence;
         state.last_sorted_at = Some(Instant::now());
         state
             .last_sort_query
@@ -222,12 +233,28 @@ pub fn render_processes_view(
         state.last_sort_descending = state.table_state.sort_descending;
         state.last_quick_filter = state.quick_filter;
         state.last_selected_identity.clone_from(selected_identity);
+
+        let sort_ms = t_sort.elapsed().as_secs_f32() * 1000.0;
+        crate::PROCESS_SORT_RING.with(|r| r.borrow_mut().record(sort_ms));
     }
-    let by_identity: HashMap<_, _> = frame.processes.iter().map(|p| (&p.identity, p)).collect();
+    if state.cached_frame_seq != frame.sequence {
+        let by_identity: HashMap<_, usize> = frame
+            .processes
+            .iter()
+            .enumerate()
+            .map(|(idx, p)| (&p.identity, idx))
+            .collect();
+        state.cached_indices = state
+            .cached_order
+            .iter()
+            .filter_map(|id| by_identity.get(id).copied())
+            .collect();
+        state.cached_frame_seq = frame.sequence;
+    }
     let rows: Vec<&ProcessRecord> = state
-        .cached_order
+        .cached_indices
         .iter()
-        .filter_map(|id| by_identity.get(id).copied())
+        .filter_map(|&idx| frame.processes.get(idx))
         .collect();
     if rows.is_empty() {
         ui.label(
@@ -797,6 +824,7 @@ mod tests {
                     planora_core::AvailabilityReason::Unsupported("test".into()),
                 ),
             }],
+            provider_durations_ms: Default::default(),
         };
         let mut histories = crate::history::ResourceHistories::default();
         let identity = frame.processes[0].identity.clone();
@@ -847,5 +875,164 @@ mod tests {
             );
             output.textures_delta.clear();
         }
+    }
+    #[test]
+    fn test_ten_thousand_processes_filtering_and_rendering_performance() {
+        let ctx = egui::Context::default();
+        let mut processes = Vec::with_capacity(10_000);
+        for i in 0..10_000u32 {
+            processes.push(ProcessRecord {
+                identity: ProcessIdentity {
+                    pid: i + 1,
+                    started: 1000 + (i as u64 % 50),
+                    sequence_number: None,
+                    source: planora_core::IdentitySource::WindowsProcessFiletime,
+                },
+                name: format!("process_{i}.exe"),
+                cpu_percent: planora_core::Metric::available(
+                    (i % 100) as f32 / 2.0,
+                    "%",
+                    "test",
+                    1000,
+                ),
+                memory_bytes: planora_core::Metric::available(
+                    (i as u64) * 1024 * 1024,
+                    "bytes",
+                    "test",
+                    1000,
+                ),
+                disk_read_bytes_per_sec: planora_core::Metric::available(
+                    if i % 3 == 0 { 4096 } else { 0 },
+                    "B/s",
+                    "test",
+                    1000,
+                ),
+                disk_write_bytes_per_sec: planora_core::Metric::available(
+                    if i % 5 == 0 { 8192 } else { 0 },
+                    "B/s",
+                    "test",
+                    1000,
+                ),
+                io_read_bytes_per_sec: planora_core::Metric::available(4096, "B/s", "test", 1000),
+                io_write_bytes_per_sec: planora_core::Metric::available(8192, "B/s", "test", 1000),
+                gpu_percent: planora_core::Metric::available((i % 20) as f32, "%", "test", 1000),
+                affinity: planora_core::Metric::unavailable(
+                    "cpus",
+                    "test",
+                    1000,
+                    planora_core::AvailabilityReason::Unsupported("test".into()),
+                ),
+            });
+        }
+        let frame = TelemetryFrame {
+            protocol_version: planora_core::PROTOCOL_VERSION,
+            session_id: 1,
+            topology_generation: 1,
+            sequence: 42,
+            sampled_at_ms: 1000,
+            collection_duration_ms: 15.0,
+            cpu_percent: planora_core::Metric::available(55.0, "%", "test", 1000),
+            logical_cpus: Vec::new(),
+            memory_used_bytes: planora_core::Metric::available(16_000_000, "bytes", "test", 1000),
+            memory_available_bytes: planora_core::Metric::available(
+                16_000_000, "bytes", "test", 1000,
+            ),
+            memory_total_bytes: planora_core::Metric::available(32_000_000, "bytes", "test", 1000),
+            commit_used_bytes: planora_core::Metric::available(20_000_000, "bytes", "test", 1000),
+            commit_total_bytes: planora_core::Metric::available(40_000_000, "bytes", "test", 1000),
+            disk_read_bytes_per_sec: planora_core::Metric::available(0, "B/s", "test", 1000),
+            disk_write_bytes_per_sec: planora_core::Metric::available(0, "B/s", "test", 1000),
+            network_rx_bytes_per_sec: planora_core::Metric::available(0, "B/s", "test", 1000),
+            network_tx_bytes_per_sec: planora_core::Metric::available(0, "B/s", "test", 1000),
+            gpu_percent: planora_core::Metric::available(0.0, "%", "test", 1000),
+            gpu_adapters: Vec::new(),
+            gpu_engines: Vec::new(),
+            gpu_engine_unavailable_reason: None,
+            disks: Vec::new(),
+            network_interfaces: Vec::new(),
+            package_power_watts: planora_core::Metric::available(45.0, "W", "test", 1000),
+            sensors: Vec::new(),
+            processes,
+            provider_durations_ms: Default::default(),
+        };
+
+        let histories = crate::history::ResourceHistories::default();
+        let p = crate::theme::get_palette(true);
+        let (tx, _rx) = std::sync::mpsc::sync_channel(1);
+        let mut pause_state = DisplayPause::default();
+        let app_state = AppState::Live;
+        let mut state = ProcessesViewState::default();
+        let mut selected = None;
+
+        // 1. Initial frame that populates cache
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::Vec2::new(1180.0, 790.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    render_processes_view(
+                        ui,
+                        &frame,
+                        &histories,
+                        &mut state,
+                        &app_state,
+                        &mut pause_state,
+                        1000,
+                        &mut selected,
+                        None,
+                        None,
+                        &tx,
+                        Instant::now(),
+                        p,
+                    );
+                });
+            },
+        );
+        output.textures_delta.clear();
+
+        // 2. Measure steady-state UI frame duration with cached index mapping
+        let start = Instant::now();
+        for _ in 0..10 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::Vec2::new(1180.0, 790.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        render_processes_view(
+                            ui,
+                            &frame,
+                            &histories,
+                            &mut state,
+                            &app_state,
+                            &mut pause_state,
+                            1000,
+                            &mut selected,
+                            None,
+                            None,
+                            &tx,
+                            Instant::now(),
+                            p,
+                        );
+                    });
+                },
+            );
+            output.textures_delta.clear();
+        }
+        let total_ms = start.elapsed().as_secs_f32() * 1000.0;
+        let avg_frame_ms = total_ms / 10.0;
+        assert!(
+            avg_frame_ms < 33.3,
+            "10k processes steady frame took {avg_frame_ms:.2} ms, expected < 33.3 ms"
+        );
     }
 }

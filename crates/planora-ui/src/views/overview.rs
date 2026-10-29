@@ -10,13 +10,17 @@ use crate::{
     theme::Palette,
 };
 use eframe::egui::{self, Align, Color32, CornerRadius, Rect, Stroke, Vec2};
-use planora_core::{Metric, ProcessIdentity, TelemetryFrame};
-use std::time::Instant;
+use planora_core::{Metric, ProcessIdentity, ProcessRecord, TelemetryFrame};
+use std::time::{Duration, Instant};
 
 pub struct OverviewViewState {
     pub range: HistoryRange,
     pub top_by_cpu: bool,
     pub top_table: ProcessTableState,
+    cached_frame_seq: u64,
+    cached_top_col: Option<SortColumn>,
+    last_top_refresh: Option<Instant>,
+    cached_top: Vec<ProcessIdentity>,
 }
 
 impl Default for OverviewViewState {
@@ -25,6 +29,10 @@ impl Default for OverviewViewState {
             range: HistoryRange::Sec60,
             top_by_cpu: true,
             top_table: ProcessTableState::default(),
+            cached_frame_seq: 0,
+            cached_top_col: None,
+            last_top_refresh: None,
+            cached_top: Vec::new(),
         }
     }
 }
@@ -821,12 +829,34 @@ pub fn render_overview_view(
         } else {
             SortColumn::Memory
         };
-        let sorted = sort_processes(&frame.processes, "", sort_col, true);
+        let query_changed = state.cached_top_col != Some(sort_col);
+        let expired = state
+            .last_top_refresh
+            .is_none_or(|last| last.elapsed() >= Duration::from_secs(1));
+        if query_changed || (expired && state.cached_frame_seq != frame.sequence) {
+            let t_sort = Instant::now();
+            let sorted = sort_processes(&frame.processes, "", sort_col, true);
+            state.cached_top = sorted.iter().take(8).map(|p| p.identity.clone()).collect();
+            state.cached_top_col = Some(sort_col);
+            state.cached_frame_seq = frame.sequence;
+            state.last_top_refresh = Some(Instant::now());
+            let sort_ms = t_sort.elapsed().as_secs_f32() * 1000.0;
+            crate::PROCESS_SORT_RING.with(|r| r.borrow_mut().record(sort_ms));
+        }
+
+        let by_id: std::collections::HashMap<&ProcessIdentity, &ProcessRecord> =
+            frame.processes.iter().map(|p| (&p.identity, p)).collect();
+        let top_rows: Vec<&ProcessRecord> = state
+            .cached_top
+            .iter()
+            .filter_map(|id| by_id.get(id).copied())
+            .collect();
+
         state.top_table.sort_column = sort_col;
         state.top_table.sort_descending = true;
         render_process_table_inline(
             ui,
-            &sorted[..sorted.len().min(8)],
+            &top_rows,
             selected_identity,
             &mut state.top_table,
             32.0,

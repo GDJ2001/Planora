@@ -47,19 +47,20 @@ impl Default for TableColumnsConfig {
     }
 }
 
-pub fn sort_processes<'a>(
-    processes: &'a [ProcessRecord],
+pub fn sort_process_indices(
+    processes: &[ProcessRecord],
     filter_query: &str,
     sort_column: SortColumn,
     sort_descending: bool,
-) -> Vec<&'a ProcessRecord> {
+) -> Vec<usize> {
     let q = filter_query.trim().to_lowercase();
-    let mut rows: Vec<&ProcessRecord> = processes
-        .iter()
-        .filter(|p| {
-            if q.is_empty() {
+    let q_is_empty = q.is_empty();
+    let mut indices: Vec<usize> = (0..processes.len())
+        .filter(|&idx| {
+            if q_is_empty {
                 true
             } else {
+                let p = &processes[idx];
                 p.name.to_lowercase().contains(&q) || p.identity.pid.to_string().contains(&q)
             }
         })
@@ -90,7 +91,9 @@ pub fn sort_processes<'a>(
         (None, None) => std::cmp::Ordering::Equal,
     };
 
-    rows.sort_by(|a, b| {
+    indices.sort_by(|&ia, &ib| {
+        let a = &processes[ia];
+        let b = &processes[ib];
         let primary = match sort_column {
             SortColumn::Name => {
                 if sort_descending {
@@ -134,7 +137,19 @@ pub fn sort_processes<'a>(
         }
     });
 
-    rows
+    indices
+}
+
+pub fn sort_processes<'a>(
+    processes: &'a [ProcessRecord],
+    filter_query: &str,
+    sort_column: SortColumn,
+    sort_descending: bool,
+) -> Vec<&'a ProcessRecord> {
+    sort_process_indices(processes, filter_query, sort_column, sort_descending)
+        .into_iter()
+        .map(|idx| &processes[idx])
+        .collect()
 }
 
 pub struct ProcessTableState {

@@ -92,7 +92,8 @@ pub struct ChartPoint {
 
 #[derive(Clone, Debug, Default)]
 pub struct TimeSeries {
-    pub samples: VecDeque<Sample>,
+    pub samples: Arc<VecDeque<Sample>>,
+    pub generation: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -118,7 +119,7 @@ impl TimeSeries {
         let use_unix_seconds = self.samples.back().is_some_and(|s| s.timestamp_ms >= 1_000);
         let mut buckets: std::collections::BTreeMap<u64, (f64, u32, f32, f32)> =
             std::collections::BTreeMap::new();
-        for sample in &self.samples {
+        for sample in self.samples.iter() {
             if sample.time < cutoff || sample.start > now {
                 continue;
             }
@@ -173,7 +174,8 @@ impl TimeSeries {
     }
     pub fn new() -> Self {
         Self {
-            samples: VecDeque::with_capacity(3600),
+            samples: Arc::new(VecDeque::with_capacity(3600)),
+            generation: 0,
         }
     }
 
@@ -197,8 +199,10 @@ impl TimeSeries {
         {
             return;
         }
+        self.generation = self.generation.wrapping_add(1);
+        let samples = Arc::make_mut(&mut self.samples);
         let value = value.filter(|value| value.is_finite());
-        if let (Some(value), Some(last)) = (value, self.samples.back_mut())
+        if let (Some(value), Some(last)) = (value, samples.back_mut())
             && last.timestamp_ms / 1000 == timestamp_ms / 1000
             && time.saturating_duration_since(last.time) < Duration::from_secs(1)
             && last.source.as_ref() == source
@@ -214,14 +218,14 @@ impl TimeSeries {
             last.timestamp_ms = timestamp_ms;
             return;
         }
-        let source_arc: Arc<str> = if let Some(last) = self.samples.back()
+        let source_arc: Arc<str> = if let Some(last) = samples.back()
             && last.source.as_ref() == source
         {
             Arc::clone(&last.source)
         } else {
             Arc::from(source)
         };
-        self.samples.push_back(Sample {
+        samples.push_back(Sample {
             time,
             timestamp_ms,
             start: time,
@@ -242,17 +246,24 @@ impl TimeSeries {
     }
 
     pub fn prune_before(&mut self, cutoff: Instant) {
-        while let Some(front) = self.samples.front() {
-            if front.time < cutoff {
-                self.samples.pop_front();
-            } else {
-                break;
+        if self.samples.front().is_some_and(|f| f.time < cutoff) {
+            let samples = Arc::make_mut(&mut self.samples);
+            while let Some(front) = samples.front() {
+                if front.time < cutoff {
+                    samples.pop_front();
+                } else {
+                    break;
+                }
             }
+            self.generation = self.generation.wrapping_add(1);
         }
     }
 
     pub fn clear(&mut self) {
-        self.samples.clear();
+        if !self.samples.is_empty() {
+            Arc::make_mut(&mut self.samples).clear();
+            self.generation = self.generation.wrapping_add(1);
+        }
     }
 
     pub fn latest(&self) -> Option<Option<f32>> {
@@ -299,7 +310,7 @@ impl TimeSeries {
         let mut prev_time: Option<Instant> = None;
         let mut prev_source: Option<&str> = None;
 
-        for s in &self.samples {
+        for s in self.samples.iter() {
             let mid = s.midpoint();
             // Paused views use an earlier `now` and must not see future data.
             if mid < cutoff || mid > now {
@@ -437,7 +448,7 @@ impl TimeSeries {
         let mut best: Option<(&Sample, Duration)> = None;
         let mut min_diff = Duration::MAX;
 
-        for s in &self.samples {
+        for s in self.samples.iter() {
             let mid = s.midpoint();
             if mid < cutoff || mid > now {
                 continue;
@@ -486,6 +497,7 @@ pub struct ResourceHistories {
     pub session_id: u64,
     pub last_sequence: u64,
     pub last_cpu_sampled_at_ms: u64,
+    pub generation: u64,
 
     pub cpu: TimeSeries,
     pub memory_pct: TimeSeries,
@@ -515,6 +527,7 @@ impl ResourceHistories {
         now: Instant,
         wall_clock_now_ms: u64,
     ) {
+        self.generation = self.generation.wrapping_add(1);
         self.reset_if_new_session(frame.session_id);
         self.set_selected_process(selected);
         if frame.sequence == self.last_sequence {

@@ -69,6 +69,7 @@ fn dummy_frame(seq: u64) -> TelemetryFrame {
         ),
         sensors: Vec::new(),
         processes: Vec::new(),
+        provider_durations_ms: Default::default(),
     }
 }
 
@@ -112,7 +113,7 @@ fn test_ipc_sustained_operation_beyond_128_requests() {
                 &mut stream,
                 &ResponseEnvelope {
                     request_id: req.request_id,
-                    response: Response::Snapshot(Box::new(dummy_frame(seq))),
+                    response: Response::Snapshot(std::sync::Arc::new(dummy_frame(seq))),
                 },
             )
             .unwrap();
@@ -242,7 +243,7 @@ fn test_ipc_mismatched_request_id_detection() {
             &mut stream,
             &ResponseEnvelope {
                 request_id: 9999,
-                response: Response::Snapshot(Box::new(dummy_frame(1))),
+                response: Response::Snapshot(std::sync::Arc::new(dummy_frame(1))),
             },
         )
         .unwrap();

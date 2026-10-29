@@ -14,7 +14,7 @@ use std::{
         mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 const FORMAT_VERSION: u32 = 4;
@@ -120,6 +120,7 @@ impl RecordedSnapshot {
             package_power_watts: self.package_power_watts,
             sensors: self.sensors,
             processes: self.selected_process.into_iter().collect(),
+            provider_durations_ms: Default::default(),
         }
     }
 }
@@ -151,6 +152,7 @@ pub struct RecordingStatus {
     pub bytes_written: u64,
     pub dropped: u64,
     pub message: String,
+    pub last_write_duration_ms: f32,
 }
 
 pub struct Recorder {
@@ -239,6 +241,7 @@ impl Recorder {
             bytes_written: 0,
             dropped: 0,
             message: "Starting recording".into(),
+            last_write_duration_ms: 0.0,
         };
         let worker = thread::Builder::new()
             .name("planora-recording".into())
@@ -344,11 +347,15 @@ fn write_recording(
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
         };
+        let t_write = Instant::now();
         if let Err(e) = write_line(&mut writer, &event, &mut bytes) {
             reason = e.to_string();
             break;
         }
-        status.lock().unwrap().bytes_written = bytes;
+        let write_ms = t_write.elapsed().as_secs_f32() * 1000.0;
+        let mut st = status.lock().unwrap();
+        st.bytes_written = bytes;
+        st.last_write_duration_ms = write_ms;
     }
     let end = RecordLine::End {
         ended_at_ms: planora_telemetry::unix_ms(),

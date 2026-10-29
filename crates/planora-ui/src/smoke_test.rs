@@ -182,6 +182,7 @@ pub fn test_frame() -> TelemetryFrame {
             make_proc(14200, "dwm.exe", 2.2, 95),
             make_proc(18400, "slack.exe", 0.5, 410),
         ],
+        provider_durations_ms: Default::default(),
     }
 }
 
@@ -333,6 +334,11 @@ pub fn create_test_app(theme: Theme, page: Page) -> App {
         lifecycle: crate::LifecycleState::Running,
         shutdown_started: None,
         shutdown_completed: false,
+        perf_counters: crate::UiPerfCounters::default(),
+        focus_lost_at: None,
+        last_adaptive_poll_ms: 100,
+        last_recorded_sequence: 0,
+        export_perf_report_path: None,
     }
 }
 
