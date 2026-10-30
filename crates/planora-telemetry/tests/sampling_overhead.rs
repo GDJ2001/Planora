@@ -37,6 +37,12 @@ fn measures_sampling_overhead_and_cache_probe() {
     let mut sampler = Sampler::new();
     // Warm-up sample
     let _ = sampler.sample();
+    // Windows process refresh is owned by a background worker; the first
+    // system frame can legitimately arrive before its process inventory.
+    let process_deadline = Instant::now() + Duration::from_secs(3);
+    while sampler.sample().processes.is_empty() && Instant::now() < process_deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
 
     let mut durations = Vec::with_capacity(30);
     for _ in 0..30 {

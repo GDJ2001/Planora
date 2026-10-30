@@ -1,11 +1,12 @@
 //! Cross-platform baseline collector. Hardware-specific counters can enrich its frames.
-use planora_core::{
-    AvailabilityReason, IdentitySource, Metric, PROTOCOL_VERSION, ProcessIdentity, ProcessRecord,
-    TelemetryFrame,
-};
+use planora_core::{AvailabilityReason, Metric, PROTOCOL_VERSION, ProcessIdentity, TelemetryFrame};
+#[cfg(not(windows))]
+use planora_core::{IdentitySource, ProcessRecord};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use sysinfo::{Disks, Networks, ProcessRefreshKind, ProcessesToUpdate, System};
+use sysinfo::{Disks, Networks, System};
+#[cfg(not(windows))]
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
 
 #[cfg(target_os = "linux")]
 mod linux_block;
@@ -19,6 +20,8 @@ pub mod vendor_sensors;
 pub mod windows_counters;
 #[cfg(windows)]
 pub mod windows_gpu;
+#[cfg(windows)]
+mod windows_process_worker;
 #[cfg(windows)]
 pub use windows_gpu::counter_available as windows_gpu_counter_available;
 #[cfg(windows)]
@@ -380,6 +383,7 @@ pub struct Sampler {
     last: Option<Instant>,
     last_cpu: Option<Instant>,
     system_cpu: Option<Metric<f32>>,
+    #[cfg(not(windows))]
     process_cpu: HashMap<ProcessIdentity, Metric<f32>>,
     #[cfg(not(target_os = "linux"))]
     prev_disks: HashMap<String, (u64, u64)>,
@@ -408,8 +412,12 @@ pub struct Sampler {
     sequence: u64,
     session_id: u64,
     topology_generation: u64,
+    #[cfg(not(windows))]
     last_process_refresh: Option<Instant>,
+    #[cfg(not(windows))]
     cached_processes: Vec<planora_core::ProcessRecord>,
+    #[cfg(windows)]
+    windows_process_worker: windows_process_worker::WindowsProcessWorker,
     last_disk_refresh: Option<Instant>,
 }
 
@@ -432,6 +440,7 @@ impl Sampler {
             last: None,
             last_cpu: None,
             system_cpu: None,
+            #[cfg(not(windows))]
             process_cpu: HashMap::new(),
             #[cfg(not(target_os = "linux"))]
             prev_disks: HashMap::new(),
@@ -460,8 +469,12 @@ impl Sampler {
             sequence: 0,
             session_id,
             topology_generation,
+            #[cfg(not(windows))]
             last_process_refresh: None,
+            #[cfg(not(windows))]
             cached_processes: Vec::new(),
+            #[cfg(windows)]
+            windows_process_worker: windows_process_worker::WindowsProcessWorker::new(),
             last_disk_refresh: None,
         }
     }
@@ -486,10 +499,12 @@ impl Sampler {
             self.last_cpu = Some(now);
         }
         self.system.refresh_memory();
+        #[cfg(not(windows))]
         let process_due = cpu_due
             || self
                 .last_process_refresh
                 .is_none_or(|last| now.duration_since(last) >= Duration::from_millis(500));
+        #[cfg(not(windows))]
         if process_due {
             let kind = if cpu_due {
                 ProcessRefreshKind::everything()
@@ -524,9 +539,11 @@ impl Sampler {
         self.sequence += 1;
         let first = elapsed.is_none();
         let delta = elapsed.unwrap_or_default();
+        #[cfg(not(windows))]
         let proc_count = self.system.cpus().len().max(1) as f32;
 
         let t_procs = Instant::now();
+        #[cfg(not(windows))]
         let processes = if process_due || self.cached_processes.is_empty() {
             #[cfg(windows)]
             let basic_processes = query_windows_basic_processes().ok();
@@ -754,9 +771,16 @@ impl Sampler {
             self.cached_processes.clone()
         };
         #[cfg(windows)]
-        let mut processes = processes;
+        let mut processes = {
+            self.windows_process_worker.request_update(now);
+            let (records, refresh_ms, _) = self.windows_process_worker.latest();
+            provider_durations_ms.insert("process_refresh_background".to_string(), refresh_ms);
+            (*records).clone()
+        };
 
+        #[cfg(not(windows))]
         let live: HashSet<_> = processes.iter().map(|p| &p.identity).collect();
+        #[cfg(not(windows))]
         self.process_cpu
             .retain(|identity, _| live.contains(identity));
 
