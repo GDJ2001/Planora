@@ -1,6 +1,10 @@
-# Windows and Linux Optimization Release: 0.3.0-beta.45
+# Windows and Linux Optimization Release: 0.3.0-beta.46
 
-Beta.45 packages were built from clean commit `98b6318` and are documented in [beta.45 optimization evidence](release-evidence-windows-linux-beta45.md). Large process sorting/identity remapping and dense-chart preparation now run in bounded workers; history queue memory and shutdown are bounded; on-request diagnostics include IPC codec timing and Rust allocation counts. Automated Windows/WSL checks, Windows fixture screenshots, package hashes, and a live Ubuntu WSL helper probe passed. **Windows beta.45 installation, one-hour growth, minimized CPU reduction, 10,000-process p95, and physical Ubuntu/Fedora acceptance remain open.** Unsigned packages remain internal.
+Beta.46 moves Windows process refresh into a bounded, owned worker after an installed beta.45 probe measured 62.72 ms collection p95 against the 50 ms target. [Beta.46 evidence](release-evidence-windows-linux-beta46.md) records clean-source Windows and Linux packages, passing Windows/WSL workspace checks, matching MSI payload hashes, and a beta.46 WSL installed-helper probe at 4.252 ms collection p95. The focused Windows sampler test measured 23.69 ms p95; installed beta.46 Windows measurement, minimized CPU comparison, one-hour growth, 10,000-process UI p95, and physical Ubuntu/Fedora acceptance remain open. Unsigned packages remain internal.
+
+# Historical Windows and Linux Optimization Release: 0.3.0-beta.45
+
+Beta.45 packages were built from clean commit `98b6318` and are documented in [beta.45 optimization evidence](release-evidence-windows-linux-beta45.md). Large process sorting/identity remapping and dense-chart preparation now run in bounded workers; history queue memory and shutdown are bounded; on-request diagnostics include IPC codec timing and Rust allocation counts. Automated Windows/WSL checks, Windows fixture screenshots, package hashes, and a live Ubuntu WSL helper probe passed. Windows beta.45 was installed and its UI/helper/broker hashes matched its manifest; live collection p95 was **62.72 ms**, above the 50 ms target. One-hour growth, minimized CPU reduction, 10,000-process p95, and physical Ubuntu/Fedora acceptance remain open. Unsigned packages remain internal.
 
 # Historical Windows and Linux Optimization Release: 0.3.0-beta.44
 
