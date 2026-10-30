@@ -1,4 +1,8 @@
-# Windows and Linux Optimization Release: 0.3.0-beta.44
+# Windows and Linux Optimization Release: 0.3.0-beta.45
+
+Beta.45 packages were built from clean commit `98b6318` and are documented in [beta.45 optimization evidence](release-evidence-windows-linux-beta45.md). Large process sorting/identity remapping and dense-chart preparation now run in bounded workers; history queue memory and shutdown are bounded; on-request diagnostics include IPC codec timing and Rust allocation counts. Automated Windows/WSL checks, Windows fixture screenshots, package hashes, and a live Ubuntu WSL helper probe passed. **Windows beta.45 installation, one-hour growth, minimized CPU reduction, 10,000-process p95, and physical Ubuntu/Fedora acceptance remain open.** Unsigned packages remain internal.
+
+# Historical Windows and Linux Optimization Release: 0.3.0-beta.44
 
 Beta.44 implements the approved Windows and Linux Optimization Plan. [Beta.44 optimization evidence](release-evidence-windows-linux-beta44.md) details zero-copy snapshot ingestion, immutable history generation sharing, sub-millisecond steady UI frame times (p95 $0.92\text{ ms}$), $19\text{--}24\text{ ms}$ helper collection durations, 10,000-process table index sorting ($7.20\text{ ms}$ steady UI frame), adaptive $500\text{--}1,000\text{ ms}$ background sampling, and JSON performance report export. Protocol v6, settings schema 7, and recording format v4 are preserved.
 
