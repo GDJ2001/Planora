@@ -1,5 +1,7 @@
 //! Portable versioned contracts shared by the UI, helper, and collectors.
+pub mod allocation_perf;
 pub mod perf;
+pub use allocation_perf::{AllocationSnapshot, CountingAllocator, allocation_snapshot};
 pub use perf::{LatencyRing, LatencyStats, PerformanceReport};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;

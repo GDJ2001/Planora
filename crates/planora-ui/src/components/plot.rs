@@ -3,7 +3,16 @@ use crate::formatting::{format_bytes, format_rate};
 use crate::history::{ChartPoint, HistoryRange, TimeSeries};
 use crate::theme::Palette;
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Shape, Stroke, Vec2};
-use std::time::{Duration, Instant};
+use std::{
+    hash::{Hash, Hasher},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, SyncSender, TryRecvError},
+    },
+    thread::{self, JoinHandle},
+    time::{Duration, Instant},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ValueScale {
@@ -378,14 +387,159 @@ pub struct PlotState {
     cache_key: Option<PlotCacheKey>,
     cache_now: Option<Instant>,
     cached_segments: Vec<Vec<Vec<ChartPoint>>>,
+    pending_key: Option<PlotCacheKey>,
+    pending_result: Option<Receiver<PreparedPlot>>,
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 struct PlotCacheKey {
     range: HistoryRange,
     width: u32,
     scale_bits: u32,
-    series: Vec<(u64, u64)>,
+    gap_ms: u64,
+    series: Vec<(u64, u64, u64)>,
+}
+
+impl PlotCacheKey {
+    fn same_layout(&self, other: &Self) -> bool {
+        self.range == other.range
+            && self.width == other.width
+            && self.scale_bits == other.scale_bits
+            && self.gap_ms == other.gap_ms
+            && self.series.len() == other.series.len()
+            && self
+                .series
+                .iter()
+                .zip(&other.series)
+                .all(|(a, b)| a.0 == b.0)
+    }
+}
+
+struct PlotJob {
+    series: Vec<TimeSeries>,
+    now: Instant,
+    range: HistoryRange,
+    width: usize,
+    gap: Duration,
+    result: SyncSender<PreparedPlot>,
+}
+
+struct PreparedPlot {
+    now: Instant,
+    segments: Vec<Vec<Vec<ChartPoint>>>,
+    duration_ms: f32,
+}
+
+struct PlotPreparationWorker {
+    input: Option<SyncSender<PlotJob>>,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl PlotPreparationWorker {
+    fn start() -> Self {
+        let (input, jobs) = mpsc::sync_channel::<PlotJob>(8);
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let thread = thread::Builder::new()
+            .name("planora-chart-prep".into())
+            .spawn(move || {
+                while !worker_stop.load(Ordering::Acquire) {
+                    let job = match jobs.recv_timeout(Duration::from_millis(100)) {
+                        Ok(job) => job,
+                        Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
+                    let started = Instant::now();
+                    let segments = job
+                        .series
+                        .iter()
+                        .map(|series| series.chart_segments(job.now, job.range, job.gap, job.width))
+                        .collect();
+                    let _ = job.result.try_send(PreparedPlot {
+                        now: job.now,
+                        segments,
+                        duration_ms: started.elapsed().as_secs_f32() * 1000.0,
+                    });
+                }
+            })
+            .expect("chart preparation worker");
+        Self {
+            input: Some(input),
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    fn stop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        self.input.take();
+    }
+
+    fn is_finished(&self) -> bool {
+        self.thread.as_ref().is_none_or(JoinHandle::is_finished)
+    }
+
+    fn join(&mut self) {
+        self.stop();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+static PLOT_WORKER: OnceLock<Mutex<Option<PlotPreparationWorker>>> = OnceLock::new();
+
+fn prepare_plot_async(
+    series: Vec<TimeSeries>,
+    now: Instant,
+    range: HistoryRange,
+    width: usize,
+    gap: Duration,
+) -> Option<Receiver<PreparedPlot>> {
+    let worker = PLOT_WORKER.get_or_init(|| Mutex::new(None));
+    let mut worker = worker.lock().unwrap();
+    let worker = worker.get_or_insert_with(PlotPreparationWorker::start);
+    let (result, rx) = mpsc::sync_channel(1);
+    let job = PlotJob {
+        series,
+        now,
+        range,
+        width,
+        gap,
+        result,
+    };
+    if worker.input.as_ref()?.try_send(job).is_ok() {
+        Some(rx)
+    } else {
+        None
+    }
+}
+
+pub fn stop_preparation_worker() {
+    if let Some(worker) = PLOT_WORKER.get()
+        && let Some(worker) = worker.lock().unwrap().as_mut()
+    {
+        worker.stop();
+    }
+}
+
+pub fn preparation_worker_finished() -> bool {
+    PLOT_WORKER.get().is_none_or(|worker| {
+        worker
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_none_or(PlotPreparationWorker::is_finished)
+    })
+}
+
+pub fn join_preparation_worker() {
+    if let Some(worker) = PLOT_WORKER.get()
+        && let Some(mut worker) = worker.lock().unwrap().take()
+    {
+        worker.join();
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -488,10 +642,14 @@ fn draw_time_plot(
         range,
         width: est_canvas_width.round() as u32,
         scale_bits: ui.ctx().pixels_per_point().to_bits(),
+        gap_ms: gap_policy.gap_threshold().as_millis() as u64,
         series: series
             .iter()
             .map(|item| {
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                item.name.hash(&mut hasher);
                 (
+                    hasher.finish(),
                     item.samples.generation,
                     item.samples
                         .samples
@@ -501,23 +659,80 @@ fn draw_time_plot(
             })
             .collect(),
     };
-    let expired = state.cache_now.is_none_or(|cached_at| {
-        now < cached_at || now.saturating_duration_since(cached_at) >= Duration::from_secs(1)
-    });
-    if state.cache_key.as_ref() != Some(&key) || expired {
-        let t_prep = Instant::now();
-        let gap = gap_policy.gap_threshold();
-        state.cached_segments = series
-            .iter()
-            .map(|item| {
-                item.samples
-                    .chart_segments(now, range, gap, est_canvas_width as usize)
-            })
-            .collect();
-        state.cache_key = Some(key);
-        state.cache_now = Some(now);
-        let prep_ms = t_prep.elapsed().as_secs_f32() * 1000.0;
-        crate::CHART_PREP_RING.with(|r| r.borrow_mut().record(prep_ms));
+    let layout_changed = state
+        .cache_key
+        .as_ref()
+        .is_none_or(|old| !old.same_layout(&key));
+    if layout_changed {
+        state.cached_segments.clear();
+        state.cache_key = None;
+        if state
+            .pending_key
+            .as_ref()
+            .is_some_and(|old| !old.same_layout(&key))
+        {
+            state.pending_key = None;
+            state.pending_result = None;
+        }
+    }
+    if let Some(receiver) = &state.pending_result {
+        match receiver.try_recv() {
+            Ok(prepared) => {
+                if let Some(pending) = state.pending_key.take()
+                    && pending.same_layout(&key)
+                {
+                    state.cached_segments = prepared.segments;
+                    state.cache_key = Some(pending);
+                    state.cache_now = Some(prepared.now);
+                    crate::CHART_PREP_RING.with(|r| r.borrow_mut().record(prepared.duration_ms));
+                }
+                state.pending_result = None;
+            }
+            Err(TryRecvError::Disconnected) => {
+                state.pending_result = None;
+                state.pending_key = None;
+            }
+            Err(TryRecvError::Empty) => ui.ctx().request_repaint_after(Duration::from_millis(50)),
+        }
+    }
+    let refresh_due = state
+        .cache_key
+        .as_ref()
+        .is_none_or(|old| !old.same_layout(&key))
+        || state.cache_now.is_none_or(|cached_at| {
+            now < cached_at || now.saturating_duration_since(cached_at) >= Duration::from_secs(1)
+        });
+    if refresh_due && state.pending_result.is_none() {
+        let total_samples: usize = series.iter().map(|item| item.samples.samples.len()).sum();
+        if total_samples <= 128 {
+            let started = Instant::now();
+            let gap = gap_policy.gap_threshold();
+            state.cached_segments = series
+                .iter()
+                .map(|item| {
+                    item.samples
+                        .chart_segments(now, range, gap, est_canvas_width as usize)
+                })
+                .collect();
+            state.cache_key = Some(key);
+            state.cache_now = Some(now);
+            crate::CHART_PREP_RING.with(|r| {
+                r.borrow_mut()
+                    .record(started.elapsed().as_secs_f32() * 1000.0)
+            });
+        } else if let Some(receiver) = prepare_plot_async(
+            series.iter().map(|item| item.samples.clone()).collect(),
+            now,
+            range,
+            est_canvas_width as usize,
+            gap_policy.gap_threshold(),
+        ) {
+            state.pending_key = Some(key);
+            state.pending_result = Some(receiver);
+            ui.ctx().request_repaint_after(Duration::from_millis(50));
+        } else {
+            ui.ctx().request_repaint_after(Duration::from_millis(50));
+        }
     }
     let segments = &state.cached_segments;
 
@@ -998,6 +1213,52 @@ pub fn capacity_bar(
 mod tests {
     use super::*;
     use std::time::Instant;
+
+    #[test]
+    fn background_preparation_preserves_dense_history_gaps_and_spikes() {
+        let now = Instant::now();
+        let mut series = TimeSeries::new();
+        for second in 0..900 {
+            let value = if second == 300 {
+                None
+            } else if second == 600 {
+                Some(99.0)
+            } else {
+                Some(10.0)
+            };
+            series.push(
+                now - Duration::from_secs(899 - second),
+                (second + 1) * 1000,
+                value,
+            );
+        }
+        let expected = series.chart_segments(now, HistoryRange::Min15, Duration::from_secs(3), 600);
+        let mut worker = PlotPreparationWorker::start();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        worker
+            .input
+            .as_ref()
+            .unwrap()
+            .send(PlotJob {
+                series: vec![series],
+                now,
+                range: HistoryRange::Min15,
+                width: 600,
+                gap: Duration::from_secs(3),
+                result: sender,
+            })
+            .unwrap();
+        let result = receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(result.segments, vec![expected]);
+        assert!(result.segments[0].len() >= 2);
+        assert!(
+            result.segments[0]
+                .iter()
+                .flatten()
+                .any(|point| point.max >= 99.0)
+        );
+        worker.join();
+    }
 
     #[test]
     fn cpu_plot_breaks_a_missing_one_second_observation() {

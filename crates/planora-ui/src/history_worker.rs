@@ -4,7 +4,7 @@ use std::{
     collections::BTreeSet,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         mpsc::{self, SyncSender, TrySendError},
     },
     thread::{self, JoinHandle},
@@ -52,11 +52,14 @@ pub struct HistoryWorker {
     thread: Option<JoinHandle<()>>,
     dropped: Arc<AtomicU64>,
     last_pub_ms: Arc<AtomicU32>,
+    stop_requested: Arc<AtomicBool>,
 }
 
 impl HistoryWorker {
     pub fn start() -> Self {
-        let (input_tx, input_rx) = mpsc::sync_channel::<HistoryCommand>(64);
+        // A telemetry frame may approach the IPC response limit (8 MiB).
+        // Four queued Arcs keep the handoff bounded even under UI stalls.
+        let (input_tx, input_rx) = mpsc::sync_channel::<HistoryCommand>(4);
         // The UI only needs the latest complete snapshot. Replacing an unread
         // snapshot avoids a full clone on every poll when rendering is busy.
         let output = Arc::new(Mutex::new(None));
@@ -64,6 +67,8 @@ impl HistoryWorker {
         let dropped = Arc::new(AtomicU64::new(0));
         let last_pub_ms = Arc::new(AtomicU32::new(0));
         let worker_pub_ms = Arc::clone(&last_pub_ms);
+        let stop_requested = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop_requested);
         let thread = thread::Builder::new()
             .name("planora-history".into())
             .spawn(move || {
@@ -72,6 +77,9 @@ impl HistoryWorker {
                 let mut last_publish = Instant::now() - Duration::from_secs(1);
                 let mut pending_publish = false;
                 loop {
+                    if worker_stop.load(Ordering::Acquire) {
+                        break;
+                    }
                     let cmd = match input_rx.recv_timeout(Duration::from_millis(250)) {
                         Ok(cmd) => Some(cmd),
                         Err(mpsc::RecvTimeoutError::Timeout) => None,
@@ -105,7 +113,7 @@ impl HistoryWorker {
                     if pending_publish
                         && (epoch_changed
                             || selected_changed
-                            || last_publish.elapsed() >= Duration::from_millis(250))
+                            || last_publish.elapsed() >= Duration::from_secs(1))
                     {
                         let t_pub = Instant::now();
                         histories.enforce_budget();
@@ -125,6 +133,7 @@ impl HistoryWorker {
             thread: Some(thread),
             dropped,
             last_pub_ms,
+            stop_requested,
         }
     }
 
@@ -158,6 +167,7 @@ impl HistoryWorker {
     }
 
     pub fn stop(&mut self) {
+        self.stop_requested.store(true, Ordering::Release);
         if let Some(input) = self.input.take() {
             let _ = input.try_send(HistoryCommand::Shutdown);
         }
@@ -280,9 +290,9 @@ mod tests {
             epoch: 1,
         });
 
-        // Wait for publish throttle (250ms)
+        // The shared history snapshot is published at most once per second.
         let mut snapshot2 = None;
-        for _ in 0..50 {
+        for _ in 0..90 {
             if let Some(snap) = worker.latest(1)
                 && snap.cpu.samples.len() == 2
             {
@@ -302,5 +312,28 @@ mod tests {
         worker.stop();
         worker.join();
         assert!(worker.is_finished());
+    }
+
+    #[test]
+    fn shutdown_does_not_wait_for_a_saturated_history_queue() {
+        let mut worker = HistoryWorker::start();
+        let sender = worker.sender().unwrap();
+        let sensors = Arc::new(Vec::new());
+        for seq in 1..=64 {
+            sender.submit(HistoryInput {
+                frame: Arc::new(make_test_frame(seq, seq * 1000, 25.0)),
+                sensors: Arc::clone(&sensors),
+                selected: None,
+                priority_details: BTreeSet::new(),
+                received_at: Instant::now(),
+                wall_clock_at_receipt_ms: seq * 1000,
+                epoch: 1,
+            });
+        }
+        let started = Instant::now();
+        worker.join();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(worker.is_finished());
+        assert!(worker.dropped() > 0);
     }
 }

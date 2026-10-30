@@ -3,6 +3,7 @@
 //! Provides zero-allocation circular latency rings for hot path profiling
 //! and structured, exportable performance reports across Windows and Linux.
 
+use crate::allocation_perf::AllocationSnapshot;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -122,6 +123,8 @@ pub struct PerformanceReport {
     pub timestamp_ms: u64,
     pub process_resident_memory_bytes: Option<u64>,
     pub process_virtual_memory_bytes: Option<u64>,
+    #[serde(default)]
+    pub allocations: Option<AllocationSnapshot>,
     pub first_paint_ms: Option<f32>,
     pub ui_frame: LatencyStats,
     pub helper_collection_total: LatencyStats,
@@ -177,6 +180,7 @@ mod tests {
             timestamp_ms: 1700000000000,
             process_resident_memory_bytes: Some(64 * 1024 * 1024),
             process_virtual_memory_bytes: Some(128 * 1024 * 1024),
+            allocations: None,
             first_paint_ms: Some(12.4),
             ui_frame: LatencyStats::default(),
             helper_collection_total: LatencyStats::default(),

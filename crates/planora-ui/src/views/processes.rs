@@ -13,9 +13,186 @@ use eframe::egui::{self, CornerRadius, Stroke, Vec2};
 use planora_core::{Command, ProcessIdentity, ProcessRecord, TelemetryFrame, Topology};
 use std::{
     collections::{HashMap, HashSet},
-    sync::mpsc::SyncSender,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, SyncSender, TryRecvError},
+    },
+    thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
+
+struct SortRequest {
+    frame: Arc<TelemetryFrame>,
+    query: String,
+    column: crate::components::table::SortColumn,
+    descending: bool,
+    quick_filter: QuickFilter,
+    selected: Option<ProcessIdentity>,
+    pinned: HashSet<ProcessIdentity>,
+    serial: u64,
+}
+
+enum SortWork {
+    Sort(SortRequest),
+    Reindex {
+        frame: Arc<TelemetryFrame>,
+        order: Arc<Vec<ProcessIdentity>>,
+        serial: u64,
+    },
+}
+
+struct SortResult {
+    frame: Arc<TelemetryFrame>,
+    frame_seq: u64,
+    order: Option<Arc<Vec<ProcessIdentity>>>,
+    indices: Vec<usize>,
+    serial: u64,
+    duration_ms: f32,
+}
+
+struct ProcessSortWorker {
+    tx: Option<SyncSender<SortWork>>,
+    rx: Receiver<SortResult>,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl ProcessSortWorker {
+    fn start() -> Self {
+        let (tx, requests) = mpsc::sync_channel::<SortWork>(1);
+        let (results, rx) = mpsc::sync_channel::<SortResult>(1);
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let thread = thread::Builder::new()
+            .name("planora-process-sort".into())
+            .spawn(move || {
+                while !worker_stop.load(Ordering::Relaxed) {
+                    let request = match requests.recv_timeout(Duration::from_millis(100)) {
+                        Ok(request) => request,
+                        Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
+                    let started = Instant::now();
+                    let (frame, order, indices, serial) = match request {
+                        SortWork::Sort(request) => {
+                            let indices = filtered_process_indices(
+                                &request.frame.processes,
+                                &request.query,
+                                request.column,
+                                request.descending,
+                                request.quick_filter,
+                                request.selected.as_ref(),
+                                &request.pinned,
+                            );
+                            let order = Arc::new(
+                                indices
+                                    .iter()
+                                    .map(|&idx| request.frame.processes[idx].identity.clone())
+                                    .collect(),
+                            );
+                            (request.frame, Some(order), indices, request.serial)
+                        }
+                        SortWork::Reindex {
+                            frame,
+                            order,
+                            serial,
+                        } => {
+                            let by_identity: HashMap<_, usize> = frame
+                                .processes
+                                .iter()
+                                .enumerate()
+                                .map(|(idx, process)| (&process.identity, idx))
+                                .collect();
+                            let indices = order
+                                .iter()
+                                .filter_map(|identity| by_identity.get(identity).copied())
+                                .collect();
+                            (frame, None, indices, serial)
+                        }
+                    };
+                    let result = SortResult {
+                        frame_seq: frame.sequence,
+                        frame,
+                        order,
+                        indices,
+                        serial,
+                        duration_ms: started.elapsed().as_secs_f32() * 1000.0,
+                    };
+                    let _ = results.try_send(result);
+                }
+            })
+            .expect("process sort worker");
+        Self {
+            tx: Some(tx),
+            rx,
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    fn stop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        self.tx.take();
+    }
+
+    fn is_finished(&self) -> bool {
+        self.thread.as_ref().is_none_or(JoinHandle::is_finished)
+    }
+
+    fn join(&mut self) {
+        self.stop();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+impl Drop for ProcessSortWorker {
+    fn drop(&mut self) {
+        self.join();
+    }
+}
+
+fn filtered_process_indices(
+    processes: &[ProcessRecord],
+    query: &str,
+    column: crate::components::table::SortColumn,
+    descending: bool,
+    quick_filter: QuickFilter,
+    selected: Option<&ProcessIdentity>,
+    pinned: &HashSet<ProcessIdentity>,
+) -> Vec<usize> {
+    let mut indices = sort_process_indices(processes, query, column, descending);
+    indices.retain(|&idx| {
+        let process = &processes[idx];
+        match quick_filter {
+            QuickFilter::All => true,
+            QuickFilter::Selected => selected == Some(&process.identity),
+            QuickFilter::Pinned => pinned.contains(&process.identity),
+            QuickFilter::Active => {
+                process.cpu_percent.value.is_some_and(|value| value > 0.0)
+                    || process
+                        .io_read_bytes_per_sec
+                        .value
+                        .is_some_and(|value| value > 0)
+                    || process
+                        .io_write_bytes_per_sec
+                        .value
+                        .is_some_and(|value| value > 0)
+                    || process
+                        .disk_read_bytes_per_sec
+                        .value
+                        .is_some_and(|value| value > 0)
+                    || process
+                        .disk_write_bytes_per_sec
+                        .value
+                        .is_some_and(|value| value > 0)
+            }
+        }
+    });
+    indices
+}
 
 #[derive(Default)]
 pub struct ProcessesViewState {
@@ -29,7 +206,8 @@ pub struct ProcessesViewState {
     pub affinity_requested: bool,
     pub affinity_initialized: bool,
     pub affinity_error: Option<String>,
-    cached_order: Vec<ProcessIdentity>,
+    cached_order: Arc<Vec<ProcessIdentity>>,
+    cached_frame: Option<Arc<TelemetryFrame>>,
     cached_frame_seq: u64,
     cached_indices: Vec<usize>,
     last_sorted_at: Option<Instant>,
@@ -42,6 +220,9 @@ pub struct ProcessesViewState {
     pub pinned: HashSet<ProcessIdentity>,
     pub inspector_trend: usize,
     inspector_plot: PlotState,
+    sort_worker: Option<ProcessSortWorker>,
+    sort_serial: u64,
+    last_reindex_frame_seq: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -54,6 +235,24 @@ pub enum QuickFilter {
 }
 
 impl ProcessesViewState {
+    pub fn stop_worker(&mut self) {
+        if let Some(worker) = &mut self.sort_worker {
+            worker.stop();
+        }
+    }
+
+    pub fn worker_finished(&self) -> bool {
+        self.sort_worker
+            .as_ref()
+            .is_none_or(ProcessSortWorker::is_finished)
+    }
+
+    pub fn join_worker(&mut self) {
+        if let Some(worker) = &mut self.sort_worker {
+            worker.join();
+        }
+    }
+
     fn select_affinity_target(&mut self, identity: Option<&ProcessIdentity>) {
         if self.affinity_identity.as_ref() != identity {
             self.affinity_identity = identity.cloned();
@@ -68,7 +267,7 @@ impl ProcessesViewState {
 
 pub fn render_processes_view(
     ui: &mut egui::Ui,
-    frame: &TelemetryFrame,
+    frame: &Arc<TelemetryFrame>,
     histories: &ResourceHistories,
     state: &mut ProcessesViewState,
     app_state: &AppState,
@@ -184,60 +383,117 @@ pub fn render_processes_view(
     let expired = state
         .last_sorted_at
         .is_none_or(|last| last.elapsed() >= Duration::from_secs(1));
-    if query_changed || (expired && !ui.input(|i| i.pointer.any_down())) {
-        let t_sort = Instant::now();
-        let mut sorted_indices = sort_process_indices(
-            &frame.processes,
-            &state.table_state.search_query,
-            state.table_state.sort_column,
-            state.table_state.sort_descending,
-        );
-        sorted_indices.retain(|&idx| {
-            let process = &frame.processes[idx];
-            match state.quick_filter {
-                QuickFilter::All => true,
-                QuickFilter::Selected => selected_identity.as_ref() == Some(&process.identity),
-                QuickFilter::Pinned => state.pinned.contains(&process.identity),
-                QuickFilter::Active => {
-                    process.cpu_percent.value.is_some_and(|value| value > 0.0)
-                        || process
-                            .io_read_bytes_per_sec
-                            .value
-                            .is_some_and(|value| value > 0)
-                        || process
-                            .io_write_bytes_per_sec
-                            .value
-                            .is_some_and(|value| value > 0)
-                        || process
-                            .disk_read_bytes_per_sec
-                            .value
-                            .is_some_and(|value| value > 0)
-                        || process
-                            .disk_write_bytes_per_sec
-                            .value
-                            .is_some_and(|value| value > 0)
+    // Small tables render immediately. Large tables use an owned worker so
+    // filter/sort cannot stall an egui frame on a 10,000-process fixture.
+    let large_table = frame.processes.len() > 256;
+    if !large_table {
+        if query_changed
+            || state.cached_frame.is_some()
+            || (expired && !ui.input(|i| i.pointer.any_down()))
+        {
+            let started = Instant::now();
+            let indices = filtered_process_indices(
+                &frame.processes,
+                &state.table_state.search_query,
+                state.table_state.sort_column,
+                state.table_state.sort_descending,
+                state.quick_filter,
+                selected_identity.as_ref(),
+                &state.pinned,
+            );
+            state.cached_order = Arc::new(
+                indices
+                    .iter()
+                    .map(|&idx| frame.processes[idx].identity.clone())
+                    .collect(),
+            );
+            state.cached_indices = indices;
+            state.cached_frame_seq = frame.sequence;
+            state.cached_frame = None;
+            state.last_sorted_at = Some(Instant::now());
+            state
+                .last_sort_query
+                .clone_from(&state.table_state.search_query);
+            state.last_sort_column = state.table_state.sort_column;
+            state.last_sort_descending = state.table_state.sort_descending;
+            state.last_quick_filter = state.quick_filter;
+            state.last_selected_identity.clone_from(selected_identity);
+            crate::PROCESS_SORT_RING.with(|r| {
+                r.borrow_mut()
+                    .record(started.elapsed().as_secs_f32() * 1000.0)
+            });
+        }
+    } else {
+        let worker = state
+            .sort_worker
+            .get_or_insert_with(ProcessSortWorker::start);
+        loop {
+            match worker.rx.try_recv() {
+                Ok(result) if result.serial == state.sort_serial && !query_changed => {
+                    if let Some(order) = result.order {
+                        state.cached_order = order;
+                    }
+                    state.cached_indices = result.indices;
+                    state.cached_frame_seq = result.frame_seq;
+                    state.cached_frame = Some(result.frame);
+                    crate::PROCESS_SORT_RING.with(|r| r.borrow_mut().record(result.duration_ms));
                 }
+                Ok(_) => {}
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
-        });
-        state.cached_order = sorted_indices
-            .iter()
-            .map(|&idx| frame.processes[idx].identity.clone())
-            .collect();
-        state.cached_indices = sorted_indices;
-        state.cached_frame_seq = frame.sequence;
-        state.last_sorted_at = Some(Instant::now());
-        state
-            .last_sort_query
-            .clone_from(&state.table_state.search_query);
-        state.last_sort_column = state.table_state.sort_column;
-        state.last_sort_descending = state.table_state.sort_descending;
-        state.last_quick_filter = state.quick_filter;
-        state.last_selected_identity.clone_from(selected_identity);
-
-        let sort_ms = t_sort.elapsed().as_secs_f32() * 1000.0;
-        crate::PROCESS_SORT_RING.with(|r| r.borrow_mut().record(sort_ms));
+        }
+        if query_changed || (expired && !ui.input(|i| i.pointer.any_down())) {
+            let serial = state.sort_serial.wrapping_add(1);
+            let request = SortRequest {
+                frame: Arc::clone(frame),
+                query: state.table_state.search_query.clone(),
+                column: state.table_state.sort_column,
+                descending: state.table_state.sort_descending,
+                quick_filter: state.quick_filter,
+                selected: selected_identity.clone(),
+                pinned: state.pinned.clone(),
+                serial,
+            };
+            if worker
+                .tx
+                .as_ref()
+                .is_some_and(|tx| tx.try_send(SortWork::Sort(request)).is_ok())
+            {
+                ui.ctx().request_repaint_after(Duration::from_millis(25));
+                if query_changed {
+                    state.cached_order = Arc::new(Vec::new());
+                    state.cached_indices.clear();
+                    state.cached_frame = None;
+                }
+                state.sort_serial = serial;
+                state.last_sorted_at = Some(Instant::now());
+                state
+                    .last_sort_query
+                    .clone_from(&state.table_state.search_query);
+                state.last_sort_column = state.table_state.sort_column;
+                state.last_sort_descending = state.table_state.sort_descending;
+                state.last_quick_filter = state.quick_filter;
+                state.last_selected_identity.clone_from(selected_identity);
+            }
+        }
+        if !query_changed
+            && !state.cached_order.is_empty()
+            && state.cached_frame_seq != frame.sequence
+            && state.last_reindex_frame_seq != frame.sequence
+            && worker.tx.as_ref().is_some_and(|tx| {
+                tx.try_send(SortWork::Reindex {
+                    frame: Arc::clone(frame),
+                    order: Arc::clone(&state.cached_order),
+                    serial: state.sort_serial,
+                })
+                .is_ok()
+            })
+        {
+            state.last_reindex_frame_seq = frame.sequence;
+            ui.ctx().request_repaint_after(Duration::from_millis(25));
+        }
     }
-    if state.cached_frame_seq != frame.sequence {
+    if !large_table && state.cached_frame_seq != frame.sequence {
         let by_identity: HashMap<_, usize> = frame
             .processes
             .iter()
@@ -251,12 +507,16 @@ pub fn render_processes_view(
             .collect();
         state.cached_frame_seq = frame.sequence;
     }
+    let rows_frame_owned = large_table.then(|| state.cached_frame.clone()).flatten();
+    let rows_frame = rows_frame_owned.as_deref().unwrap_or(frame);
     let rows: Vec<&ProcessRecord> = state
         .cached_indices
         .iter()
-        .filter_map(|&idx| frame.processes.get(idx))
+        .filter_map(|&idx| rows_frame.processes.get(idx))
         .collect();
-    if rows.is_empty() {
+    if rows.is_empty() && state.cached_order.is_empty() && !frame.processes.is_empty() {
+        ui.label("Preparing process table…");
+    } else if rows.is_empty() {
         ui.label(
             egui::RichText::new(
                 "No processes match these filters. Clear filters to show all processes.",
@@ -829,6 +1089,7 @@ mod tests {
         let mut histories = crate::history::ResourceHistories::default();
         let identity = frame.processes[0].identity.clone();
         histories.ingest_frame(&frame, &[], Some(&identity), Instant::now(), 1000);
+        let frame = Arc::new(frame);
 
         let p = crate::theme::get_palette(true);
         let (tx, _rx) = std::sync::mpsc::sync_channel(1);
@@ -956,6 +1217,7 @@ mod tests {
             provider_durations_ms: Default::default(),
         };
 
+        let frame = Arc::new(frame);
         let histories = crate::history::ResourceHistories::default();
         let p = crate::theme::get_palette(true);
         let (tx, _rx) = std::sync::mpsc::sync_channel(1);
@@ -995,6 +1257,42 @@ mod tests {
         );
         output.textures_delta.clear();
 
+        // A fast empty-frame measurement would hide a stalled background sort.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while state.cached_indices.len() != 10_000 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::Vec2::new(1180.0, 790.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        render_processes_view(
+                            ui,
+                            &frame,
+                            &histories,
+                            &mut state,
+                            &app_state,
+                            &mut pause_state,
+                            1000,
+                            &mut selected,
+                            None,
+                            None,
+                            &tx,
+                            Instant::now(),
+                            p,
+                        );
+                    });
+                },
+            );
+            output.textures_delta.clear();
+        }
+        assert_eq!(state.cached_indices.len(), 10_000);
+
         // 2. Measure steady-state UI frame duration with cached index mapping
         let start = Instant::now();
         for _ in 0..10 {
@@ -1033,6 +1331,53 @@ mod tests {
         assert!(
             avg_frame_ms < 33.3,
             "10k processes steady frame took {avg_frame_ms:.2} ms, expected < 33.3 ms"
+        );
+
+        // Reordering the provider's process vector must not attach a cached
+        // row index to a different PID while the background remap is pending.
+        let mut changed = (*frame).clone();
+        changed.sequence += 1;
+        changed.processes.reverse();
+        let changed = Arc::new(changed);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while state.cached_frame_seq != changed.sequence && Instant::now() < deadline {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::Vec2::new(1180.0, 790.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        render_processes_view(
+                            ui,
+                            &changed,
+                            &histories,
+                            &mut state,
+                            &app_state,
+                            &mut pause_state,
+                            1000,
+                            &mut selected,
+                            None,
+                            None,
+                            &tx,
+                            Instant::now(),
+                            p,
+                        );
+                    });
+                },
+            );
+            output.textures_delta.clear();
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(state.cached_frame_seq, changed.sequence);
+        let visible_frame = state.cached_frame.as_ref().unwrap();
+        assert_eq!(visible_frame.sequence, changed.sequence);
+        assert_eq!(
+            &visible_frame.processes[state.cached_indices[0]].identity,
+            &state.cached_order[0]
         );
     }
 }

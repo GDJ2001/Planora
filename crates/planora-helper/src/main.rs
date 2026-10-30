@@ -1,3 +1,6 @@
+#[global_allocator]
+static ALLOCATOR: planora_core::CountingAllocator = planora_core::CountingAllocator;
+
 use interprocess::local_socket::prelude::*;
 use planora_bench::{ChaseMode, run_cache_probe, run_core_matrix};
 use planora_core::{

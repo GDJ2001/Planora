@@ -1,6 +1,9 @@
 #![allow(clippy::too_many_arguments)]
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+#[global_allocator]
+static ALLOCATOR: planora_core::CountingAllocator = planora_core::CountingAllocator;
+
 pub mod appearance;
 pub mod components;
 pub mod export;
@@ -79,6 +82,7 @@ impl UiPerfCounters {
             timestamp_ms: planora_telemetry::unix_ms(),
             process_resident_memory_bytes: rss,
             process_virtual_memory_bytes: vms,
+            allocations: Some(planora_core::allocation_snapshot()),
             first_paint_ms: self.first_paint_ms,
             ui_frame: self.ui_frame_ring.stats(),
             helper_collection_total: self.helper_total_ring.stats(),
@@ -87,7 +91,7 @@ impl UiPerfCounters {
                 .iter()
                 .map(|(k, v)| (k.clone(), v.stats()))
                 .collect(),
-            ipc_serialization: planora_core::LatencyStats::default(),
+            ipc_serialization: planora_helper::ipc_codec_stats(),
             history_publication: self.history_pub_ring.stats(),
             chart_preparation: self.chart_prep_ring.stats(),
             process_filtering_sorting: self.process_sort_ring.stats(),
@@ -749,6 +753,8 @@ impl App {
             }
         }
         self.history_worker.stop();
+        self.processes_state.stop_worker();
+        components::plot::stop_preparation_worker();
         self.appearance.request_stop();
         self.recorder.request_stop();
         self.exporter.request_cancel();
@@ -779,6 +785,8 @@ impl App {
     pub fn update_shutdown(&mut self, ctx: &egui::Context) {
         let client_done = self.client_worker.as_ref().is_none_or(|w| w.is_finished());
         let history_done = self.history_worker.is_finished();
+        let sort_done = self.processes_state.worker_finished();
+        let plot_done = components::plot::preparation_worker_finished();
         #[cfg(windows)]
         let sensor_done = self.sensor_worker.as_ref().is_none_or(|w| w.is_finished());
         #[cfg(not(windows))]
@@ -788,6 +796,8 @@ impl App {
 
         let all_done = client_done
             && history_done
+            && sort_done
+            && plot_done
             && sensor_done
             && recording_done
             && export_done
@@ -798,6 +808,8 @@ impl App {
                 let _ = worker.join();
             }
             self.history_worker.join();
+            self.processes_state.join_worker();
+            components::plot::join_preparation_worker();
             #[cfg(windows)]
             if let Some(worker) = self.sensor_worker.take() {
                 let _ = worker.join();
@@ -1922,6 +1934,8 @@ impl Drop for App {
                 let _ = worker.join();
             }
             self.history_worker.join();
+            self.processes_state.join_worker();
+            components::plot::join_preparation_worker();
             #[cfg(windows)]
             {
                 if let Some(stop) = &self.sensor_stop {
@@ -2021,6 +2035,7 @@ fn main() -> eframe::Result<()> {
             timestamp_ms: planora_telemetry::unix_ms(),
             process_resident_memory_bytes: rss,
             process_virtual_memory_bytes: vms,
+            allocations: Some(planora_core::allocation_snapshot()),
             first_paint_ms: None,
             ui_frame: planora_core::LatencyStats::default(),
             helper_collection_total: planora_core::LatencyStats::compute(

@@ -5,11 +5,48 @@ use interprocess::local_socket::GenericFilePath;
 use interprocess::local_socket::GenericNamespaced;
 use interprocess::local_socket::{ListenerOptions, Stream, prelude::*};
 use planora_core::{
-    Command, MAX_REQUEST_SIZE, MAX_RESPONSE_SIZE, PROTOCOL_VERSION, Request, Response,
-    ResponseEnvelope,
+    Command, LatencyRing, LatencyStats, MAX_REQUEST_SIZE, MAX_RESPONSE_SIZE, PROTOCOL_VERSION,
+    Request, Response, ResponseEnvelope,
 };
+use serde::{Serialize, de::DeserializeOwned};
 use std::io::{self, Read, Write};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+static IPC_CODEC_TIMINGS: OnceLock<Mutex<LatencyRing<128>>> = OnceLock::new();
+
+fn record_codec_time(started: Instant) {
+    IPC_CODEC_TIMINGS
+        .get_or_init(|| Mutex::new(LatencyRing::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .record(started.elapsed().as_secs_f32() * 1000.0);
+}
+
+/// Recent local IPC JSON encode/decode cost for this process, excluding pipe I/O.
+pub fn ipc_codec_stats() -> LatencyStats {
+    IPC_CODEC_TIMINGS
+        .get()
+        .map_or_else(LatencyStats::default, |ring| {
+            ring.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .stats()
+        })
+}
+
+fn encode_timed<T: Serialize>(value: &T) -> io::Result<Vec<u8>> {
+    let started = Instant::now();
+    let result = serde_json::to_vec(value).map_err(io::Error::other);
+    record_codec_time(started);
+    result
+}
+
+fn decode_timed<T: DeserializeOwned>(bytes: &[u8]) -> io::Result<T> {
+    let started = Instant::now();
+    let result = serde_json::from_slice(bytes).map_err(io::Error::other);
+    record_codec_time(started);
+    result
+}
 
 #[cfg(windows)]
 const ENDPOINT: &str = "planora-v2";
@@ -38,7 +75,7 @@ pub fn connect() -> io::Result<Stream> {
 
 /// Send a request with size enforcement (max 64 KiB).
 pub fn send_request(stream: &mut impl Write, req: &Request) -> io::Result<()> {
-    let data = serde_json::to_vec(req).map_err(io::Error::other)?;
+    let data = encode_timed(req)?;
     if data.len() > MAX_REQUEST_SIZE {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -67,12 +104,12 @@ pub fn receive_request(stream: &mut impl Read) -> io::Result<Request> {
     }
     let mut data = vec![0u8; len];
     stream.read_exact(&mut data)?;
-    serde_json::from_slice(&data).map_err(io::Error::other)
+    decode_timed(&data)
 }
 
 /// Send a response with size enforcement (max 8 MiB).
 pub fn send_response(stream: &mut impl Write, resp: &ResponseEnvelope) -> io::Result<()> {
-    let data = serde_json::to_vec(resp).map_err(io::Error::other)?;
+    let data = encode_timed(resp)?;
     if data.len() > MAX_RESPONSE_SIZE {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -101,7 +138,7 @@ pub fn receive_response(stream: &mut impl Read) -> io::Result<ResponseEnvelope> 
     }
     let mut data = vec![0u8; len];
     stream.read_exact(&mut data)?;
-    serde_json::from_slice(&data).map_err(io::Error::other)
+    decode_timed(&data)
 }
 
 /// Read exact bytes with absolute deadline enforcement on Stream without accumulating blocked threads.
@@ -424,7 +461,7 @@ pub fn send_request_deadline(
     req: &Request,
     deadline: Instant,
 ) -> io::Result<()> {
-    let data = serde_json::to_vec(req).map_err(io::Error::other)?;
+    let data = encode_timed(req)?;
     if data.len() > MAX_REQUEST_SIZE {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -454,7 +491,7 @@ pub fn receive_request_deadline(stream: &mut Stream, deadline: Instant) -> io::R
     }
     let mut data = vec![0u8; len];
     read_exact_deadline(stream, &mut data, deadline)?;
-    serde_json::from_slice(&data).map_err(io::Error::other)
+    decode_timed(&data)
 }
 
 /// Send a response with deadline enforcement on the Stream.
@@ -463,7 +500,7 @@ pub fn send_response_deadline(
     resp: &ResponseEnvelope,
     deadline: Instant,
 ) -> io::Result<()> {
-    let data = serde_json::to_vec(resp).map_err(io::Error::other)?;
+    let data = encode_timed(resp)?;
     if data.len() > MAX_RESPONSE_SIZE {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -496,7 +533,7 @@ pub fn receive_response_deadline(
     }
     let mut data = vec![0u8; len];
     read_exact_deadline(stream, &mut data, deadline)?;
-    serde_json::from_slice(&data).map_err(io::Error::other)
+    decode_timed(&data)
 }
 
 pub fn send_request_timeout(
@@ -903,6 +940,7 @@ mod tests {
             }
             _ => panic!("unexpected response variant"),
         }
+        assert!(ipc_codec_stats().count >= 4);
     }
 
     #[test]
