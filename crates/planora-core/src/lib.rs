@@ -9,7 +9,7 @@ use std::sync::Arc;
 pub const PROTOCOL_VERSION: u32 = 6;
 pub const SUPPORTED_SAMPLE_INTERVALS_MS: [u64; 5] = [100, 250, 500, 1_000, 2_000];
 pub const MAX_REQUEST_SIZE: usize = 64 * 1024;
-pub const MAX_RESPONSE_SIZE: usize = 8 * 1024 * 1024;
+pub const MAX_RESPONSE_SIZE: usize = 32 * 1024 * 1024;
 pub const MAX_PROCESSES_LIMIT: usize = 65_536;
 
 pub const UNIT_PERCENT: &str = "%";

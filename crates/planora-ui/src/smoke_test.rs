@@ -201,12 +201,12 @@ pub fn create_test_app(theme: Theme, page: Page) -> App {
         state: Some(AppState::Live),
         last_frame_received: Some(Instant::now()),
         frame: Some(Arc::new(frame)),
-        topology: Some(topo),
+        topology: Some(Arc::new(topo)),
         #[cfg(windows)]
         sensor_readings: Arc::new(Vec::new()),
         #[cfg(windows)]
         sensor_capabilities: Arc::new(Vec::new()),
-        capabilities: vec![
+        capabilities: Arc::new(vec![
             Capability {
                 name: "System CPU Utilization".into(),
                 scope: "System".into(),
@@ -261,18 +261,18 @@ pub fn create_test_app(theme: Theme, page: Page) -> App {
                 recovery_action: None,
                 reason: None,
             },
-        ],
+        ]),
         benchmark_state: Some(planora_core::BenchmarkState::Idle),
         profile_state: None,
-        pmu_sources: Vec::new(),
+        pmu_sources: Arc::new(Vec::new()),
         sampling_effective_ms: Some(100),
-        diagnostic_logs: Vec::new(),
+        diagnostic_logs: Arc::new(Vec::new()),
         affinity: None,
         action_error: None,
         live_history_enabled: false,
         history_epoch: 0,
         selected_identity: None,
-        priority_details: std::collections::BTreeSet::new(),
+        priority_details: Arc::new(std::collections::BTreeSet::new()),
     }));
 
     App {
@@ -334,11 +334,20 @@ pub fn create_test_app(theme: Theme, page: Page) -> App {
         lifecycle: crate::LifecycleState::Running,
         shutdown_started: None,
         shutdown_completed: false,
-        perf_counters: crate::UiPerfCounters::default(),
+        perf_counters: crate::UiPerfCounters {
+            start_time: Some(Instant::now()),
+            ..Default::default()
+        },
         focus_lost_at: None,
         last_adaptive_poll_ms: 100,
         last_recorded_sequence: 0,
         export_perf_report_path: None,
+        last_merged_sensor_frame_seq: 0,
+        #[cfg(windows)]
+        last_merged_vendor_sensors: None,
+        #[cfg(windows)]
+        cached_merged_sensors: Arc::new(Vec::new()),
+        last_recorded_bytes_written: 0,
     }
 }
 

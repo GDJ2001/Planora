@@ -274,28 +274,28 @@ pub const BUILD_INFO: BuildInfo = BuildInfo {
     rustc_version: env!("PLANORA_RUSTC_VERSION"),
 };
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Shared {
     pub state: Option<AppState>,
     pub last_frame_received: Option<Instant>,
     pub frame: Option<Arc<TelemetryFrame>>,
-    pub topology: Option<Topology>,
-    pub capabilities: Vec<Capability>,
+    pub topology: Option<Arc<Topology>>,
+    pub capabilities: Arc<Vec<Capability>>,
     #[cfg(windows)]
     pub sensor_readings: Arc<Vec<planora_core::SensorReading>>,
     #[cfg(windows)]
     pub sensor_capabilities: Arc<Vec<Capability>>,
     pub benchmark_state: Option<BenchmarkState>,
     pub profile_state: Option<planora_core::ProfileState>,
-    pub pmu_sources: Vec<PmuSourceInfo>,
+    pub pmu_sources: Arc<Vec<PmuSourceInfo>>,
     pub sampling_effective_ms: Option<u64>,
-    pub diagnostic_logs: Vec<DiagnosticEntry>,
+    pub diagnostic_logs: Arc<Vec<DiagnosticEntry>>,
     pub affinity: Option<(planora_core::ProcessIdentity, Vec<u16>)>,
     pub action_error: Option<String>,
     pub live_history_enabled: bool,
     pub history_epoch: u64,
     pub selected_identity: Option<planora_core::ProcessIdentity>,
-    pub priority_details: std::collections::BTreeSet<String>,
+    pub priority_details: Arc<std::collections::BTreeSet<String>>,
 }
 
 pub fn is_data_stale(last_received: Option<Instant>, poll_interval_ms: u64) -> Option<Duration> {
@@ -361,16 +361,16 @@ fn handle_response(
             shared.profile_state = Some(ps);
         }
         Response::PmuSources(sources) => {
-            shared.pmu_sources = sources;
+            shared.pmu_sources = Arc::new(sources);
         }
         Response::Capabilities(caps) => {
-            shared.capabilities = caps;
+            shared.capabilities = Arc::new(caps);
         }
         Response::SamplingStatus { effective_ms, .. } => {
             shared.sampling_effective_ms = Some(effective_ms);
         }
         Response::DiagnosticLogs(logs) => {
-            shared.diagnostic_logs = logs;
+            shared.diagnostic_logs = Arc::new(logs);
         }
         Response::Affinity {
             process,
@@ -619,7 +619,7 @@ pub fn background_worker(
             Ok(ResponseEnvelope {
                 response: Response::Topology(topo),
                 ..
-            }) => state.lock().unwrap().topology = Some(topo),
+            }) => state.lock().unwrap().topology = Some(Arc::new(topo)),
             _ => {
                 state.lock().unwrap().state = Some(AppState::Reconnecting);
                 context.request_repaint();
@@ -646,7 +646,7 @@ pub fn background_worker(
             Ok(ResponseEnvelope {
                 response: Response::Capabilities(caps),
                 ..
-            }) => state.lock().unwrap().capabilities = caps,
+            }) => state.lock().unwrap().capabilities = Arc::new(caps),
             _ => {
                 state.lock().unwrap().state = Some(AppState::Reconnecting);
                 context.request_repaint();

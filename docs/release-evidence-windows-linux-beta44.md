@@ -15,7 +15,10 @@ Beta.44 is an internal release built from clean commit `7dcd5ad` with Rust 1.99.
 
 `dist/provenance.json` reports clean source commit `7dcd5ad22dd1a5c99a7fb1f5f89c7d4d29de59c1`; `dist/SHA256SUMS.txt` lists all 6 artifacts with verified SHA-256 sums.
 
-## Measured Performance Latencies
+## Measured Performance Latencies (Local Fixtures & Benchmark Harness)
+
+> [!NOTE]
+> The performance metrics below represent local test harness and fixture observations on commit `7dcd5ad`. Installed service probes on the reference PC and physical Linux targets are tracked as separate release gates in [beta-readiness](beta-readiness.md).
 
 ### 1. UI Frame Times & Rendering
 - **Steady-state UI Frame (Windows release)**:

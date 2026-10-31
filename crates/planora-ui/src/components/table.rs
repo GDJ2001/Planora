@@ -47,25 +47,56 @@ impl Default for TableColumnsConfig {
     }
 }
 
-pub fn sort_process_indices(
+fn pid_contains_query(pid: u32, q: &str) -> bool {
+    let mut buf = [0u8; 11];
+    let mut n = pid;
+    let mut len = 0;
+    if n == 0 {
+        buf[0] = b'0';
+        len = 1;
+    } else {
+        while n > 0 {
+            buf[len] = b'0' + (n % 10) as u8;
+            n /= 10;
+            len += 1;
+        }
+        buf[..len].reverse();
+    }
+    if let Ok(pid_str) = std::str::from_utf8(&buf[..len]) {
+        pid_str.contains(q)
+    } else {
+        false
+    }
+}
+
+pub fn matches_process_query(p: &ProcessRecord, q_lower: &str) -> bool {
+    if q_lower.is_empty() {
+        return true;
+    }
+    if pid_contains_query(p.identity.pid, q_lower) {
+        return true;
+    }
+    if p.name.is_ascii() {
+        let mut buf = [0u8; 64];
+        let bytes = p.name.as_bytes();
+        if bytes.len() <= buf.len() {
+            for (i, &b) in bytes.iter().enumerate() {
+                buf[i] = b.to_ascii_lowercase();
+            }
+            if let Ok(lower_name) = std::str::from_utf8(&buf[..bytes.len()]) {
+                return lower_name.contains(q_lower);
+            }
+        }
+    }
+    p.name.to_lowercase().contains(q_lower)
+}
+
+pub fn sort_indices(
+    indices: &mut [usize],
     processes: &[ProcessRecord],
-    filter_query: &str,
     sort_column: SortColumn,
     sort_descending: bool,
-) -> Vec<usize> {
-    let q = filter_query.trim().to_lowercase();
-    let q_is_empty = q.is_empty();
-    let mut indices: Vec<usize> = (0..processes.len())
-        .filter(|&idx| {
-            if q_is_empty {
-                true
-            } else {
-                let p = &processes[idx];
-                p.name.to_lowercase().contains(&q) || p.identity.pid.to_string().contains(&q)
-            }
-        })
-        .collect();
-
+) {
     let compare_optional = |a: Option<f32>, b: Option<f32>| match (a, b) {
         (Some(va), Some(vb)) => {
             if sort_descending {
@@ -136,7 +167,27 @@ pub fn sort_process_indices(
             primary
         }
     });
+}
 
+pub fn sort_process_indices(
+    processes: &[ProcessRecord],
+    filter_query: &str,
+    sort_column: SortColumn,
+    sort_descending: bool,
+) -> Vec<usize> {
+    let q = filter_query.trim().to_lowercase();
+    let q_is_empty = q.is_empty();
+    let mut indices: Vec<usize> = (0..processes.len())
+        .filter(|&idx| {
+            if q_is_empty {
+                true
+            } else {
+                matches_process_query(&processes[idx], &q)
+            }
+        })
+        .collect();
+
+    sort_indices(&mut indices, processes, sort_column, sort_descending);
     indices
 }
 

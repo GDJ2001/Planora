@@ -22,7 +22,7 @@ use std::{
     collections::{HashMap, VecDeque},
     io,
     sync::{
-        Arc, Mutex, RwLock,
+        Arc, Mutex, OnceLock, RwLock,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     thread,
@@ -33,6 +33,7 @@ static STOP: AtomicBool = AtomicBool::new(false);
 static ACTIVE_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
 static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 static CALLER_CONNECTIONS: Mutex<Option<HashMap<u64, usize>>> = Mutex::new(None);
+static TOPOLOGY_CACHE: OnceLock<planora_core::Topology> = OnceLock::new();
 
 const MAX_TOTAL_CONNECTIONS: usize = 16;
 const MAX_PER_CALLER_CONNECTIONS: usize = 4;
@@ -867,7 +868,11 @@ fn dispatch(command: Command, req_id: u64, connection_id: u64, state: &State) ->
                 ),
             }
         }
-        Command::Topology => Response::Topology(planora_topology::discover()),
+        Command::Topology => Response::Topology(
+            TOPOLOGY_CACHE
+                .get_or_init(planora_topology::discover)
+                .clone(),
+        ),
         Command::SetSamplingInterval { interval_ms } => {
             match state.sampling.set(connection_id, interval_ms) {
                 Ok(effective_ms) => Response::SamplingStatus {

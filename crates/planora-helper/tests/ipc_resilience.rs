@@ -590,7 +590,7 @@ fn test_ipc_oversized_frame_rejected() {
     let server_handle = thread::spawn(move || {
         let mut stream = listener.accept().unwrap();
         // Send a frame length of 9 MiB (> 8 MiB limit)
-        let oversize = 9 * 1024 * 1024u32;
+        let oversize = (planora_core::MAX_RESPONSE_SIZE + 1024 * 1024) as u32;
         stream.write_all(&oversize.to_le_bytes()).unwrap();
         stream.flush().unwrap();
     });

@@ -117,10 +117,23 @@ impl TimeSeries {
         let expected_seconds = duration.as_secs() as usize;
         let cutoff = now.checked_sub(duration).unwrap_or(now);
         let use_unix_seconds = self.samples.back().is_some_and(|s| s.timestamp_ms >= 1_000);
-        let mut buckets: std::collections::BTreeMap<u64, (f64, u32, f32, f32)> =
-            std::collections::BTreeMap::new();
-        for sample in self.samples.iter() {
-            if sample.time < cutoff || sample.start > now {
+
+        let mut current_sec: Option<u64> = None;
+        let mut cur_sum = 0.0f64;
+        let mut cur_count = 0u32;
+        let mut cur_min = f32::INFINITY;
+        let mut cur_max = f32::NEG_INFINITY;
+
+        let mut total_avg = 0.0f64;
+        let mut bucket_count = 0usize;
+        let mut global_min = f32::INFINITY;
+        let mut global_max = f32::NEG_INFINITY;
+
+        for sample in self.samples.iter().rev() {
+            if sample.time < cutoff {
+                break;
+            }
+            if sample.start > now {
                 continue;
             }
             if let Some(value) = sample.value.filter(|v| v.is_finite()) {
@@ -139,36 +152,52 @@ impl TimeSeries {
                 } else {
                     value as f64 * sample_count as f64
                 };
-                let bucket =
-                    buckets
-                        .entry(second)
-                        .or_insert((0.0, 0, f32::INFINITY, f32::NEG_INFINITY));
-                bucket.0 += sample_sum;
-                bucket.1 += sample_count;
-                bucket.2 = bucket.2.min(sample.minimum.unwrap_or(value));
-                bucket.3 = bucket.3.max(sample.maximum.unwrap_or(value));
+                let s_min = sample.minimum.unwrap_or(value);
+                let s_max = sample.maximum.unwrap_or(value);
+
+                if current_sec == Some(second) {
+                    cur_sum += sample_sum;
+                    cur_count += sample_count;
+                    cur_min = cur_min.min(s_min);
+                    cur_max = cur_max.max(s_max);
+                } else {
+                    if current_sec.is_some() {
+                        let b_avg = (cur_sum / cur_count.max(1) as f64) as f32;
+                        total_avg += b_avg as f64;
+                        bucket_count += 1;
+                        global_min = global_min.min(cur_min);
+                        global_max = global_max.max(cur_max);
+                        if bucket_count >= expected_seconds {
+                            current_sec = None;
+                            break;
+                        }
+                    }
+                    current_sec = Some(second);
+                    cur_sum = sample_sum;
+                    cur_count = sample_count;
+                    cur_min = s_min;
+                    cur_max = s_max;
+                }
             }
         }
-        while buckets.len() > expected_seconds {
-            buckets.pop_first();
+
+        if current_sec.is_some() {
+            let b_avg = (cur_sum / cur_count.max(1) as f64) as f32;
+            total_avg += b_avg as f64;
+            bucket_count += 1;
+            global_min = global_min.min(cur_min);
+            global_max = global_max.max(cur_max);
         }
-        if buckets.is_empty() {
+
+        if bucket_count == 0 {
             return None;
         }
-        let values: Vec<f32> = buckets
-            .values()
-            .map(|(sum, count, _, _)| (sum / (*count).max(1) as f64) as f32)
-            .collect();
-        let total: f64 = values.iter().map(|v| *v as f64).sum();
+
         Some(ObservedSummary {
-            minimum: buckets
-                .values()
-                .fold(f32::INFINITY, |current, bucket| current.min(bucket.2)),
-            maximum: buckets
-                .values()
-                .fold(f32::NEG_INFINITY, |current, bucket| current.max(bucket.3)),
-            average: (total / values.len() as f64) as f32,
-            observed_seconds: values.len().min(expected_seconds),
+            minimum: global_min,
+            maximum: global_max,
+            average: (total_avg / bucket_count as f64) as f32,
+            observed_seconds: bucket_count.min(expected_seconds),
             expected_seconds,
         })
     }
@@ -508,7 +537,7 @@ pub struct ResourceHistories {
     /// Scoped histories use stable hardware IDs rather than display labels.
     pub details: BTreeMap<String, TimeSeries>,
     pub not_retained: BTreeSet<String>,
-    pub(crate) priority_details: BTreeSet<String>,
+    pub(crate) priority_details: Arc<BTreeSet<String>>,
 
     // Selected process history (only recorded while observed)
     pub selected_identity: Option<ProcessIdentity>,
@@ -768,8 +797,8 @@ impl ResourceHistories {
 
     /// Keep the visible resource and explicitly selected engine histories ahead
     /// of background detail series when the bounded history store fills up.
-    pub fn set_priority_details(&mut self, keys: BTreeSet<String>) {
-        for key in &keys {
+    pub fn set_priority_details(&mut self, keys: Arc<BTreeSet<String>>) {
+        for key in keys.iter() {
             self.not_retained.remove(key);
         }
         self.priority_details = keys;
@@ -1268,7 +1297,7 @@ mod tests {
         let now = Instant::now();
         let mut histories = ResourceHistories::default();
         let sensor = "sensor:cpu-temperature".to_owned();
-        histories.set_priority_details(BTreeSet::from([sensor.clone()]));
+        histories.set_priority_details(Arc::new(BTreeSet::from([sensor.clone()])));
         for second in 1..=20 {
             let time = now + Duration::from_secs(second);
             histories.push_detail(
@@ -1303,7 +1332,7 @@ mod tests {
                 <= 30
         );
 
-        histories.set_priority_details(BTreeSet::from(["gpu-engine:0".to_owned()]));
+        histories.set_priority_details(Arc::new(BTreeSet::from(["gpu-engine:0".to_owned()])));
         histories.push_detail(
             "gpu-engine:0".into(),
             now + Duration::from_secs(21),

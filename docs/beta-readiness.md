@@ -8,7 +8,7 @@ Beta.45 packages were built from clean commit `98b6318` and are documented in [b
 
 # Historical Windows and Linux Optimization Release: 0.3.0-beta.44
 
-Beta.44 implements the approved Windows and Linux Optimization Plan. [Beta.44 optimization evidence](release-evidence-windows-linux-beta44.md) details zero-copy snapshot ingestion, immutable history generation sharing, sub-millisecond steady UI frame times (p95 $0.92\text{ ms}$), $19\text{--}24\text{ ms}$ helper collection durations, 10,000-process table index sorting ($7.20\text{ ms}$ steady UI frame), adaptive $500\text{--}1,000\text{ ms}$ background sampling, and JSON performance report export. Protocol v6, settings schema 7, and recording format v4 are preserved.
+Beta.44 implements the approved Windows and Linux Optimization Plan. [Beta.44 optimization evidence](release-evidence-windows-linux-beta44.md) details zero-copy snapshot ingestion, immutable history generation sharing, sub-millisecond steady UI frame times (p95 $0.92\text{ ms}$ on local fixture harness), $19\text{--}24\text{ ms}$ helper collection durations, 10,000-process table index sorting ($7.20\text{ ms}$ steady UI frame), adaptive $500\text{--}1,000\text{ ms}$ background sampling, and JSON performance report export. Protocol v6, settings schema 7, and recording format v4 are preserved.
 
 # Linux internal preview: 0.3.0-beta.43
 

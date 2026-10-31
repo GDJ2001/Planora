@@ -2,7 +2,7 @@ use crate::{
     components::{
         header::render_page_header,
         plot::{PlotSeries, PlotState, ValueScale, time_plot},
-        table::{ProcessTableState, render_process_table, sort_process_indices},
+        table::{ProcessTableState, render_process_table},
     },
     formatting::{format_bytes, format_percent, format_rate},
     history::{HistoryRange, ResourceHistories},
@@ -163,34 +163,46 @@ fn filtered_process_indices(
     selected: Option<&ProcessIdentity>,
     pinned: &HashSet<ProcessIdentity>,
 ) -> Vec<usize> {
-    let mut indices = sort_process_indices(processes, query, column, descending);
-    indices.retain(|&idx| {
-        let process = &processes[idx];
-        match quick_filter {
-            QuickFilter::All => true,
-            QuickFilter::Selected => selected == Some(&process.identity),
-            QuickFilter::Pinned => pinned.contains(&process.identity),
-            QuickFilter::Active => {
-                process.cpu_percent.value.is_some_and(|value| value > 0.0)
-                    || process
-                        .io_read_bytes_per_sec
-                        .value
-                        .is_some_and(|value| value > 0)
-                    || process
-                        .io_write_bytes_per_sec
-                        .value
-                        .is_some_and(|value| value > 0)
-                    || process
-                        .disk_read_bytes_per_sec
-                        .value
-                        .is_some_and(|value| value > 0)
-                    || process
-                        .disk_write_bytes_per_sec
-                        .value
-                        .is_some_and(|value| value > 0)
+    let q = query.trim().to_lowercase();
+    let q_is_empty = q.is_empty();
+    let mut indices: Vec<usize> = (0..processes.len())
+        .filter(|&idx| {
+            let process = &processes[idx];
+            match quick_filter {
+                QuickFilter::All => true,
+                QuickFilter::Selected => selected == Some(&process.identity),
+                QuickFilter::Pinned => pinned.contains(&process.identity),
+                QuickFilter::Active => {
+                    process.cpu_percent.value.is_some_and(|value| value > 0.0)
+                        || process
+                            .io_read_bytes_per_sec
+                            .value
+                            .is_some_and(|value| value > 0)
+                        || process
+                            .io_write_bytes_per_sec
+                            .value
+                            .is_some_and(|value| value > 0)
+                        || process
+                            .disk_read_bytes_per_sec
+                            .value
+                            .is_some_and(|value| value > 0)
+                        || process
+                            .disk_write_bytes_per_sec
+                            .value
+                            .is_some_and(|value| value > 0)
+                }
             }
-        }
-    });
+        })
+        .filter(|&idx| {
+            if q_is_empty {
+                true
+            } else {
+                crate::components::table::matches_process_query(&processes[idx], &q)
+            }
+        })
+        .collect();
+
+    crate::components::table::sort_indices(&mut indices, processes, column, descending);
     indices
 }
 

@@ -219,6 +219,12 @@ pub struct App {
     last_adaptive_poll_ms: u64,
     last_recorded_sequence: u64,
     export_perf_report_path: Option<std::path::PathBuf>,
+    last_merged_sensor_frame_seq: u64,
+    #[cfg(windows)]
+    last_merged_vendor_sensors: Option<Arc<Vec<planora_core::SensorReading>>>,
+    #[cfg(windows)]
+    cached_merged_sensors: Arc<Vec<planora_core::SensorReading>>,
+    last_recorded_bytes_written: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -522,6 +528,12 @@ impl App {
             last_adaptive_poll_ms: initial_poll_interval,
             last_recorded_sequence: 0,
             export_perf_report_path: None,
+            last_merged_sensor_frame_seq: 0,
+            #[cfg(windows)]
+            last_merged_vendor_sensors: None,
+            #[cfg(windows)]
+            cached_merged_sensors: Arc::new(Vec::new()),
+            last_recorded_bytes_written: 0,
         }
     }
 
@@ -1091,47 +1103,19 @@ impl App {
         let p = self.palette(&ctx);
 
         self.replay.poll();
-        let (mut app_state, mut frame_opt, mut topo_opt, caps, shared_copy) = {
+        let (mut app_state, mut frame_opt, mut topo_opt, shared_copy) = {
             let shared = self.shared.lock().unwrap();
             let state = shared.state.clone().unwrap_or(AppState::Connecting);
             let frame = shared.frame.clone();
             let topo = shared.topology.clone();
-            let caps = shared.capabilities.clone();
-            let shared_copy = Shared {
-                state: shared.state.clone(),
-                last_frame_received: shared.last_frame_received,
-                frame: shared.frame.clone(),
-                topology: shared.topology.clone(),
-                capabilities: shared.capabilities.clone(),
-                #[cfg(windows)]
-                sensor_readings: shared.sensor_readings.clone(),
-                #[cfg(windows)]
-                sensor_capabilities: shared.sensor_capabilities.clone(),
-                benchmark_state: shared.benchmark_state.clone(),
-                profile_state: shared.profile_state.clone(),
-                pmu_sources: shared.pmu_sources.clone(),
-                sampling_effective_ms: shared.sampling_effective_ms,
-                diagnostic_logs: shared.diagnostic_logs.clone(),
-                affinity: shared.affinity.clone(),
-                action_error: shared.action_error.clone(),
-                live_history_enabled: shared.live_history_enabled,
-                history_epoch: shared.history_epoch,
-                selected_identity: shared.selected_identity.clone(),
-                priority_details: shared.priority_details.clone(),
-            };
-            (state, frame, topo, caps, shared_copy)
-        };
-        #[cfg(windows)]
-        let caps = {
-            let mut caps = caps;
-            caps.extend(shared_copy.sensor_capabilities.iter().cloned());
-            caps
+            let shared_copy = shared.clone();
+            (state, frame, topo, shared_copy)
         };
 
         if self.replay.is_active() {
             app_state = AppState::Replay;
             frame_opt = self.replay.frame.clone();
-            topo_opt = self.replay.topology.clone();
+            topo_opt = self.replay.topology.as_ref().map(|t| Arc::new(t.clone()));
         }
         #[cfg(windows)]
         let live_sensors = {
@@ -1139,11 +1123,21 @@ impl App {
                 .as_ref()
                 .map(|frame| frame.sensors.as_slice())
                 .unwrap_or_default();
+            let current_seq = frame_opt.as_ref().map(|f| f.sequence).unwrap_or(0);
+            let vendor_ptr = &shared_copy.sensor_readings;
             if !self.fixture_mode && app_state != AppState::Replay {
-                Arc::new(merge_sensor_readings(
-                    helper_sensors,
-                    &shared_copy.sensor_readings,
-                ))
+                if current_seq != self.last_merged_sensor_frame_seq
+                    || self
+                        .last_merged_vendor_sensors
+                        .as_ref()
+                        .is_none_or(|v| !Arc::ptr_eq(v, vendor_ptr))
+                {
+                    self.cached_merged_sensors =
+                        Arc::new(merge_sensor_readings(helper_sensors, vendor_ptr));
+                    self.last_merged_sensor_frame_seq = current_seq;
+                    self.last_merged_vendor_sensors = Some(Arc::clone(vendor_ptr));
+                }
+                Arc::clone(&self.cached_merged_sensors)
             } else {
                 Arc::new(helper_sensors.to_vec())
             }
@@ -1238,9 +1232,9 @@ impl App {
                     let sensors = Arc::new(frame.sensors.clone());
                     self.history_worker.submit(HistoryInput {
                         frame: frame.clone(),
-                        priority_details: self
-                            .resources_state
-                            .priority_history_keys(sensors.as_ref()),
+                        priority_details: Arc::new(
+                            self.resources_state.priority_history_keys(sensors.as_ref()),
+                        ),
                         sensors,
                         selected: self.selected.clone(),
                         received_at: visual_now,
@@ -1256,14 +1250,17 @@ impl App {
             }
         } else {
             #[cfg(windows)]
-            let priority = self
-                .resources_state
-                .priority_history_keys(live_sensors.as_ref());
+            let priority = Arc::new(
+                self.resources_state
+                    .priority_history_keys(live_sensors.as_ref()),
+            );
             #[cfg(not(windows))]
-            let priority = self.resources_state.priority_history_keys(
-                frame_opt
-                    .as_ref()
-                    .map_or(&[], |frame| frame.sensors.as_slice()),
+            let priority = Arc::new(
+                self.resources_state.priority_history_keys(
+                    frame_opt
+                        .as_ref()
+                        .map_or(&[], |frame| frame.sensors.as_slice()),
+                ),
             );
             let mut shared = self.shared.lock().unwrap();
             shared.live_history_enabled = true;
@@ -1273,6 +1270,10 @@ impl App {
         }
         if let Some(snapshot) = self.history_worker.latest(self.history_epoch) {
             self.histories = snapshot;
+            let pub_ms = self.history_worker.last_publish_duration_ms();
+            if pub_ms > 0.0 {
+                self.perf_counters.history_pub_ring.record(pub_ms);
+            }
         }
 
         // Display Pause handling
@@ -1458,7 +1459,7 @@ impl App {
                     self.render_recordings_page(
                         ui,
                         frame_opt.clone(),
-                        topo_opt.as_ref(),
+                        topo_opt.as_deref(),
                         shared_copy.benchmark_state.as_ref(),
                         &shared_copy.diagnostic_logs,
                         &app_state,
@@ -1682,7 +1683,7 @@ impl App {
                                     #[cfg(not(windows))]
                                     { &frame.sensors }
                                 },
-                                topo_opt.as_ref(),
+                                topo_opt.as_deref(),
                                 Some(&mut self.exporter),
                                 &mut self.resources_state,
                                 &mut self.settings.percent_scale,
@@ -1719,7 +1720,7 @@ impl App {
                         current_poll,
                         &mut self.selected,
                         shared_copy.affinity.as_ref(),
-                        topo_opt.as_ref(),
+                        topo_opt.as_deref(),
                         &self.tx,
                         render_now,
                         p,
@@ -1758,7 +1759,7 @@ impl App {
                     show_page_scroll(ui, "hardware_page_scroll", |ui| {
                         render_hardware_view(
                             ui,
-                            topo_opt.as_ref(),
+                            topo_opt.as_deref(),
                             render_frame.as_deref(),
                             &mut self.hardware_state,
                             &app_state,
@@ -1785,22 +1786,32 @@ impl App {
                         );
                     });
                 },
-                Page::Capabilities => render_capabilities_view(
-                    ui,
-                    &caps,
-                    &mut self.capabilities_state,
-                    &app_state,
-                    &mut self.display_pause,
-                    current_poll,
-                    &self.tx,
-                    {
-                        #[cfg(windows)]
-                        { self.sensor_refresh.as_ref() }
-                        #[cfg(not(windows))]
-                        { None }
-                    },
-                    p,
-                ),
+                Page::Capabilities => {
+                    #[cfg(windows)]
+                    let caps = {
+                        let mut c = (*shared_copy.capabilities).clone();
+                        c.extend(shared_copy.sensor_capabilities.iter().cloned());
+                        c
+                    };
+                    #[cfg(not(windows))]
+                    let caps = (*shared_copy.capabilities).clone();
+                    render_capabilities_view(
+                        ui,
+                        &caps,
+                        &mut self.capabilities_state,
+                        &app_state,
+                        &mut self.display_pause,
+                        current_poll,
+                        &self.tx,
+                        {
+                            #[cfg(windows)]
+                            { self.sensor_refresh.as_ref() }
+                            #[cfg(not(windows))]
+                            { None }
+                        },
+                        p,
+                    );
+                }
                 Page::Settings => {
                     show_page_scroll(ui, "settings_outer_page_scroll", |ui| {
                         render_settings_view(
@@ -1871,13 +1882,14 @@ impl App {
         self.perf_counters.ui_frame_ring.record(frame_ms);
         CHART_PREP_RING.with(|r| self.perf_counters.chart_prep_ring = r.borrow().clone());
         PROCESS_SORT_RING.with(|r| self.perf_counters.process_sort_ring = r.borrow().clone());
-        let pub_ms = self.history_worker.last_publish_duration_ms();
-        if pub_ms > 0.0 {
-            self.perf_counters.history_pub_ring.record(pub_ms);
-        }
-        let write_ms = self.recorder.status().last_write_duration_ms;
-        if write_ms > 0.0 {
-            self.perf_counters.recording_write_ring.record(write_ms);
+        let rec_status = self.recorder.status();
+        if rec_status.active && rec_status.bytes_written != self.last_recorded_bytes_written {
+            self.last_recorded_bytes_written = rec_status.bytes_written;
+            if rec_status.last_write_duration_ms > 0.0 {
+                self.perf_counters
+                    .recording_write_ring
+                    .record(rec_status.last_write_duration_ms);
+            }
         }
     }
 }

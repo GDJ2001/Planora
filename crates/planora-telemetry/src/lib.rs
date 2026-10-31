@@ -1173,12 +1173,24 @@ impl Sampler {
                     .collect();
                 self.gpu_last_sample_ms = sample_ms;
             }
+            let mut max_gpu_by_pid: std::collections::HashMap<u32, f32> =
+                std::collections::HashMap::with_capacity(gpu_engines.len());
+            for engine in &gpu_engines {
+                if let (Some(pid), Some(val)) =
+                    (engine.process_pid, engine.utilization_percent.value)
+                {
+                    max_gpu_by_pid
+                        .entry(pid)
+                        .and_modify(|cur| {
+                            if val.total_cmp(cur).is_gt() {
+                                *cur = val;
+                            }
+                        })
+                        .or_insert(val);
+                }
+            }
             for process in &mut processes {
-                let busiest = gpu_engines
-                    .iter()
-                    .filter(|engine| engine.process_pid == Some(process.identity.pid))
-                    .filter_map(|engine| engine.utilization_percent.value)
-                    .max_by(f32::total_cmp);
+                let busiest = max_gpu_by_pid.get(&process.identity.pid).copied();
                 process.gpu_percent = if !self.gpu_validated_pids.contains(&process.identity.pid)
                     || self.gpu_last_identities.get(&process.identity.pid)
                         != Some(&process.identity)
