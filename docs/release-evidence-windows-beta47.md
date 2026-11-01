@@ -23,6 +23,8 @@ The Windows reference PC was upgraded from beta.46. Burn recorded `Apply complet
 
 With the installed UI open, a second client requesting 2,000 ms observed the helper's fastest-client effective interval at **100 ms focused**, **500 ms after more than two seconds unfocused**, and **1,000 ms while minimized**. Restoring focus returned it to **100 ms**. A separate 100-snapshot installed-helper probe at 100 ms returned 99 distinct sequences and collection p95 **9.322 ms** (median 5.394 ms). One maximum collection interval reached 138.925 ms, associated with a 133.794 ms network-provider interval; this short run met the p95 target but does not establish long-run tail stability. The redacted report is [`dist/beta47-windows-live-ipc.json`](../dist/beta47-windows-live-ipc.json).
 
+A second 100-snapshot run returned 100 distinct sequences, collection p95 **7.160 ms**, and maximum **9.233 ms**. Its network-provider maximum was 3.180 ms. The first run's long network interval did not recur in this short repeat; longer monitoring is still needed before dismissing tail spikes. See [`dist/beta47-windows-live-ipc-repeat.json`](../dist/beta47-windows-live-ipc-repeat.json).
+
 ## Remaining verification
 
 - Measure focused versus minimized CPU against a comparable always-100-ms baseline. Complete the one-hour combined growth run and 10,000-process UI p95 test.
