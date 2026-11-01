@@ -19,8 +19,11 @@ Windows `cargo fmt --all -- --check`, `cargo test --workspace --locked --quiet`,
 
 The MSI ProductVersion is `0.2.1047`. WiX theme and MSI validation passed. An administrative MSI image contained the UI, helper, and sensor broker, and all three hashes matched [`dist/Planora-0.3.0-beta.47-x64.manifest.json`](../dist/Planora-0.3.0-beta.47-x64.manifest.json). [`dist/provenance.json`](../dist/provenance.json) records a clean source commit and the artifact hashes. No beta.47 Linux package was produced while the WSL VHDX was locked.
 
+The Windows reference PC was upgraded from beta.46. Burn recorded `Apply complete, result: 0x0`, no restart, and exit code `0x0`. The installed UI, helper, and sensor broker hashes matched the beta.47 manifest. Both installed Rust binaries reported beta.47, commit `173186c`, and protocol v6. The helper was running, the authorization record remained present, and the settings file hash remained `8D1100B233E5BB729D71565ED199FF78F0EAD7644712749B07A7BBBB671B872D`.
+
+With the installed UI open, a second client requesting 2,000 ms observed the helper's fastest-client effective interval at **100 ms focused**, **500 ms after more than two seconds unfocused**, and **1,000 ms while minimized**. Restoring focus returned it to **100 ms**. A separate 100-snapshot installed-helper probe at 100 ms returned 99 distinct sequences and collection p95 **9.322 ms** (median 5.394 ms). One maximum collection interval reached 138.925 ms, associated with a 133.794 ms network-provider interval; this short run met the p95 target but does not establish long-run tail stability. The redacted report is [`dist/beta47-windows-live-ipc.json`](../dist/beta47-windows-live-ipc.json).
+
 ## Remaining verification
 
-- Install beta.47, verify installed hashes and normal launch, then observe effective 100/500/1,000 ms requests under focused/unfocused/minimized states and return to 100 ms on focus.
 - Measure focused versus minimized CPU against a comparable always-100-ms baseline. Complete the one-hour combined growth run and 10,000-process UI p95 test.
 - Restore Ubuntu WSL access for exact-revision Linux checks; repeat physical Ubuntu/Fedora and broader desktop/accessibility acceptance before public distribution.
