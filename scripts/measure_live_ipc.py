@@ -86,14 +86,27 @@ def main():
         values = defaultdict(list)
         sequences = []
         process_counts = []
+        next_request_id = 3
+        keepalive_reads = 0
         for index in range(args.samples):
-            frame = connection.request(3 + index, "Snapshot")["Snapshot"]
+            frame = connection.request(next_request_id, "Snapshot")["Snapshot"]
+            next_request_id += 1
             sequences.append(frame["sequence"])
             process_counts.append(len(frame["processes"]))
             values["collection_total"].append(frame["collection_duration_ms"])
             for provider, duration in frame["provider_durations_ms"].items():
                 values[provider].append(duration)
-            time.sleep(args.interval_ms / 1000 + 0.01)
+            if index + 1 < args.samples:
+                deadline = time.monotonic() + args.interval_ms / 1000 + 0.01
+                # The helper closes idle IPC clients before a two-second wait
+                # finishes. Read intermediate snapshots without counting them.
+                while (remaining := deadline - time.monotonic()) > 1.0:
+                    time.sleep(0.8)
+                    connection.request(next_request_id, "Snapshot")
+                    next_request_id += 1
+                    keepalive_reads += 1
+                if remaining > 0:
+                    time.sleep(remaining)
     finally:
         connection.close()
 
@@ -107,6 +120,7 @@ def main():
         "distinct_sequences": len(set(sequences)),
         "process_count_min": min(process_counts),
         "process_count_max": max(process_counts),
+        "keepalive_reads": keepalive_reads,
         "latencies": {name: stats(items) for name, items in values.items()},
     }
     output = json.dumps(report, indent=2) + "\n"

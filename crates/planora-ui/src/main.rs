@@ -154,6 +154,8 @@ pub struct App {
     shared: Arc<Mutex<Shared>>,
     tx: SyncSender<Command>,
     poll_ms: Arc<AtomicU64>,
+    #[cfg(windows)]
+    saved_poll_ms: Arc<AtomicU64>,
     client_stop: Arc<AtomicBool>,
     client_worker: Option<std::thread::JoinHandle<()>>,
     #[cfg(windows)]
@@ -382,10 +384,26 @@ impl App {
         resources_state.pinned_interfaces =
             settings.pinned_network_interfaces.iter().cloned().collect();
         let poll_ms = Arc::new(AtomicU64::new(settings.poll_interval_ms));
+        #[cfg(windows)]
+        let saved_poll_ms = Arc::new(AtomicU64::new(settings.poll_interval_ms));
         let shared = Arc::new(Mutex::new(Shared::default()));
+
+        #[cfg(windows)]
+        let native_handle = {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            cc.window_handle()
+                .ok()
+                .and_then(|handle| match handle.as_raw() {
+                    RawWindowHandle::Win32(handle) => Some(handle.hwnd.get()),
+                    _ => None,
+                })
+                .unwrap_or(0)
+        };
 
         let worker_shared = shared.clone();
         let worker_poll = poll_ms.clone();
+        #[cfg(windows)]
+        let worker_saved_poll = saved_poll_ms.clone();
         let context = cc.egui_ctx.clone();
 
         let client_stop = Arc::new(AtomicBool::new(false));
@@ -399,6 +417,10 @@ impl App {
                     worker_shared,
                     rx,
                     worker_poll,
+                    #[cfg(windows)]
+                    worker_saved_poll,
+                    #[cfg(windows)]
+                    native_handle,
                     context,
                     worker_stop,
                     history_sender,
@@ -446,23 +468,14 @@ impl App {
                 .ok()
         };
 
-        #[cfg(windows)]
-        let native_handle = {
-            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-            cc.window_handle()
-                .ok()
-                .and_then(|handle| match handle.as_raw() {
-                    RawWindowHandle::Win32(handle) => Some(handle.hwnd.get()),
-                    _ => None,
-                })
-                .unwrap_or(0)
-        };
         let (placement, work_area) = window_placement::startup_placement();
         let initial_poll_interval = settings.poll_interval_ms;
         Self {
             shared,
             tx,
             poll_ms,
+            #[cfg(windows)]
+            saved_poll_ms,
             client_stop,
             client_worker: Some(client_worker),
             #[cfg(windows)]
@@ -947,6 +960,9 @@ impl App {
 
         // Adaptive sampling based on focus and minimization states
         let viewport_input = root.ctx().input(|input| input.viewport().clone());
+        #[cfg(windows)]
+        self.saved_poll_ms
+            .store(self.settings.poll_interval_ms, Ordering::Relaxed);
         let is_minimized = viewport_input.minimized == Some(true);
         let is_focused = viewport_input.focused.unwrap_or(true);
         let saved_poll = self.settings.poll_interval_ms;
@@ -966,6 +982,7 @@ impl App {
         };
         if target_poll != self.last_adaptive_poll_ms {
             self.last_adaptive_poll_ms = target_poll;
+            #[cfg(not(windows))]
             self.poll_ms.store(target_poll, Ordering::Relaxed);
         }
         if self.normal_window {

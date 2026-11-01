@@ -450,10 +450,60 @@ fn wait_or_stop(stop: &AtomicBool, duration: Duration) -> bool {
     true
 }
 
+#[cfg(windows)]
+fn adaptive_poll_target(
+    saved_ms: u64,
+    minimized_or_hidden: bool,
+    focused: bool,
+    unfocused_for: Duration,
+) -> u64 {
+    if minimized_or_hidden {
+        saved_ms.max(1000)
+    } else if focused || unfocused_for < Duration::from_secs(2) {
+        saved_ms
+    } else {
+        saved_ms.max(500)
+    }
+}
+
+#[cfg(windows)]
+struct WindowsAttention {
+    native_handle: isize,
+    focus_lost_at: Option<Instant>,
+}
+
+#[cfg(windows)]
+impl WindowsAttention {
+    fn target(&mut self, saved_ms: u64) -> u64 {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetForegroundWindow, IsIconic, IsWindowVisible,
+        };
+        if self.native_handle == 0 {
+            return saved_ms;
+        }
+        let hwnd = self.native_handle as windows_sys::Win32::Foundation::HWND;
+        let minimized_or_hidden = unsafe { IsIconic(hwnd) != 0 || IsWindowVisible(hwnd) == 0 };
+        let focused = !minimized_or_hidden && unsafe { GetForegroundWindow() == hwnd };
+        if minimized_or_hidden || focused {
+            self.focus_lost_at = None;
+        } else {
+            self.focus_lost_at.get_or_insert_with(Instant::now);
+        }
+        adaptive_poll_target(
+            saved_ms,
+            minimized_or_hidden,
+            focused,
+            self.focus_lost_at.map_or(Duration::ZERO, |t| t.elapsed()),
+        )
+    }
+}
+
 pub fn background_worker(
     state: Arc<Mutex<Shared>>,
     rx: Receiver<Command>,
     poll_ms: Arc<AtomicU64>,
+    #[cfg(windows)] saved_poll_ms: Arc<AtomicU64>,
+    #[cfg(windows)] native_handle: isize,
     context: eframe::egui::Context,
     stop: Arc<AtomicBool>,
     history_sender: Option<crate::history_worker::HistorySender>,
@@ -462,11 +512,21 @@ pub fn background_worker(
     let mut _current_session_id: Option<u64> = None;
     let mut reconnect_backoff = Duration::from_millis(200);
     let mut first_connection_failure: Option<Instant> = None;
+    #[cfg(windows)]
+    let mut attention = WindowsAttention {
+        native_handle,
+        focus_lost_at: None,
+    };
 
     loop {
         if stop.load(Ordering::Acquire) {
             return;
         }
+        #[cfg(windows)]
+        poll_ms.store(
+            attention.target(saved_poll_ms.load(Ordering::Relaxed)),
+            Ordering::Relaxed,
+        );
         let mut stream = match planora_helper::connect() {
             Ok(s) => s,
             Err(error) => {
@@ -700,6 +760,11 @@ pub fn background_worker(
             if stop.load(Ordering::Acquire) {
                 return;
             }
+            #[cfg(windows)]
+            poll_ms.store(
+                attention.target(saved_poll_ms.load(Ordering::Relaxed)),
+                Ordering::Relaxed,
+            );
             let desired_poll_ms = poll_ms.load(Ordering::Relaxed);
             if desired_poll_ms != configured_poll_ms {
                 next_request_id = next_request_id.wrapping_add(1);
@@ -928,6 +993,28 @@ pub fn background_worker(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn adaptive_poll_respects_focus_debounce_and_minimization() {
+        use super::adaptive_poll_target;
+        use std::time::Duration;
+
+        assert_eq!(adaptive_poll_target(100, false, true, Duration::ZERO), 100);
+        assert_eq!(
+            adaptive_poll_target(100, false, false, Duration::from_secs(1)),
+            100
+        );
+        assert_eq!(
+            adaptive_poll_target(100, false, false, Duration::from_secs(2)),
+            500
+        );
+        assert_eq!(adaptive_poll_target(100, true, false, Duration::ZERO), 1000);
+        assert_eq!(
+            adaptive_poll_target(2000, true, false, Duration::ZERO),
+            2000
+        );
+    }
+
     #[test]
     fn schema_six_settings_keep_selection_and_accept_new_navigation_fields() {
         let legacy: super::UserSettings = serde_json::from_str(
