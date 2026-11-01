@@ -1,4 +1,8 @@
-# Windows and Linux Optimization Release: 0.3.0-beta.46
+# Windows Adaptive Sampling Hotfix: 0.3.0-beta.47
+
+The installed beta.46 helper met its 100 ms collection target at **5.432 ms p95** over 100 live snapshots, but minimizing its UI did not slow the requested interval. Beta.47 moves the Windows attention decision into the existing client worker and is documented in [beta.47 evidence](release-evidence-windows-beta47.md). Windows formatting, workspace tests, strict Clippy, WiX validation, and clean-source package hash checks passed. Ubuntu 24.04 WSL is temporarily inaccessible because its VHDX is locked, so an exact-revision Linux build is open. Native beta.47 install and adaptive-rate acceptance are pending. Unsigned packages remain internal.
+
+# Historical Windows and Linux Optimization Release: 0.3.0-beta.46
 
 Beta.46 moves Windows process refresh into a bounded, owned worker after an installed beta.45 probe measured 62.72 ms collection p95 against the 50 ms target. [Beta.46 evidence](release-evidence-windows-linux-beta46.md) records clean-source Windows and Linux packages, passing Windows/WSL workspace checks, matching installed Windows UI/helper/broker hashes, and a beta.46 WSL installed-helper probe at 4.252 ms collection p95. The installed Windows helper measured **5.432 ms collection p95** over 100 live snapshots at 100 ms; the app opened with live telemetry. Minimized CPU comparison, one-hour growth, 10,000-process UI p95, and physical Ubuntu/Fedora acceptance remain open. Unsigned packages remain internal.
 
