@@ -16,6 +16,9 @@ pub const MAX_AUXILIARY_BYTES: usize = 8 * 1024 * 1024; // 8 MiB
 pub const MAX_TOTAL_MEMORY_BUDGET: usize = MAX_WORKING_SET_BYTES + MAX_AUXILIARY_BYTES; // 72 MiB
 pub const CACHE_PROBE_DEADLINE_SECS: u64 = 12;
 pub const CORE_MATRIX_DEADLINE_SECS: u64 = 20;
+const CACHE_WORKING_SET_KIB: [usize; 14] = [
+    8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536,
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChaseMode {
@@ -115,6 +118,18 @@ pub fn build_cycle(working_set: usize, mode: ChaseMode) -> Result<Cycle, String>
     })
 }
 
+fn cache_probe_working_sets(mode: ChaseMode, page_size: usize) -> Vec<usize> {
+    let minimum = match mode {
+        ChaseMode::Line => 8 * 1024,
+        ChaseMode::Page => page_size.saturating_mul(2),
+    };
+    CACHE_WORKING_SET_KIB
+        .into_iter()
+        .map(|kib| kib * 1024)
+        .filter(|bytes| *bytes >= minimum)
+        .collect()
+}
+
 pub fn run_cache_probe(mode: ChaseMode, cancel: &AtomicBool) -> Result<BenchmarkResult, String> {
     if cancel.load(Ordering::Relaxed) {
         return Err("cancelled".into());
@@ -126,15 +141,17 @@ pub fn run_cache_probe(mode: ChaseMode, cancel: &AtomicBool) -> Result<Benchmark
         })
         .min()
         .unwrap_or(0);
-    let sizes = [
-        8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536,
-    ];
+    let page_size = os_page_size();
+    let sizes = cache_probe_working_sets(mode, page_size);
+    if sizes.is_empty() {
+        return Err("OS page size exceeds cache probe working sets".into());
+    }
     let deadline = Instant::now() + Duration::from_secs(CACHE_PROBE_DEADLINE_SECS);
     let mut points = Vec::new();
     let mut was_cancelled = false;
     let mut hit_timeout = false;
 
-    for kib in sizes {
+    for working_set_bytes in sizes {
         if cancel.load(Ordering::Relaxed) {
             was_cancelled = true;
             break;
@@ -143,7 +160,7 @@ pub fn run_cache_probe(mode: ChaseMode, cancel: &AtomicBool) -> Result<Benchmark
             hit_timeout = true;
             break;
         }
-        let cycle = build_cycle(kib * 1024, mode)?;
+        let cycle = build_cycle(working_set_bytes, mode)?;
         let mut cursor = cycle.start;
         let iterations = cycle.active_count.clamp(4096, 65_536);
         for _ in 0..iterations {
@@ -181,7 +198,7 @@ pub fn run_cache_probe(mode: ChaseMode, cancel: &AtomicBool) -> Result<Benchmark
         }
         samples.sort_by(f64::total_cmp);
         points.push(BenchmarkPoint {
-            working_set_bytes: (kib * 1024) as u64,
+            working_set_bytes: working_set_bytes as u64,
             min_ns: samples[0],
             median_ns: samples[50],
             p95_ns: samples[94],
@@ -198,9 +215,8 @@ pub fn run_cache_probe(mode: ChaseMode, cancel: &AtomicBool) -> Result<Benchmark
     }
 
     let is_partial = was_cancelled || hit_timeout;
-    let page_size = os_page_size();
     let methodology = format!(
-        "128-byte aligned nodes; Sattolo single cycle (strictly j < i); page size {page_size} bytes; 100 monotonic batches per working set; min timer overhead {timer_overhead_ns} ns subtracted; reports min, median, p95, p99 nanoseconds per dependent load; memory capped at 64 MiB, timeout 12 s{status}",
+        "128-byte aligned nodes; Sattolo single cycle (strictly j < i); page size {page_size} bytes; page mode starts at two pages; 100 monotonic batches per working set; min timer overhead {timer_overhead_ns} ns subtracted; reports min, median, p95, p99 nanoseconds per dependent load; memory capped at 64 MiB, timeout 12 s{status}",
         status = if is_partial { " (PARTIAL RUN)" } else { "" }
     );
 
@@ -405,6 +421,10 @@ mod tests {
     fn line_and_page_cycles_visit_every_node_once() {
         for mode in [ChaseMode::Line, ChaseMode::Page] {
             for size in [8192, 65536, 1_048_576] {
+                if mode == ChaseMode::Page && size < os_page_size().saturating_mul(2) {
+                    assert!(build_cycle(size, mode).is_err());
+                    continue;
+                }
                 let cycle = build_cycle(size, mode).unwrap();
                 let mut seen = std::collections::HashSet::new();
                 let mut i = cycle.start;
@@ -416,6 +436,14 @@ mod tests {
                 assert_eq!(seen.len(), cycle.active_count);
             }
         }
+    }
+
+    #[test]
+    fn page_probe_skips_working_sets_smaller_than_two_os_pages() {
+        assert_eq!(cache_probe_working_sets(ChaseMode::Line, 16384)[0], 8192);
+        assert_eq!(cache_probe_working_sets(ChaseMode::Page, 4096)[0], 8192);
+        assert_eq!(cache_probe_working_sets(ChaseMode::Page, 16384)[0], 32768);
+        assert_eq!(cache_probe_working_sets(ChaseMode::Page, 65536)[0], 131072);
     }
 
     #[test]
