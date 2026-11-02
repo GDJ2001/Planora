@@ -17,6 +17,7 @@ rpmbuild -bb "$spec" \
   --define "planora_version $rpm_version" \
   --define "planora_release $rpm_release" \
   --define "planora_release_dir $release_dir"
-package="$root/target/rpmbuild/RPMS/x86_64/planora-${rpm_version}-${rpm_release}.x86_64.rpm"
+rpm_dist="$(rpm --eval '%{?dist}')"
+package="$root/target/rpmbuild/RPMS/x86_64/planora-${rpm_version}-${rpm_release}${rpm_dist}.x86_64.rpm"
 test -f "$package"
 cp -v "$package" "$root/dist/"

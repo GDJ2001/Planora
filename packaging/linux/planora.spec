@@ -86,3 +86,7 @@ fi
 %license /usr/share/licenses/planora/NOTICE
 %doc /usr/share/doc/planora/source/planora-disk-profile.bpf.c
 %doc /usr/share/doc/planora/source/planora-disk-profile.c
+
+%changelog
+* Tue Nov 03 2026 Planora Maintainers <maintainers@invalid.example> - 0.3.0-0.beta.47
+- Internal beta package for native Fedora testing.
