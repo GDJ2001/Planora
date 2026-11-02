@@ -1,0 +1,154 @@
+{
+  "format_version": 1,
+  "application_version": "0.3.0-beta.47",
+  "source_commit": "76baabb",
+  "target": "x86_64-unknown-linux-gnu",
+  "timestamp_ms": 1793626406863,
+  "process_resident_memory_bytes": 265560064,
+  "process_virtual_memory_bytes": 3828805632,
+  "allocations": {
+    "allocations": 35799532,
+    "allocated_bytes": 21892297752,
+    "freed_bytes": 21882656976,
+    "live_bytes": 9640776,
+    "peak_live_bytes": 23688904
+  },
+  "first_paint_ms": 1.944382,
+  "ui_frame": {
+    "count": 27338,
+    "min_ms": 0.40954298,
+    "max_ms": 1.575752,
+    "mean_ms": 0.60815686,
+    "p50_ms": 0.50688905,
+    "p95_ms": 1.091482,
+    "p99_ms": 1.5540481
+  },
+  "helper_collection_total": {
+    "count": 2850,
+    "min_ms": 3.599689,
+    "max_ms": 19.759958,
+    "mean_ms": 7.812553,
+    "p50_ms": 7.091475,
+    "p95_ms": 13.67807,
+    "p99_ms": 17.458256
+  },
+  "helper_collection_by_provider": {
+    "cpu": {
+      "count": 2850,
+      "min_ms": 0.009575999,
+      "max_ms": 0.074146,
+      "mean_ms": 0.019178398,
+      "p50_ms": 0.014735,
+      "p95_ms": 0.04251,
+      "p99_ms": 0.070245
+    },
+    "disks": {
+      "count": 2850,
+      "min_ms": 0.095703,
+      "max_ms": 4.607046,
+      "mean_ms": 0.24679898,
+      "p50_ms": 0.16326499,
+      "p95_ms": 0.51871,
+      "p99_ms": 1.1298089
+    },
+    "gpu": {
+      "count": 2850,
+      "min_ms": 0.049382,
+      "max_ms": 0.415402,
+      "mean_ms": 0.092853084,
+      "p50_ms": 0.082448,
+      "p95_ms": 0.13617599,
+      "p99_ms": 0.371276
+    },
+    "memory": {
+      "count": 2850,
+      "min_ms": 0.019095,
+      "max_ms": 0.13643,
+      "mean_ms": 0.038660843,
+      "p50_ms": 0.032020997,
+      "p95_ms": 0.081748,
+      "p99_ms": 0.119645
+    },
+    "network": {
+      "count": 2850,
+      "min_ms": 0.030484,
+      "max_ms": 0.218901,
+      "mean_ms": 0.061106335,
+      "p50_ms": 0.051221,
+      "p95_ms": 0.13428201,
+      "p99_ms": 0.15941401
+    },
+    "processes": {
+      "count": 2850,
+      "min_ms": 0.910194,
+      "max_ms": 12.307381,
+      "mean_ms": 2.315405,
+      "p50_ms": 1.725119,
+      "p95_ms": 4.950677,
+      "p99_ms": 9.497421
+    },
+    "refresh": {
+      "count": 2850,
+      "min_ms": 2.277586,
+      "max_ms": 16.886448,
+      "mean_ms": 4.9944916,
+      "p50_ms": 4.351123,
+      "p95_ms": 9.260789,
+      "p99_ms": 11.342625
+    },
+    "sensors": {
+      "count": 2850,
+      "min_ms": 0.000151,
+      "max_ms": 0.011954,
+      "mean_ms": 0.0015005937,
+      "p50_ms": 0.000459,
+      "p95_ms": 0.0037520002,
+      "p99_ms": 0.008203
+    }
+  },
+  "ipc_serialization": {
+    "count": 5798,
+    "min_ms": 0.001912,
+    "max_ms": 3.9548101,
+    "mean_ms": 0.4396473,
+    "p50_ms": 0.465603,
+    "p95_ms": 1.059209,
+    "p99_ms": 2.509104
+  },
+  "history_publication": {
+    "count": 620,
+    "min_ms": 0.0040760003,
+    "max_ms": 0.166889,
+    "mean_ms": 0.0148541955,
+    "p50_ms": 0.010424,
+    "p95_ms": 0.042052,
+    "p99_ms": 0.073176004
+  },
+  "chart_preparation": {
+    "count": 651,
+    "min_ms": 0.019981,
+    "max_ms": 0.298879,
+    "mean_ms": 0.03550325,
+    "p50_ms": 0.027772,
+    "p95_ms": 0.064232,
+    "p99_ms": 0.105629
+  },
+  "process_filtering_sorting": {
+    "count": 2,
+    "min_ms": 0.027845,
+    "max_ms": 0.11445,
+    "mean_ms": 0.0711475,
+    "p50_ms": 0.11445,
+    "p95_ms": 0.11445,
+    "p99_ms": 0.11445
+  },
+  "recording_write": {
+    "count": 0,
+    "min_ms": 0.0,
+    "max_ms": 0.0,
+    "mean_ms": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "p99_ms": 0.0
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "protocol_version": 6,
+  "authorized": true,
+  "platform": "linux",
+  "requested_interval_ms": 100,
+  "effective_interval_ms": 100,
+  "samples": 100,
+  "distinct_sequences": 100,
+  "process_count_min": 100,
+  "process_count_max": 106,
+  "keepalive_reads": 0,
+  "latencies": {
+    "collection_total": {
+      "count": 100,
+      "p50_ms": 2.033,
+      "p95_ms": 14.302,
+      "max_ms": 35.85
+    },
+    "cpu": {
+      "count": 100,
+      "p50_ms": 0.016,
+      "p95_ms": 0.032,
+      "max_ms": 0.044
+    },
+    "disks": {
+      "count": 100,
+      "p50_ms": 0.201,
+      "p95_ms": 0.62,
+      "max_ms": 1.213
+    },
+    "gpu": {
+      "count": 100,
+      "p50_ms": 0.094,
+      "p95_ms": 0.169,
+      "max_ms": 1.363
+    },
+    "memory": {
+      "count": 100,
+      "p50_ms": 0.038,
+      "p95_ms": 0.067,
+      "max_ms": 0.327
+    },
+    "network": {
+      "count": 100,
+      "p50_ms": 0.057,
+      "p95_ms": 0.116,
+      "max_ms": 0.762
+    },
+    "processes": {
+      "count": 100,
+      "p50_ms": 0.498,
+      "p95_ms": 3.854,
+      "max_ms": 13.962
+    },
+    "refresh": {
+      "count": 100,
+      "p50_ms": 0.63,
+      "p95_ms": 10.113,
+      "max_ms": 27.68
+    },
+    "sensors": {
+      "count": 100,
+      "p50_ms": 0.0,
+      "p95_ms": 0.004,
+      "max_ms": 0.006
+    }
+  }
+}

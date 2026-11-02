@@ -5,3 +5,5 @@ packaging/macos/scripts/* text eol=lf
 packaging/linux/authorize-user text eol=lf
 packaging/linux/revoke-user text eol=lf
 packaging/linux/*.service text eol=lf
+# Keep collected evidence byte-for-byte so its SHA256SUMS works on every checkout.
+docs/evidence/beta47-stability/* -text whitespace=cr-at-eol
