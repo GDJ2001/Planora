@@ -502,6 +502,11 @@ mod local_data_tests {
             std::process::id(),
             planora_telemetry::unix_ms()
         ));
+        std::fs::create_dir_all(&root).unwrap();
+        // macOS exposes its temporary directory through /var -> /private/var.
+        // Use the resolved fixture root so the symlink guard still tests only
+        // paths controlled by this test, without relaxing production checks.
+        let root = std::fs::canonicalize(root).unwrap();
         let config = root.join("config").join("Planora");
         let recordings = root.join("Documents").join("Planora").join("Recordings");
         let exports = root.join("Documents").join("Planora").join("Exports");
