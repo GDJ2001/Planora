@@ -959,11 +959,15 @@ mod tests {
     }
 
     #[test]
-    fn dxgi_adapter_enumeration_finds_named_hardware_adapters() {
+    fn dxgi_adapter_enumeration_returns_named_unique_adapters() {
         let adapters = query_dxgi_adapters();
+        let mut luids = std::collections::HashSet::new();
         for adapter in adapters {
-            assert!(!adapter.name.is_empty());
-            assert_ne!(adapter.name, "Microsoft Basic Render Driver");
+            assert!(!adapter.name.trim().is_empty());
+            assert!(luids.insert(adapter.luid));
+            // The primary fallback adapter can have the same name as WARP
+            // without DXGI_ADAPTER_FLAG_SOFTWARE. Its name alone is not a
+            // reliable software-adapter test.
         }
     }
 

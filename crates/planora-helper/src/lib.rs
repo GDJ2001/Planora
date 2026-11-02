@@ -819,7 +819,7 @@ pub fn peer_authorized(stream: &Stream) -> bool {
     {
         use std::os::unix::fs::MetadataExt;
         let path = "/Library/Application Support/Planora/authorized-uid";
-        let Ok(metadata) = std::fs::metadata(path) else {
+        let Ok(metadata) = std::fs::symlink_metadata(path) else {
             return false;
         };
         // Protect against symlink attacks and unsafe permissions
@@ -830,7 +830,7 @@ pub fn peer_authorized(stream: &Stream) -> bool {
         let approved_uid = std::fs::read_to_string(path)
             .ok()
             .and_then(|text| text.trim().parse::<u32>().ok());
-        return peer_uid.is_some() && peer_uid == approved_uid;
+        peer_uid.is_some() && peer_uid == approved_uid
     }
     #[cfg(target_os = "linux")]
     {
