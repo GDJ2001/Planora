@@ -221,6 +221,7 @@ pub struct App {
     last_adaptive_poll_ms: u64,
     last_recorded_sequence: u64,
     export_perf_report_path: Option<std::path::PathBuf>,
+    #[cfg(windows)]
     last_merged_sensor_frame_seq: u64,
     #[cfg(windows)]
     last_merged_vendor_sensors: Option<Arc<Vec<planora_core::SensorReading>>>,
@@ -541,6 +542,7 @@ impl App {
             last_adaptive_poll_ms: initial_poll_interval,
             last_recorded_sequence: 0,
             export_perf_report_path: None,
+            #[cfg(windows)]
             last_merged_sensor_frame_seq: 0,
             #[cfg(windows)]
             last_merged_vendor_sensors: None,

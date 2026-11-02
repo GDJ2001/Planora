@@ -344,6 +344,7 @@ pub fn create_test_app(theme: Theme, page: Page) -> App {
         last_adaptive_poll_ms: 100,
         last_recorded_sequence: 0,
         export_perf_report_path: None,
+        #[cfg(windows)]
         last_merged_sensor_frame_seq: 0,
         #[cfg(windows)]
         last_merged_vendor_sensors: None,

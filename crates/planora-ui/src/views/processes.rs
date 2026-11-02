@@ -1306,8 +1306,9 @@ mod tests {
         assert_eq!(state.cached_indices.len(), 10_000);
 
         // 2. Measure steady-state UI frame duration with cached index mapping
-        let start = Instant::now();
-        for _ in 0..10 {
+        let mut frame_durations_ms = Vec::with_capacity(100);
+        for _ in 0..100 {
+            let frame_started = Instant::now();
             let mut output = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
@@ -1337,12 +1338,14 @@ mod tests {
                 },
             );
             output.textures_delta.clear();
+            frame_durations_ms.push(frame_started.elapsed().as_secs_f32() * 1000.0);
         }
-        let total_ms = start.elapsed().as_secs_f32() * 1000.0;
-        let avg_frame_ms = total_ms / 10.0;
+        frame_durations_ms.sort_by(f32::total_cmp);
+        let p95_frame_ms = frame_durations_ms[94];
+        println!("10,000-process steady UI frame p95: {p95_frame_ms:.2} ms");
         assert!(
-            avg_frame_ms < 33.3,
-            "10k processes steady frame took {avg_frame_ms:.2} ms, expected < 33.3 ms"
+            p95_frame_ms < 33.3,
+            "10k processes steady p95 frame took {p95_frame_ms:.2} ms, expected < 33.3 ms"
         );
 
         // Reordering the provider's process vector must not attach a cached
