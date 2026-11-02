@@ -168,7 +168,7 @@ pub struct App {
     applied_appearance: Option<appearance::SystemAppearance>,
     settings: UserSettings,
     settings_error: Option<String>,
-    recorder: Recorder,
+    recorder: Arc<Mutex<Recorder>>,
     exporter: ExportManager,
     replay: Replay,
     replay_anchor: Option<(u64, Instant)>,
@@ -469,6 +469,9 @@ impl App {
                 .ok()
         };
 
+        let recorder = Arc::new(Mutex::new(Recorder::default()));
+        shared.lock().unwrap().recorder = Some(Arc::clone(&recorder));
+
         let (placement, work_area) = window_placement::startup_placement();
         let initial_poll_interval = settings.poll_interval_ms;
         Self {
@@ -489,7 +492,7 @@ impl App {
             applied_appearance: None,
             settings,
             settings_error: None,
-            recorder: Recorder::default(),
+            recorder,
             exporter: ExportManager::default(),
             replay: Replay::default(),
             replay_anchor: None,
@@ -633,16 +636,16 @@ impl App {
                 .color(p.secondary),
         );
         ui.add_space(14.0);
-        let status = self.recorder.status();
+        let status = self.recorder.lock().unwrap().status();
         egui::Frame::group(ui.style()).fill(p.surface).show(ui, |ui| {
             ui.strong("Live recording");
             ui.label("System measurements are saved once per second. A selected process is included only when enabled below.");
             ui.checkbox(&mut self.record_selected_process, "Include selected process name and measurements");
             if status.active {
                 ui.label(format!("{} · {} bytes written · {} dropped samples", status.message, status.bytes_written, status.dropped));
-                if self.recorder.is_active() && ui.button("Stop Recording").clicked() { self.recorder.stop(); }
+                if self.recorder.lock().unwrap().is_active() && ui.button("Stop Recording").clicked() { self.recorder.lock().unwrap().stop(); }
             } else if ui.add_enabled(*app_state == AppState::Live, egui::Button::new("Start Recording")).clicked() {
-                match self.recorder.start(topology.cloned(), self.record_selected_process, state::BUILD_INFO.version, state::BUILD_INFO.git_commit) {
+                match self.recorder.lock().unwrap().start(topology.cloned(), self.record_selected_process, state::BUILD_INFO.version, state::BUILD_INFO.git_commit) {
                     Ok(path) => { self.replay_input = path.display().to_string(); self.recording_error = None; },
                     Err(e) => self.recording_error = Some(format!("Could not start recording: {e}")),
                 }
@@ -783,7 +786,7 @@ impl App {
         self.processes_state.stop_worker();
         components::plot::stop_preparation_worker();
         self.appearance.request_stop();
-        self.recorder.request_stop();
+        self.recorder.lock().unwrap().request_stop();
         self.exporter.request_cancel();
         self.replay.stop();
         #[cfg(any(windows, target_os = "linux"))]
@@ -818,7 +821,7 @@ impl App {
         let sensor_done = self.sensor_worker.as_ref().is_none_or(|w| w.is_finished());
         #[cfg(not(windows))]
         let sensor_done = true;
-        let recording_done = self.recorder.is_finished();
+        let recording_done = self.recorder.lock().unwrap().is_finished();
         let export_done = self.exporter.is_finished();
 
         let all_done = client_done
@@ -841,7 +844,7 @@ impl App {
             if let Some(worker) = self.sensor_worker.take() {
                 let _ = worker.join();
             }
-            self.recorder.join();
+            self.recorder.lock().unwrap().join();
             self.exporter.cancel();
             if let Some(path) = self.export_perf_report_path.take() {
                 let report = self.perf_counters.build_report();
@@ -1161,16 +1164,7 @@ impl App {
                 Arc::new(helper_sensors.to_vec())
             }
         };
-        if app_state == AppState::Live
-            && let Some(frame) = &frame_opt
-        {
-            #[cfg(windows)]
-            let recording_sensors = live_sensors.as_ref();
-            #[cfg(not(windows))]
-            let recording_sensors = &frame.sensors;
-            self.recorder
-                .record(frame, self.selected.as_ref(), recording_sensors);
-        }
+
         if self.normal_window && !self.startup_connected_logged {
             match &app_state {
                 AppState::Live => {
@@ -1780,6 +1774,7 @@ impl App {
                             ui,
                             topo_opt.as_deref(),
                             render_frame.as_deref(),
+                            shared_copy.hardware_inventory.as_deref(),
                             &mut self.hardware_state,
                             &app_state,
                             &mut self.display_pause,
@@ -1897,11 +1892,54 @@ impl App {
             };
         }
 
+        if self.settings_state.rescan_hardware_requested
+            || self.hardware_state.rescan_hardware_requested
+        {
+            self.settings_state.rescan_hardware_requested = false;
+            self.hardware_state.rescan_hardware_requested = false;
+            let _ = self.tx.send(Command::RescanHardware);
+            self.settings_state.status_message =
+                Some((false, "Hardware rescan requested...".into()));
+            self.hardware_state.status_message =
+                Some((false, "Hardware rescan requested...".into()));
+        }
+
+        if self.settings_state.export_compat_report_requested
+            || self.hardware_state.export_compat_report_requested
+        {
+            self.settings_state.export_compat_report_requested = false;
+            self.hardware_state.export_compat_report_requested = false;
+            let _ = self.tx.send(Command::ExportCompatibilityReport);
+            self.settings_state.status_message =
+                Some((false, "Exporting compatibility report...".into()));
+            self.hardware_state.status_message =
+                Some((false, "Exporting compatibility report...".into()));
+        }
+
+        let pending_report = self
+            .shared
+            .lock()
+            .unwrap()
+            .pending_compatibility_report
+            .take();
+        if let Some(report) = pending_report {
+            let res = self.exporter.compatibility_report(report);
+            let msg = match res {
+                Ok(()) => (
+                    false,
+                    "Compatibility report exported to Exports folder.".into(),
+                ),
+                Err(e) => (true, format!("Failed to export compatibility report: {e}")),
+            };
+            self.settings_state.status_message = Some(msg.clone());
+            self.hardware_state.status_message = Some(msg);
+        }
+
         let frame_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
         self.perf_counters.ui_frame_ring.record(frame_ms);
         CHART_PREP_RING.with(|r| self.perf_counters.chart_prep_ring = r.borrow().clone());
         PROCESS_SORT_RING.with(|r| self.perf_counters.process_sort_ring = r.borrow().clone());
-        let rec_status = self.recorder.status();
+        let rec_status = self.recorder.lock().unwrap().status();
         if rec_status.active && rec_status.bytes_written != self.last_recorded_bytes_written {
             self.last_recorded_bytes_written = rec_status.bytes_written;
             if rec_status.last_write_duration_ms > 0.0 {
@@ -1957,7 +1995,7 @@ impl Drop for App {
         }
         if !self.shutdown_completed {
             self.client_stop.store(true, Ordering::Release);
-            self.recorder.stop();
+            self.recorder.lock().unwrap().stop();
             self.replay.stop();
             self.exporter.cancel();
             if let Some(worker) = self.client_worker.take() {

@@ -6,7 +6,7 @@ pub use perf::{LatencyRing, LatencyStats, PerformanceReport};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 pub const SUPPORTED_SAMPLE_INTERVALS_MS: [u64; 5] = [100, 250, 500, 1_000, 2_000];
 pub const MAX_REQUEST_SIZE: usize = 64 * 1024;
 pub const MAX_RESPONSE_SIZE: usize = 32 * 1024 * 1024;
@@ -25,6 +25,8 @@ pub const UNIT_RPM: &str = "RPM";
 pub const UNIT_JOULES: &str = "J";
 pub const UNIT_MILLISECONDS: &str = "ms";
 pub const UNIT_QUEUE_DEPTH: &str = "requests";
+pub const UNIT_GIGABYTES: &str = "GB";
+pub const UNIT_HOURS: &str = "hours";
 
 pub fn canonicalize_unit(unit: &str) -> &str {
     match unit {
@@ -40,6 +42,8 @@ pub fn canonicalize_unit(unit: &str) -> &str {
         "RPM" | "rpm" => UNIT_RPM,
         "J" | "joules" => UNIT_JOULES,
         "ms" => UNIT_MILLISECONDS,
+        "GB" | "gigabytes" | "Gigabytes" => UNIT_GIGABYTES,
+        "h" | "hr" | "hrs" | "hours" | "Hours" => UNIT_HOURS,
         _ => unit,
     }
 }
@@ -239,6 +243,197 @@ pub struct Topology {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct CpuInventory {
+    pub vendor: String,
+    pub brand: String,
+    pub architecture: String,
+    pub family: u32,
+    pub model: u32,
+    pub stepping: u32,
+    #[serde(default)]
+    pub microcode: Option<String>,
+    pub physical_cores: u16,
+    pub logical_cpus: u16,
+    pub packages: u16,
+    #[serde(default)]
+    pub base_frequency_mhz: Option<u32>,
+    #[serde(default)]
+    pub max_frequency_mhz: Option<u32>,
+    #[serde(default)]
+    pub features: Vec<String>,
+}
+
+impl Default for CpuInventory {
+    fn default() -> Self {
+        Self {
+            vendor: String::new(),
+            brand: String::new(),
+            architecture: std::env::consts::ARCH.to_string(),
+            family: 0,
+            model: 0,
+            stepping: 0,
+            microcode: None,
+            physical_cores: 0,
+            logical_cpus: 0,
+            packages: 1,
+            base_frequency_mhz: None,
+            max_frequency_mhz: None,
+            features: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct GpuInventoryDevice {
+    pub device_id: String,
+    pub name: String,
+    pub vendor_name: String,
+    pub pci_vendor_id: u16,
+    pub pci_device_id: u16,
+    pub pci_subsystem_id: Option<u32>,
+    pub pci_bus_location: Option<String>,
+    pub adapter_luid: Option<u64>,
+    pub dedicated_vram_bytes: u64,
+    pub is_discrete: bool,
+    #[serde(default)]
+    pub driver_version: Option<String>,
+    #[serde(default)]
+    pub driver_date: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct MotherboardInventory {
+    pub manufacturer: String,
+    pub product_name: String,
+    pub version: String,
+    pub bios_vendor: String,
+    pub bios_version: String,
+    pub bios_release_date: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct MemoryModuleDescriptor {
+    pub slot_locator: String,
+    pub bank_locator: String,
+    pub capacity_bytes: u64,
+    pub speed_mts: u32,
+    pub manufacturer: String,
+    pub part_number: String,
+    pub memory_type: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct MemoryInventory {
+    pub total_physical_bytes: u64,
+    pub modules: Vec<MemoryModuleDescriptor>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct StorageInventoryDevice {
+    pub device_id: String,
+    pub model: String,
+    pub serial_number_redacted: bool,
+    pub bus_type: String,
+    pub media_type: String,
+    pub capacity_bytes: u64,
+    #[serde(default)]
+    pub firmware_revision: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct NetworkInventoryDevice {
+    pub device_id: String,
+    pub name: String,
+    pub description: String,
+    pub is_hardware: bool,
+    pub link_speed_bps: Option<u64>,
+    pub mac_address_redacted: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct CoolingInventoryDevice {
+    pub device_id: String,
+    pub name: String,
+    pub kind: String,
+    pub channel_count: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct HardwareInventory {
+    pub generation: u64,
+    pub timestamp_ms: u64,
+    pub cpu: CpuInventory,
+    pub gpus: Vec<GpuInventoryDevice>,
+    pub motherboard: MotherboardInventory,
+    pub memory: MemoryInventory,
+    pub storage: Vec<StorageInventoryDevice>,
+    pub network: Vec<NetworkInventoryDevice>,
+    pub cooling: Vec<CoolingInventoryDevice>,
+}
+
+impl Default for HardwareInventory {
+    fn default() -> Self {
+        Self {
+            generation: 1,
+            timestamp_ms: 0,
+            cpu: CpuInventory::default(),
+            gpus: Vec::new(),
+            motherboard: MotherboardInventory::default(),
+            memory: MemoryInventory::default(),
+            storage: Vec::new(),
+            network: Vec::new(),
+            cooling: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct DeviceDescriptor {
+    pub device_id: String,
+    pub display_name: String,
+    pub vendor: String,
+    pub model: String,
+    pub category: HardwareCategory,
+    pub pci_id: Option<String>,
+    pub driver: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SensorDescriptor {
+    pub sensor_id: String,
+    pub device_id: String,
+    pub display_name: String,
+    pub sensor_type: SensorType,
+    pub scope: String,
+    pub default_provider: String,
+    pub unit: String,
+    pub is_live: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ProviderStatus {
+    pub name: String,
+    pub state: CapabilityState,
+    pub driver_status: String,
+    pub sensor_count: u32,
+    pub last_error: Option<String>,
+    pub sample_duration_ms: f32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct CompatibilityReport {
+    pub report_version: u32,
+    pub generated_at_ms: u64,
+    pub application_version: String,
+    pub git_commit: String,
+    pub target: String,
+    pub inventory: HardwareInventory,
+    pub providers: Vec<ProviderStatus>,
+    pub sensors: Vec<SensorDescriptor>,
+    pub collection_latencies: std::collections::BTreeMap<String, f32>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ProcessRecord {
     pub identity: ProcessIdentity,
     pub name: String,
@@ -327,6 +522,11 @@ pub enum SensorType {
     CurrentAmperes,
     LoadPercent,
     EnergyJoules,
+    StorageHealthPercent,
+    DataGigabytes,
+    ThroughputBytesPerSec,
+    TimeHours,
+    GenericNumeric,
 }
 
 impl std::fmt::Display for SensorType {
@@ -345,6 +545,11 @@ impl std::fmt::Display for SensorType {
             Self::CurrentAmperes => write!(f, "Current"),
             Self::LoadPercent => write!(f, "Load"),
             Self::EnergyJoules => write!(f, "Energy"),
+            Self::StorageHealthPercent => write!(f, "Storage Health"),
+            Self::DataGigabytes => write!(f, "Data Amount"),
+            Self::ThroughputBytesPerSec => write!(f, "Throughput"),
+            Self::TimeHours => write!(f, "Operating Time"),
+            Self::GenericNumeric => write!(f, "Metric"),
         }
     }
 }
@@ -373,6 +578,11 @@ impl SensorType {
             Self::CurrentAmperes => (0.0..=1_500.0).contains(&val),
             Self::LoadPercent => (0.0..=100.0).contains(&val),
             Self::EnergyJoules => val >= 0.0,
+            Self::StorageHealthPercent => (0.0..=100.0).contains(&val),
+            Self::DataGigabytes => (0.0..=10_000_000.0).contains(&val),
+            Self::ThroughputBytesPerSec => (0.0..=100_000_000_000.0).contains(&val),
+            Self::TimeHours => (0.0..=1_000_000.0).contains(&val),
+            Self::GenericNumeric => val.is_finite(),
         }
     }
 
@@ -391,13 +601,20 @@ impl SensorType {
             Self::CurrentAmperes => UNIT_AMPERES,
             Self::LoadPercent => UNIT_PERCENT,
             Self::EnergyJoules => UNIT_JOULES,
+            Self::StorageHealthPercent => UNIT_PERCENT,
+            Self::DataGigabytes => UNIT_GIGABYTES,
+            Self::ThroughputBytesPerSec => UNIT_BYTES_PER_SEC,
+            Self::TimeHours => UNIT_HOURS,
+            Self::GenericNumeric => "",
         }
     }
 
     pub fn validate_reading(&self, reading: &SensorReading) -> Result<(), FrameValidationError> {
         let name = "sensor.value";
         validate_metric(&reading.value, name)?;
-        if canonicalize_unit(&reading.value.unit) != canonicalize_unit(self.expected_unit()) {
+        if *self != Self::GenericNumeric
+            && canonicalize_unit(&reading.value.unit) != canonicalize_unit(self.expected_unit())
+        {
             return Err(FrameValidationError::UnitMismatch {
                 field: name,
                 expected: self.expected_unit(),
@@ -429,8 +646,12 @@ impl SensorType {
                     Self::ClockMhz => 15000.0,
                     Self::VoltageVolts => 30.0,
                     Self::CurrentAmperes => 1500.0,
-                    Self::LoadPercent => 100.0,
-                    Self::EnergyJoules => f32::MAX,
+
+                    Self::LoadPercent | Self::StorageHealthPercent => 100.0,
+                    Self::DataGigabytes => 10_000_000.0,
+                    Self::ThroughputBytesPerSec => 100_000_000_000.0,
+                    Self::TimeHours => 1_000_000.0,
+                    Self::EnergyJoules | Self::GenericNumeric => f32::MAX,
                 },
             });
         }
@@ -1311,6 +1532,9 @@ pub enum Command {
         logical_cpus: Vec<u16>,
     },
     DiagnosticLogs,
+    HardwareInventory,
+    RescanHardware,
+    ExportCompatibilityReport,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -1340,6 +1564,8 @@ pub enum Response {
         logical_cpus: Vec<u16>,
     },
     DiagnosticLogs(Vec<DiagnosticEntry>),
+    HardwareInventory(HardwareInventory),
+    CompatibilityReport(CompatibilityReport),
     Error {
         code: ErrorCode,
         message: String,
@@ -1892,5 +2118,186 @@ mod tests {
         let restored: GpuAdapterSample = serde_json::from_value(legacy_adapter).unwrap();
         assert!(restored.aggregate_busy_percent.is_none());
         assert_eq!(restored.activity_percent().1, "Busiest engine");
+    }
+
+    #[test]
+    fn hardware_inventory_and_compatibility_report_round_trip() {
+        let inv = HardwareInventory {
+            generation: 1,
+            timestamp_ms: 123456789,
+            cpu: CpuInventory {
+                vendor: "GenuineIntel".into(),
+                brand: "Intel Core i7-4790".into(),
+                architecture: "x86_64".into(),
+                family: 6,
+                model: 60,
+                stepping: 3,
+                microcode: Some("0x28".into()),
+                physical_cores: 4,
+                logical_cpus: 8,
+                packages: 1,
+                base_frequency_mhz: Some(3600),
+                max_frequency_mhz: Some(4000),
+                features: vec!["AVX2".into(), "FMA".into()],
+            },
+            gpus: vec![GpuInventoryDevice {
+                device_id: "gpu:pci:1002:6658:0000:01:00.0".into(),
+                name: "AMD Radeon R7 260X Series".into(),
+                vendor_name: "AMD".into(),
+                pci_vendor_id: 0x1002,
+                pci_device_id: 0x6658,
+                pci_subsystem_id: Some(0x29351462),
+                pci_bus_location: Some("PCI bus 1, device 0, function 0".into()),
+                adapter_luid: Some(0x1234),
+                dedicated_vram_bytes: 2 * 1024 * 1024 * 1024,
+                is_discrete: true,
+                driver_version: Some("27.20.15030.4000".into()),
+                driver_date: Some("2021-04-28".into()),
+            }],
+            motherboard: MotherboardInventory {
+                manufacturer: "MACHINIST".into(),
+                product_name: "X99".into(),
+                version: "1.0".into(),
+                bios_vendor: "American Megatrends Inc.".into(),
+                bios_version: "5.11".into(),
+                bios_release_date: "2020-05-15".into(),
+            },
+            memory: MemoryInventory {
+                total_physical_bytes: 24 * 1024 * 1024 * 1024,
+                modules: vec![MemoryModuleDescriptor {
+                    slot_locator: "DIMM_1".into(),
+                    bank_locator: "BANK 0".into(),
+                    capacity_bytes: 8 * 1024 * 1024 * 1024,
+                    speed_mts: 1600,
+                    manufacturer: "Kingston".into(),
+                    part_number: "KHX1600C10D3/8G".into(),
+                    memory_type: "DDR3".into(),
+                }],
+            },
+            storage: vec![StorageInventoryDevice {
+                device_id: "disk:0".into(),
+                model: "KINGSTON SA400S37240G".into(),
+                serial_number_redacted: true,
+                bus_type: "SATA".into(),
+                media_type: "SSD".into(),
+                capacity_bytes: 240 * 1000 * 1000 * 1000,
+                firmware_revision: Some("SBFK71F1".into()),
+            }],
+            network: vec![NetworkInventoryDevice {
+                device_id: "net:0".into(),
+                name: "Ethernet".into(),
+                description: "Realtek PCIe GbE Family Controller".into(),
+                is_hardware: true,
+                link_speed_bps: Some(1_000_000_000),
+                mac_address_redacted: true,
+            }],
+            cooling: vec![CoolingInventoryDevice {
+                device_id: "superio:0".into(),
+                name: "Nuvoton NCT6779D".into(),
+                kind: "SuperIO".into(),
+                channel_count: 5,
+            }],
+        };
+
+        let json = serde_json::to_string(&inv).unwrap();
+        let decoded: HardwareInventory = serde_json::from_str(&json).unwrap();
+        assert_eq!(inv, decoded);
+
+        let report = CompatibilityReport {
+            report_version: 1,
+            generated_at_ms: 123456789,
+            application_version: "0.3.0-beta.47".into(),
+            git_commit: "abcd123".into(),
+            target: "x86_64-pc-windows-msvc".into(),
+            inventory: inv.clone(),
+            providers: vec![ProviderStatus {
+                name: "LibreHardwareMonitor".into(),
+                state: CapabilityState::Available,
+                driver_status: "Active".into(),
+                sensor_count: 42,
+                last_error: None,
+                sample_duration_ms: 12.5,
+            }],
+            sensors: vec![SensorDescriptor {
+                sensor_id: "gpu:pci:1002:6658:0000:01:00.0/LibreHardwareMonitor/temperature/0"
+                    .into(),
+                device_id: "gpu:pci:1002:6658:0000:01:00.0".into(),
+                display_name: "GPU Core Temperature".into(),
+                sensor_type: SensorType::GpuTemperatureCelsius,
+                scope: "Core".into(),
+                default_provider: "LibreHardwareMonitor".into(),
+                unit: "°C".into(),
+                is_live: true,
+            }],
+            collection_latencies: [("LibreHardwareMonitor".into(), 12.5)]
+                .into_iter()
+                .collect(),
+        };
+
+        let report_json = serde_json::to_string(&report).unwrap();
+        let decoded_report: CompatibilityReport = serde_json::from_str(&report_json).unwrap();
+        assert_eq!(report, decoded_report);
+    }
+
+    #[test]
+    fn protocol_version_7_and_new_sensor_types_validation() {
+        assert_eq!(PROTOCOL_VERSION, 7);
+
+        let health = SensorReading {
+            id: "disk_health".into(),
+            device_id: "disk:0".into(),
+            device_name: "SSD".into(),
+            name: "Remaining Life".into(),
+            hardware_category: HardwareCategory::Storage,
+            sensor_type: SensorType::StorageHealthPercent,
+            scope: "Drive".into(),
+            provider: "Smart".into(),
+            value: Metric::available(98.0, "%", "Smart", 100),
+        };
+        assert!(health.sensor_type.validate_reading(&health).is_ok());
+
+        let tbw = SensorReading {
+            id: "disk_data".into(),
+            device_id: "disk:0".into(),
+            device_name: "SSD".into(),
+            name: "Total Written".into(),
+            hardware_category: HardwareCategory::Storage,
+            sensor_type: SensorType::DataGigabytes,
+            scope: "Drive".into(),
+            provider: "Smart".into(),
+            value: Metric::available(12345.0, "GB", "Smart", 100),
+        };
+        assert!(tbw.sensor_type.validate_reading(&tbw).is_ok());
+
+        let hours = SensorReading {
+            id: "disk_hours".into(),
+            device_id: "disk:0".into(),
+            device_name: "SSD".into(),
+            name: "Power-On Hours".into(),
+            hardware_category: HardwareCategory::Storage,
+            sensor_type: SensorType::TimeHours,
+            scope: "Drive".into(),
+            provider: "Smart".into(),
+            value: Metric::available(8760.0, "hours", "Smart", 100),
+        };
+        assert!(hours.sensor_type.validate_reading(&hours).is_ok());
+
+        let generic = SensorReading {
+            id: "custom_counter".into(),
+            device_id: "chip:0".into(),
+            device_name: "Custom".into(),
+            name: "Custom Counter".into(),
+            hardware_category: HardwareCategory::Other,
+            sensor_type: SensorType::GenericNumeric,
+            scope: "Device".into(),
+            provider: "Custom".into(),
+            value: Metric::available(42.0, "events", "Custom", 100),
+        };
+        assert!(generic.sensor_type.validate_reading(&generic).is_ok());
+
+        // Stopped fan at 0 RPM is plausible
+        assert!(SensorType::FanRpm.is_plausible_value(0.0));
+        // Valid 0°C temperature is plausible
+        assert!(SensorType::CpuTemperatureCelsius.is_plausible_value(0.0));
     }
 }

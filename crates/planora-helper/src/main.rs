@@ -34,6 +34,7 @@ static ACTIVE_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
 static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 static CALLER_CONNECTIONS: Mutex<Option<HashMap<u64, usize>>> = Mutex::new(None);
 static TOPOLOGY_CACHE: OnceLock<planora_core::Topology> = OnceLock::new();
+static INVENTORY_CACHE: Mutex<Option<planora_core::HardwareInventory>> = Mutex::new(None);
 
 const MAX_TOTAL_CONNECTIONS: usize = 16;
 const MAX_PER_CALLER_CONNECTIONS: usize = 4;
@@ -586,7 +587,7 @@ fn capabilities(frame: &TelemetryFrame) -> Vec<Capability> {
             (!gpu).then_some("No readable per-adapter amdgpu busy counter was found"),
             None,
         ));
-        for sensor in frame.sensors.iter().take(128) {
+        for sensor in &frame.sensors {
             result.push(Capability {
                 name: format!("{} — {}", sensor.device_name, sensor.name),
                 scope: sensor.scope.clone(),
@@ -642,7 +643,7 @@ fn capabilities(frame: &TelemetryFrame) -> Vec<Capability> {
             },
             (!advanced_present).then_some("Run Setup and select Advanced sensors"),
         ));
-        for sensor in frame.sensors.iter().take(128) {
+        for sensor in &frame.sensors {
             let stale = now.saturating_sub(sensor.value.sampled_at_ms) > 5000;
             result.push(Capability {
                 name: format!("{} — {}", sensor.device_name, sensor.name),
@@ -848,8 +849,87 @@ fn set_affinity(_process: &ProcessIdentity, _cpus: &[u16]) -> Result<(Vec<u16>, 
     }
 }
 
+fn get_hardware_inventory(force_rescan: bool) -> planora_core::HardwareInventory {
+    let mut cache = INVENTORY_CACHE.lock().unwrap();
+    if force_rescan || cache.is_none() {
+        let inv = planora_topology::discover_inventory();
+        *cache = Some(inv.clone());
+        inv
+    } else {
+        cache.as_ref().unwrap().clone()
+    }
+}
+
+fn generate_compatibility_report(
+    inventory: planora_core::HardwareInventory,
+    frame: &planora_core::TelemetryFrame,
+) -> planora_core::CompatibilityReport {
+    let mut sensors = Vec::new();
+    let mut provider_counts: std::collections::HashMap<String, u32> =
+        std::collections::HashMap::new();
+
+    for sensor in &frame.sensors {
+        *provider_counts.entry(sensor.provider.clone()).or_insert(0) += 1;
+        sensors.push(planora_core::SensorDescriptor {
+            sensor_id: sensor.id.clone(),
+            device_id: sensor.device_id.clone(),
+            display_name: format!("{} — {}", sensor.device_name, sensor.name),
+            sensor_type: sensor.sensor_type,
+            scope: sensor.scope.clone(),
+            default_provider: sensor.provider.clone(),
+            unit: sensor.value.unit.to_string(),
+            is_live: sensor.value.value.is_some(),
+        });
+    }
+
+    let mut providers = Vec::new();
+    for (name, count) in provider_counts {
+        providers.push(planora_core::ProviderStatus {
+            name: name.clone(),
+            state: planora_core::CapabilityState::Available,
+            driver_status: "Active".into(),
+            sensor_count: count,
+            last_error: None,
+            sample_duration_ms: 0.0,
+        });
+    }
+
+    if providers.is_empty() {
+        providers.push(planora_core::ProviderStatus {
+            name: "Default OS Provider".into(),
+            state: planora_core::CapabilityState::Available,
+            driver_status: "Active".into(),
+            sensor_count: 0,
+            last_error: None,
+            sample_duration_ms: 0.0,
+        });
+    }
+
+    planora_core::CompatibilityReport {
+        report_version: 1,
+        generated_at_ms: inventory.timestamp_ms,
+        application_version: env!("CARGO_PKG_VERSION").to_string(),
+        git_commit: option_env!("PLANORA_COMMIT_HASH")
+            .unwrap_or("release")
+            .to_string(),
+        target: std::env::consts::OS.to_string(),
+        inventory,
+        providers,
+        sensors,
+        collection_latencies: std::collections::BTreeMap::new(),
+    }
+}
+
 fn dispatch(command: Command, req_id: u64, connection_id: u64, state: &State) -> Response {
     match command {
+        Command::HardwareInventory => Response::HardwareInventory(get_hardware_inventory(false)),
+        Command::RescanHardware => Response::HardwareInventory(get_hardware_inventory(true)),
+        Command::ExportCompatibilityReport => {
+            let inv = get_hardware_inventory(false);
+            let frame = Arc::clone(&*state.latest_frame.read().unwrap());
+            let report = generate_compatibility_report(inv, &frame);
+            Response::CompatibilityReport(report)
+        }
         Command::Hello { version } if version == PROTOCOL_VERSION => Response::Hello {
             version,
             session_id: state.session_id,

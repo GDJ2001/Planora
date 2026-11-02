@@ -15,11 +15,36 @@ struct NvmlFanSpeedInfo {
 
 const NVML_FAN_SPEED_INFO_V1: u32 = (std::mem::size_of::<NvmlFanSpeedInfo>() as u32) | (1 << 24);
 
+#[repr(C)]
+struct NvmlPciInfo {
+    bus_id_legacy: [u8; 16],
+    domain: u32,
+    bus: u32,
+    device: u32,
+    pci_device_id: u32,
+    pci_sub_system_id: u32,
+    bus_id: [u8; 32],
+}
+
+#[repr(C)]
+struct NvmlUtilization {
+    gpu: u32,
+    memory: u32,
+}
+
+#[repr(C)]
+struct NvmlMemory {
+    total: u64,
+    free: u64,
+    used: u64,
+}
+
 pub struct NvidiaNvmlProvider {
     h_module: *mut std::ffi::c_void,
     _device_count: u32,
     devices: Vec<*mut std::ffi::c_void>,
     device_names: Vec<String>,
+    device_ids: Vec<String>,
 }
 
 unsafe impl Send for NvidiaNvmlProvider {}
@@ -93,6 +118,8 @@ impl NvidiaNvmlProvider {
 
         let mut devices = Vec::new();
         let mut device_names = Vec::new();
+        let mut device_ids = Vec::new();
+
         let get_count_ptr = unsafe {
             windows_sys::Win32::System::LibraryLoader::GetProcAddress(
                 h_module,
@@ -110,6 +137,20 @@ impl NvidiaNvmlProvider {
                 h_module,
                 c"nvmlDeviceGetName".as_ptr() as *const u8,
             )
+        };
+        let get_pci_info_ptr = unsafe {
+            let p = windows_sys::Win32::System::LibraryLoader::GetProcAddress(
+                h_module,
+                c"nvmlDeviceGetPciInfo_v3".as_ptr() as *const u8,
+            );
+            if p.is_some() {
+                p
+            } else {
+                windows_sys::Win32::System::LibraryLoader::GetProcAddress(
+                    h_module,
+                    c"nvmlDeviceGetPciInfo".as_ptr() as *const u8,
+                )
+            }
         };
 
         if let (Some(get_count), Some(get_handle)) = (get_count_ptr, get_handle_ptr) {
@@ -140,8 +181,35 @@ impl NvidiaNvmlProvider {
                                 }
                             }
                         }
+
+                        let mut dev_id = format!("nvidia_gpu/{i}");
+                        if let Some(pci_fn) = get_pci_info_ptr {
+                            type PciInfoFn = unsafe extern "system" fn(
+                                *mut std::ffi::c_void,
+                                *mut NvmlPciInfo,
+                            )
+                                -> i32;
+                            let get_pci: PciInfoFn = unsafe { std::mem::transmute(pci_fn) };
+                            let mut pci = NvmlPciInfo {
+                                bus_id_legacy: [0; 16],
+                                domain: 0,
+                                bus: 0,
+                                device: 0,
+                                pci_device_id: 0,
+                                pci_sub_system_id: 0,
+                                bus_id: [0; 32],
+                            };
+                            if unsafe { get_pci(dev, &mut pci) } == 0 {
+                                dev_id = format!(
+                                    "gpu:pci:{:04x}:{:02x}:{:02x}.0",
+                                    pci.domain, pci.bus, pci.device
+                                );
+                            }
+                        }
+
                         devices.push(dev);
                         device_names.push(name);
+                        device_ids.push(dev_id);
                     }
                 }
             }
@@ -173,6 +241,7 @@ impl NvidiaNvmlProvider {
             _device_count: device_count,
             devices,
             device_names,
+            device_ids,
         })
     }
 
@@ -197,10 +266,22 @@ impl NvidiaNvmlProvider {
                 c"nvmlDeviceGetClockInfo".as_ptr() as *const u8,
             )
         };
+        let num_fans_ptr = unsafe {
+            windows_sys::Win32::System::LibraryLoader::GetProcAddress(
+                self.h_module,
+                c"nvmlDeviceGetNumFans".as_ptr() as *const u8,
+            )
+        };
         let fan_speed_ptr = unsafe {
             windows_sys::Win32::System::LibraryLoader::GetProcAddress(
                 self.h_module,
                 c"nvmlDeviceGetFanSpeed".as_ptr() as *const u8,
+            )
+        };
+        let fan_speed_v2_ptr = unsafe {
+            windows_sys::Win32::System::LibraryLoader::GetProcAddress(
+                self.h_module,
+                c"nvmlDeviceGetFanSpeed_v2".as_ptr() as *const u8,
             )
         };
         let fan_rpm_ptr = unsafe {
@@ -209,9 +290,25 @@ impl NvidiaNvmlProvider {
                 c"nvmlDeviceGetFanSpeedRPM".as_ptr() as *const u8,
             )
         };
+        let util_ptr = unsafe {
+            windows_sys::Win32::System::LibraryLoader::GetProcAddress(
+                self.h_module,
+                c"nvmlDeviceGetUtilizationRates".as_ptr() as *const u8,
+            )
+        };
+        let mem_ptr = unsafe {
+            windows_sys::Win32::System::LibraryLoader::GetProcAddress(
+                self.h_module,
+                c"nvmlDeviceGetMemoryInfo".as_ptr() as *const u8,
+            )
+        };
 
         for (idx, &dev) in self.devices.iter().enumerate() {
-            let dev_id = format!("nvidia_gpu/{idx}");
+            let dev_id = self
+                .device_ids
+                .get(idx)
+                .cloned()
+                .unwrap_or_else(|| format!("nvidia_gpu/{idx}"));
             let dev_name = self
                 .device_names
                 .get(idx)
@@ -273,7 +370,7 @@ impl NvidiaNvmlProvider {
                 }
             }
 
-            // 3. Clock (0 = Graphics clock)
+            // 3. Graphics Clock (0) & Memory Clock (2)
             if let Some(cfn) = clock_ptr {
                 type ClockFn =
                     unsafe extern "system" fn(*mut std::ffi::c_void, u32, *mut u32) -> i32;
@@ -297,33 +394,23 @@ impl NvidiaNvmlProvider {
                         ),
                     });
                 }
-            }
 
-            // 4. Tachometer Fan RPM (nvmlDeviceGetFanSpeedRPM takes nvmlFanSpeedInfo_t*)
-            if let Some(rpm_fn) = fan_rpm_ptr {
-                type FanRpmFn =
-                    unsafe extern "C" fn(*mut std::ffi::c_void, *mut NvmlFanSpeedInfo) -> i32;
-                let get_fan_rpm: FanRpmFn = unsafe { std::mem::transmute(rpm_fn) };
-                let mut fan_info = NvmlFanSpeedInfo {
-                    version: NVML_FAN_SPEED_INFO_V1,
-                    fan: 0,
-                    speed: 0,
-                };
-                if unsafe { get_fan_rpm(dev, &mut fan_info) } == 0
-                    && (0..=30_000).contains(&fan_info.speed)
+                let mut mem_mhz = 0u32;
+                if unsafe { get_clock(dev, 2, &mut mem_mhz) } == 0
+                    && (0..=20_000).contains(&mem_mhz)
                 {
                     readings.push(SensorReading {
-                        id: format!("{dev_id}/fan_rpm"),
+                        id: format!("{dev_id}/memory_clock"),
                         device_id: dev_id.clone(),
                         device_name: dev_name.clone(),
-                        name: "GPU Fan Speed".into(),
+                        name: "GPU Memory Clock".into(),
                         hardware_category: planora_core::HardwareCategory::Gpu,
-                        sensor_type: SensorType::FanRpm,
-                        scope: "Cooling".into(),
+                        sensor_type: SensorType::ClockMhz,
+                        scope: scope.clone(),
                         provider: "NVIDIA NVML".into(),
                         value: Metric::available(
-                            fan_info.speed as f32,
-                            planora_core::UNIT_RPM,
+                            mem_mhz as f32,
+                            planora_core::UNIT_MHZ,
                             "NVIDIA NVML",
                             stamp,
                         ),
@@ -331,24 +418,175 @@ impl NvidiaNvmlProvider {
                 }
             }
 
-            // 5. Fan speed percent (Duty cycle)
-            if let Some(ffn) = fan_speed_ptr {
-                type FanFn = unsafe extern "system" fn(*mut std::ffi::c_void, *mut u32) -> i32;
-                let get_fan: FanFn = unsafe { std::mem::transmute(ffn) };
-                let mut pct = 0u32;
-                if unsafe { get_fan(dev, &mut pct) } == 0 && (0..=100).contains(&pct) {
+            // 4. Fans (Multi-fan enumeration)
+            let mut fan_count = 1u32;
+            if let Some(nfn) = num_fans_ptr {
+                type NumFansFn = unsafe extern "system" fn(*mut std::ffi::c_void, *mut u32) -> i32;
+                let get_num_fans: NumFansFn = unsafe { std::mem::transmute(nfn) };
+                let mut c = 0u32;
+                if unsafe { get_num_fans(dev, &mut c) } == 0 && c > 0 {
+                    fan_count = c;
+                }
+            }
+
+            for fan_idx in 0..fan_count {
+                let fan_suffix = if fan_count > 1 {
+                    format!("_{fan_idx}")
+                } else {
+                    String::new()
+                };
+                let fan_title = if fan_count > 1 {
+                    format!("GPU Fan {} Speed", fan_idx + 1)
+                } else {
+                    "GPU Fan Speed".to_string()
+                };
+                let duty_title = if fan_count > 1 {
+                    format!("GPU Fan {} Duty", fan_idx + 1)
+                } else {
+                    "GPU Fan Duty".to_string()
+                };
+
+                // Tachometer RPM
+                if let Some(rpm_fn) = fan_rpm_ptr {
+                    type FanRpmFn =
+                        unsafe extern "C" fn(*mut std::ffi::c_void, *mut NvmlFanSpeedInfo) -> i32;
+                    let get_fan_rpm: FanRpmFn = unsafe { std::mem::transmute(rpm_fn) };
+                    let mut fan_info = NvmlFanSpeedInfo {
+                        version: NVML_FAN_SPEED_INFO_V1,
+                        fan: fan_idx,
+                        speed: 0,
+                    };
+                    if unsafe { get_fan_rpm(dev, &mut fan_info) } == 0
+                        && (0..=30_000).contains(&fan_info.speed)
+                    {
+                        readings.push(SensorReading {
+                            id: format!("{dev_id}/fan_rpm{fan_suffix}"),
+                            device_id: dev_id.clone(),
+                            device_name: dev_name.clone(),
+                            name: fan_title,
+                            hardware_category: planora_core::HardwareCategory::Gpu,
+                            sensor_type: SensorType::FanRpm,
+                            scope: "Cooling".into(),
+                            provider: "NVIDIA NVML".into(),
+                            value: Metric::available(
+                                fan_info.speed as f32,
+                                planora_core::UNIT_RPM,
+                                "NVIDIA NVML",
+                                stamp,
+                            ),
+                        });
+                    }
+                }
+
+                // Duty cycle %
+                let mut duty_read = false;
+                if let Some(v2fn) = fan_speed_v2_ptr {
+                    type FanV2Fn =
+                        unsafe extern "system" fn(*mut std::ffi::c_void, u32, *mut u32) -> i32;
+                    let get_fan_v2: FanV2Fn = unsafe { std::mem::transmute(v2fn) };
+                    let mut pct = 0u32;
+                    if unsafe { get_fan_v2(dev, fan_idx, &mut pct) } == 0
+                        && (0..=100).contains(&pct)
+                    {
+                        readings.push(SensorReading {
+                            id: format!("{dev_id}/fan_duty{fan_suffix}"),
+                            device_id: dev_id.clone(),
+                            device_name: dev_name.clone(),
+                            name: duty_title.clone(),
+                            hardware_category: planora_core::HardwareCategory::Gpu,
+                            sensor_type: SensorType::LoadPercent,
+                            scope: "Cooling".into(),
+                            provider: "NVIDIA NVML".into(),
+                            value: Metric::available(
+                                pct as f32,
+                                planora_core::UNIT_PERCENT,
+                                "NVIDIA NVML",
+                                stamp,
+                            ),
+                        });
+                        duty_read = true;
+                    }
+                }
+
+                if !duty_read
+                    && fan_idx == 0
+                    && let Some(ffn) = fan_speed_ptr
+                {
+                    type FanFn = unsafe extern "system" fn(*mut std::ffi::c_void, *mut u32) -> i32;
+                    let get_fan: FanFn = unsafe { std::mem::transmute(ffn) };
+                    let mut pct = 0u32;
+                    if unsafe { get_fan(dev, &mut pct) } == 0 && (0..=100).contains(&pct) {
+                        readings.push(SensorReading {
+                            id: format!("{dev_id}/fan_duty"),
+                            device_id: dev_id.clone(),
+                            device_name: dev_name.clone(),
+                            name: duty_title,
+                            hardware_category: planora_core::HardwareCategory::Gpu,
+                            sensor_type: SensorType::LoadPercent,
+                            scope: "Cooling".into(),
+                            provider: "NVIDIA NVML".into(),
+                            value: Metric::available(
+                                pct as f32,
+                                planora_core::UNIT_PERCENT,
+                                "NVIDIA NVML",
+                                stamp,
+                            ),
+                        });
+                    }
+                }
+            }
+
+            // 5. Utilization rates (Core load)
+            if let Some(ufn) = util_ptr {
+                type UtilFn =
+                    unsafe extern "system" fn(*mut std::ffi::c_void, *mut NvmlUtilization) -> i32;
+                let get_util: UtilFn = unsafe { std::mem::transmute(ufn) };
+                let mut util = NvmlUtilization { gpu: 0, memory: 0 };
+                if unsafe { get_util(dev, &mut util) } == 0 && (0..=100).contains(&util.gpu) {
                     readings.push(SensorReading {
-                        id: format!("{dev_id}/fan_duty"),
+                        id: format!("{dev_id}/load"),
                         device_id: dev_id.clone(),
                         device_name: dev_name.clone(),
-                        name: "GPU Fan Duty".into(),
+                        name: "GPU Core Load".into(),
                         hardware_category: planora_core::HardwareCategory::Gpu,
                         sensor_type: SensorType::LoadPercent,
-                        scope: "Cooling".into(),
+                        scope: scope.clone(),
                         provider: "NVIDIA NVML".into(),
                         value: Metric::available(
-                            pct as f32,
+                            util.gpu as f32,
                             planora_core::UNIT_PERCENT,
+                            "NVIDIA NVML",
+                            stamp,
+                        ),
+                    });
+                }
+            }
+
+            // 6. Memory usage
+            if let Some(mfn) = mem_ptr {
+                type MemFn =
+                    unsafe extern "system" fn(*mut std::ffi::c_void, *mut NvmlMemory) -> i32;
+                let get_mem: MemFn = unsafe { std::mem::transmute(mfn) };
+                let mut mem = NvmlMemory {
+                    total: 0,
+                    free: 0,
+                    used: 0,
+                };
+                if unsafe { get_mem(dev, &mut mem) } == 0 && mem.total > 0 && mem.used <= mem.total
+                {
+                    let used_gb = mem.used as f32 / (1024.0 * 1024.0 * 1024.0);
+                    readings.push(SensorReading {
+                        id: format!("{dev_id}/memory_used"),
+                        device_id: dev_id.clone(),
+                        device_name: dev_name.clone(),
+                        name: "GPU Memory Used".into(),
+                        hardware_category: planora_core::HardwareCategory::Gpu,
+                        sensor_type: SensorType::DataGigabytes,
+                        scope: scope.clone(),
+                        provider: "NVIDIA NVML".into(),
+                        value: Metric::available(
+                            used_gb,
+                            planora_core::UNIT_GIGABYTES,
                             "NVIDIA NVML",
                             stamp,
                         ),
@@ -386,6 +624,21 @@ mod tests {
     fn nvml_fan_speed_info_v1_abi_layout() {
         assert_eq!(std::mem::size_of::<NvmlFanSpeedInfo>(), 12);
         assert_eq!(NVML_FAN_SPEED_INFO_V1, 0x0100_000c);
+    }
+
+    #[test]
+    fn nvml_pci_info_abi_layout() {
+        assert_eq!(std::mem::size_of::<NvmlPciInfo>(), 68);
+    }
+
+    #[test]
+    fn nvml_utilization_abi_layout() {
+        assert_eq!(std::mem::size_of::<NvmlUtilization>(), 8);
+    }
+
+    #[test]
+    fn nvml_memory_abi_layout() {
+        assert_eq!(std::mem::size_of::<NvmlMemory>(), 24);
     }
 
     #[test]

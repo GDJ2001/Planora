@@ -99,7 +99,7 @@ public static class Program
 {
     public static readonly string AppVersion = typeof(Program).Assembly
         .GetCustomAttributes<AssemblyMetadataAttribute>()
-        .FirstOrDefault(attribute => attribute.Key == "PlanoraVersion")?.Value ?? "0.3.0-beta.41";
+        .FirstOrDefault(attribute => attribute.Key == "PlanoraVersion")?.Value ?? "0.3.0-beta.47";
 
     public static readonly string BuildCommit = typeof(Program).Assembly
         .GetCustomAttributes<AssemblyMetadataAttribute>()
@@ -144,9 +144,9 @@ public static class Program
                 IsCpuEnabled = true,
                 IsGpuEnabled = true,
                 IsStorageEnabled = true,
-                IsMotherboardEnabled = false,
-                IsControllerEnabled = false,
-                IsMemoryEnabled = false,
+                IsMotherboardEnabled = true,
+                IsControllerEnabled = true,
+                IsMemoryEnabled = true,
                 IsNetworkEnabled = false
             };
 
@@ -313,9 +313,44 @@ public static class Program
                     unitStr = "J";
                     defaultScope = "Package";
                     break;
+
+                case SensorType.Level:
+                    typeStr = "Level";
+                    unitStr = "%";
+                    defaultScope = hardware.HardwareType == HardwareType.Storage ? "Drive" : "Device";
+                    break;
+                case SensorType.Data:
+                    typeStr = "Data";
+                    unitStr = "GB";
+                    defaultScope = hardware.HardwareType == HardwareType.Storage ? "Drive" : "Device";
+                    break;
+                case SensorType.Throughput:
+                    typeStr = "Throughput";
+                    unitStr = "B/s";
+                    defaultScope = hardware.HardwareType == HardwareType.Storage ? "Drive" : "Device";
+                    break;
+                case SensorType.TimeSpan:
+                    typeStr = "TimeSpan";
+                    unitStr = "hours";
+                    defaultScope = hardware.HardwareType == HardwareType.Storage ? "Drive" : "Device";
+                    break;
+                case SensorType.SmallData:
+                    typeStr = "SmallData";
+                    unitStr = "MB";
+                    defaultScope = hardware.HardwareType is HardwareType.GpuIntel or HardwareType.GpuNvidia or HardwareType.GpuAmd ? "GPU" : "Device";
+                    break;
+                case SensorType.Factor:
+                    typeStr = "Factor";
+                    unitStr = "";
+                    defaultScope = "Device";
+                    break;
+
                 default:
-                    // Only process supported physical categories
-                    continue;
+                    typeStr = sensor.SensorType.ToString();
+                    unitStr = "";
+                    defaultScope = "Device";
+                    break;
+
             }
 
             string sensorId = sensor.Identifier.ToString().TrimStart('/');
@@ -342,11 +377,11 @@ public static class Program
                             break;
                         case SensorType.Temperature:
                             // SuperIO disconnected thermistors or uninitialized readings
-                            if (v <= -40.0f || v == 0.0f || v > 125.0f) value = null;
+                            if (v <= -40.0f || (int)Math.Round(v) == 127 || (int)Math.Round(v) == 128 || (int)Math.Round(v) == 255 || v > 150.0f) value = null;
                             break;
                         case SensorType.Fan:
                             // SuperIO 16-bit sentinel / overflow / disconnected
-                            if (v < 0.0f || v >= 30000.0f || (int)Math.Round(v) == 65535) value = null;
+                            if (v < 0.0f || v >= 50000.0f || (int)Math.Round(v) == 65535) value = null;
                             break;
                         case SensorType.Clock:
                             if (v < 0.0f || v > 10000.0f) value = null;
@@ -357,6 +392,24 @@ public static class Program
                             break;
                         case SensorType.Energy:
                             if (v < 0.0f) value = null;
+                            break;
+                        case SensorType.Level:
+                            if (v < 0.0f || v > 100.0f) value = null;
+                            break;
+                        case SensorType.Data:
+                            if (v < 0.0f || v > 10000000.0f) value = null;
+                            break;
+                        case SensorType.Throughput:
+                            if (v < 0.0f || v > 100000000000.0f) value = null;
+                            break;
+                        case SensorType.TimeSpan:
+                            if (v < 0.0f || v > 1000000.0f) value = null;
+                            break;
+                        case SensorType.SmallData:
+                            if (v < 0.0f || v > 1000000000.0f) value = null;
+                            break;
+                        case SensorType.Factor:
+                            if (v < 0.0f || v > 1000000.0f) value = null;
                             break;
                     }
                 }

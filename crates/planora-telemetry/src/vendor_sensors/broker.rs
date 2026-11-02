@@ -331,7 +331,7 @@ impl SensorBrokerSupervisor {
                                 SensorType::GpuBoardPowerWatts
                             }
                             "Power" if is_gpu => SensorType::GpuChipPowerWatts,
-                            "Power" => continue,
+                            "Power" => SensorType::GenericNumeric,
                             "Temperature" => {
                                 if is_storage {
                                     SensorType::StorageTemperatureCelsius
@@ -349,14 +349,20 @@ impl SensorBrokerSupervisor {
                             "Current" => SensorType::CurrentAmperes,
                             "Load" => SensorType::LoadPercent,
                             "Energy" => SensorType::EnergyJoules,
-                            _ => continue,
+                            "Level" if is_storage => SensorType::StorageHealthPercent,
+                            "Level" => SensorType::LoadPercent,
+                            "Data" => SensorType::DataGigabytes,
+                            "Throughput" => SensorType::ThroughputBytesPerSec,
+                            "TimeSpan" => SensorType::TimeHours,
+                            _ => SensorType::GenericNumeric,
                         };
 
                         let canonical_unit = planora_core::canonicalize_unit(&r.unit);
                         let metric = if let Some(val) = r.value {
                             if st.is_plausible_value(val)
-                                && planora_core::canonicalize_unit(canonical_unit)
-                                    == planora_core::canonicalize_unit(st.expected_unit())
+                                && (st == SensorType::GenericNumeric
+                                    || planora_core::canonicalize_unit(canonical_unit)
+                                        == planora_core::canonicalize_unit(st.expected_unit()))
                             {
                                 Metric::available(val, canonical_unit, &r.provider, r.sampled_at_ms)
                             } else {
@@ -396,7 +402,8 @@ impl SensorBrokerSupervisor {
                                 "Memory" => planora_core::HardwareCategory::Memory,
                                 "Storage" => planora_core::HardwareCategory::Storage,
                                 "Network" => planora_core::HardwareCategory::Network,
-                                "Motherboard" | "Mainboard" | "SuperIO" | "EmbeddedController" => {
+                                "Motherboard" | "Mainboard" | "SuperIO" | "EmbeddedController"
+                                | "Controller" => {
                                     planora_core::HardwareCategory::MotherboardCooling
                                 }
                                 _ => planora_core::HardwareCategory::Unknown,

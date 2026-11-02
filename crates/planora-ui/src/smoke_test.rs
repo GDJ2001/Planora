@@ -273,6 +273,9 @@ pub fn create_test_app(theme: Theme, page: Page) -> App {
         history_epoch: 0,
         selected_identity: None,
         priority_details: Arc::new(std::collections::BTreeSet::new()),
+        hardware_inventory: None,
+        pending_compatibility_report: None,
+        recorder: None,
     }));
 
     App {
@@ -293,7 +296,7 @@ pub fn create_test_app(theme: Theme, page: Page) -> App {
         applied_appearance: None,
         settings,
         settings_error: None,
-        recorder: crate::recording::Recorder::default(),
+        recorder: Arc::new(Mutex::new(crate::recording::Recorder::default())),
         exporter: crate::export::ExportManager::default(),
         replay: crate::recording::Replay::default(),
         replay_anchor: None,

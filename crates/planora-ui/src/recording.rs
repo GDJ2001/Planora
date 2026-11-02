@@ -17,7 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const FORMAT_VERSION: u32 = 4;
+const FORMAT_VERSION: u32 = 5;
 const MAX_RECORDING_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_RECORDING_MS: u64 = 2 * 60 * 60 * 1_000;
 const MAX_LINE_BYTES: u64 = 8 * 1024 * 1024;
@@ -612,7 +612,7 @@ mod tests {
         let frame = crate::smoke_test::test_frame();
         let sample = RecordedSnapshot::from_frame(&frame, None);
 
-        for version in [2, 3] {
+        for version in [1, 2, 3, 4, 5] {
             let path = std::env::temp_dir().join(format!(
                 "planora-recording-v{}-{}-{}.jsonl",
                 version,

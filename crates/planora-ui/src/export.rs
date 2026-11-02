@@ -149,6 +149,19 @@ impl ExportManager {
         })
     }
 
+    pub fn compatibility_report(
+        &mut self,
+        report: planora_core::CompatibilityReport,
+    ) -> io::Result<()> {
+        self.start("compatibility-report", "json", move |path, _cancel| {
+            fs::create_dir_all(path.parent().unwrap())?;
+            let mut writer =
+                BufWriter::new(OpenOptions::new().create_new(true).write(true).open(path)?);
+            serde_json::to_writer_pretty(&mut writer, &report)?;
+            writer.flush()
+        })
+    }
+
     pub fn cancel(&mut self) {
         self.request_cancel();
         if let Some(worker) = self.worker.take() {

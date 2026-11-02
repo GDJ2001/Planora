@@ -80,6 +80,9 @@ pub struct HardwareViewState {
     pub selected_core_id: Option<u16>,
     pub initial_fit_done: bool,
     pub fitted_layout_signature: Option<u64>,
+    pub rescan_hardware_requested: bool,
+    pub export_compat_report_requested: bool,
+    pub status_message: Option<(bool, String)>,
 }
 
 impl Default for HardwareViewState {
@@ -91,6 +94,9 @@ impl Default for HardwareViewState {
             selected_core_id: None,
             initial_fit_done: false,
             fitted_layout_signature: None,
+            rescan_hardware_requested: false,
+            export_compat_report_requested: false,
+            status_message: None,
         }
     }
 }
@@ -144,6 +150,7 @@ pub fn render_hardware_view(
     ui: &mut egui::Ui,
     topology: Option<&Topology>,
     frame: Option<&planora_core::TelemetryFrame>,
+    inventory: Option<&planora_core::HardwareInventory>,
     state: &mut HardwareViewState,
     app_state: &AppState,
     pause_state: &mut DisplayPause,
@@ -195,14 +202,30 @@ pub fn render_hardware_view(
         }
     });
 
+    ui.horizontal(|ui| {
+        if ui.button("Rescan Hardware").clicked() {
+            state.rescan_hardware_requested = true;
+        }
+        if ui.button("Export Compatibility Report").clicked() {
+            state.export_compat_report_requested = true;
+        }
+    });
+    if let Some((is_error, msg)) = &state.status_message {
+        let color = if *is_error { p.error } else { p.success };
+        ui.colored_label(color, msg);
+    }
     ui.add_space(12.0);
 
     match state.view_mode {
         HardwareViewMode::Tree => {
-            render_tree_view(ui, t, frame, state, p);
+            render_tree_view(ui, t, frame, inventory, state, p);
         }
         HardwareViewMode::Canvas => {
-            render_canvas_view(ui, t, frame, state, p);
+            render_canvas_view(ui, t, frame, inventory, state, p);
+            if let Some(inv) = inventory {
+                ui.add_space(14.0);
+                render_inventory_section(ui, inv, p);
+            }
         }
     }
 }
@@ -211,6 +234,7 @@ fn render_tree_view(
     ui: &mut egui::Ui,
     t: &Topology,
     frame: Option<&planora_core::TelemetryFrame>,
+    inventory: Option<&planora_core::HardwareInventory>,
     state: &mut HardwareViewState,
     p: Palette,
 ) {
@@ -274,12 +298,17 @@ fn render_tree_view(
         });
 
     render_detail_inspector(ui, t, frame, state, p);
+    if let Some(inv) = inventory {
+        ui.add_space(14.0);
+        render_inventory_section(ui, inv, p);
+    }
 }
 
 fn render_canvas_view(
     ui: &mut egui::Ui,
     t: &Topology,
     frame: Option<&planora_core::TelemetryFrame>,
+    inventory: Option<&planora_core::HardwareInventory>,
     state: &mut HardwareViewState,
     p: Palette,
 ) {
@@ -467,6 +496,10 @@ fn render_canvas_view(
     }
 
     render_detail_inspector(ui, t, frame, state, p);
+    if let Some(inv) = inventory {
+        ui.add_space(14.0);
+        render_inventory_section(ui, inv, p);
+    }
 }
 
 fn render_detail_inspector(
@@ -520,6 +553,123 @@ fn render_detail_inspector(
                 }
             });
     }
+}
+
+fn render_inventory_section(ui: &mut egui::Ui, inv: &planora_core::HardwareInventory, p: Palette) {
+    egui::Frame::group(ui.style())
+        .fill(p.surface)
+        .stroke(Stroke::new(1.0, p.border))
+        .corner_radius(CornerRadius::same(CORNER_RADIUS as u8))
+        .inner_margin(egui::Margin::same(14))
+        .show(ui, |ui| {
+            ui.heading("Discovered Hardware Inventory");
+            ui.add_space(8.0);
+
+            // Motherboard
+            ui.strong("Motherboard & BIOS");
+            let mb = &inv.motherboard;
+            let mfg = if mb.manufacturer.is_empty() {
+                "Unknown manufacturer"
+            } else {
+                &mb.manufacturer
+            };
+            let model = if mb.product_name.is_empty() {
+                "Unknown model"
+            } else {
+                &mb.product_name
+            };
+            let ver = &mb.version;
+            let bios_v = if mb.bios_vendor.is_empty() {
+                "Unknown vendor"
+            } else {
+                &mb.bios_vendor
+            };
+            let bios_ver = if mb.bios_version.is_empty() {
+                "Unknown version"
+            } else {
+                &mb.bios_version
+            };
+            let bios_date = &mb.bios_release_date;
+            ui.label(format!("  └── Board: {mfg} {model} {ver}"));
+            ui.label(format!("  └── BIOS: {bios_v} {bios_ver} {bios_date}"));
+            ui.add_space(8.0);
+
+            // Memory
+            ui.strong("Physical Memory (SMBIOS)");
+            let total_ram_bytes = inv.memory.total_physical_bytes;
+            let slots_used = inv.memory.modules.len();
+            ui.label(format!(
+                "  └── Installed: {} ({} slots populated)",
+                format_bytes(total_ram_bytes),
+                slots_used
+            ));
+            for module in &inv.memory.modules {
+                let loc = &module.slot_locator;
+                let cap = format_bytes(module.capacity_bytes);
+                let speed = if module.speed_mts > 0 {
+                    format!("· {} MT/s", module.speed_mts)
+                } else {
+                    String::new()
+                };
+                let mfg = &module.manufacturer;
+                let part = &module.part_number;
+                ui.label(format!("      └── {loc}: {cap} {speed} {mfg} {part}"));
+            }
+            ui.add_space(8.0);
+
+            // Storage
+            if !inv.storage.is_empty() {
+                ui.strong("Physical Storage");
+                for disk in &inv.storage {
+                    let model = if disk.model.is_empty() {
+                        "Unknown Drive"
+                    } else {
+                        &disk.model
+                    };
+                    let bus = &disk.bus_type;
+                    let media = &disk.media_type;
+                    let cap = format_bytes(disk.capacity_bytes);
+                    let path = &disk.device_id;
+                    ui.label(format!("  └── {model} ({bus} {media}) {cap} · {path}"));
+                }
+                ui.add_space(8.0);
+            }
+
+            // Network
+            if !inv.network.is_empty() {
+                ui.strong("Network Interfaces");
+                for net in &inv.network {
+                    let speed = net
+                        .link_speed_bps
+                        .map(|s| format!("{} Mbps", s / 1_000_000))
+                        .unwrap_or_default();
+                    let desc = &net.description;
+                    ui.label(format!("  └── {} ({}): {}", net.name, desc, speed));
+                }
+                ui.add_space(8.0);
+            }
+
+            // GPUs
+            if !inv.gpus.is_empty() {
+                ui.strong("Graphics Adapters");
+                for gpu in &inv.gpus {
+                    let pci = format!("{:04x}:{:04x}", gpu.pci_vendor_id, gpu.pci_device_id);
+                    let drv = gpu.driver_version.as_deref().unwrap_or("N/A");
+                    let vram = format_bytes(gpu.dedicated_vram_bytes);
+                    ui.label(format!(
+                        "  └── {} · PCI: {pci} · Dedicated VRAM: {vram} · Driver: {drv}",
+                        gpu.name
+                    ));
+                }
+                ui.add_space(8.0);
+            }
+
+            // CPU Features
+            if !inv.cpu.features.is_empty() {
+                ui.strong("Processor Features");
+                ui.label(format!("  └── Features: {}", inv.cpu.features.join(", ")));
+            }
+        });
 }
 
 #[cfg(test)]

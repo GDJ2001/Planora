@@ -77,7 +77,7 @@ pub struct UserSettings {
 impl Default for UserSettings {
     fn default() -> Self {
         Self {
-            schema_version: 7,
+            schema_version: 8,
             theme: Theme::System,
             density: Density::Normal,
             poll_interval_ms: 100,
@@ -128,10 +128,14 @@ impl UserSettings {
                 paths
             };
             for path in paths {
-                if let Ok(data) = std::fs::read_to_string(path)
+                if let Ok(data) = std::fs::read_to_string(&path)
                     && let Ok(mut settings) = serde_json::from_str::<Self>(&data)
                 {
-                    settings.schema_version = 7;
+                    if settings.schema_version < 8 {
+                        let bak = path.with_extension("json.bak");
+                        let _ = std::fs::copy(&path, bak);
+                    }
+                    settings.schema_version = 8;
                     settings.performance_engines.truncate(4);
                     settings.expanded_resource_sections.truncate(8);
                     settings
@@ -296,6 +300,9 @@ pub struct Shared {
     pub history_epoch: u64,
     pub selected_identity: Option<planora_core::ProcessIdentity>,
     pub priority_details: Arc<std::collections::BTreeSet<String>>,
+    pub hardware_inventory: Option<Arc<planora_core::HardwareInventory>>,
+    pub pending_compatibility_report: Option<planora_core::CompatibilityReport>,
+    pub recorder: Option<Arc<Mutex<crate::recording::Recorder>>>,
 }
 
 pub fn is_data_stale(last_received: Option<Instant>, poll_interval_ms: u64) -> Option<Duration> {
@@ -331,16 +338,29 @@ fn handle_response(
                 shared.last_frame_received = Some(receipt_now);
                 let frame_arc = frame;
                 shared.frame = Some(Arc::clone(&frame_arc));
+                #[cfg(windows)]
+                let merged_sensors = crate::history::merge_sensor_readings(
+                    &frame_arc.sensors,
+                    &shared.sensor_readings,
+                );
+                #[cfg(not(windows))]
+                let merged_sensors = frame_arc.sensors.clone();
+
+                if let Some(recorder) = &shared.recorder
+                    && let Ok(mut rec) = recorder.lock()
+                    && rec.is_active()
+                {
+                    rec.record(
+                        &frame_arc,
+                        shared.selected_identity.as_ref(),
+                        &merged_sensors,
+                    );
+                }
+
                 if shared.live_history_enabled
                     && let Some(history) = history_sender
                 {
-                    #[cfg(windows)]
-                    let sensors = Arc::new(crate::history::merge_sensor_readings(
-                        &frame_arc.sensors,
-                        &shared.sensor_readings,
-                    ));
-                    #[cfg(not(windows))]
-                    let sensors = Arc::new(frame_arc.sensors.clone());
+                    let sensors = Arc::new(merged_sensors);
                     let input = crate::history_worker::HistoryInput {
                         frame: frame_arc,
                         sensors,
@@ -382,6 +402,12 @@ fn handle_response(
             ..
         } => {
             shared.affinity = Some((process, logical_cpus));
+        }
+        Response::HardwareInventory(inv) => {
+            shared.hardware_inventory = Some(Arc::new(inv));
+        }
+        Response::CompatibilityReport(report) => {
+            shared.pending_compatibility_report = Some(report);
         }
         Response::Error { code, message } => {
             if code == ErrorCode::Unauthorized {
@@ -716,6 +742,23 @@ pub fn background_worker(
                 reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_millis(2000));
                 continue;
             }
+        }
+
+        next_request_id = next_request_id.wrapping_add(1);
+        let inv_req_id = next_request_id;
+        let inv_req = Request {
+            request_id: inv_req_id,
+            command: Command::HardwareInventory,
+        };
+        if let Ok(ResponseEnvelope {
+            response: Response::HardwareInventory(inv),
+            ..
+        }) = planora_helper::exchange_request_timeout(
+            &mut stream,
+            &inv_req,
+            planora_helper::REQUEST_TIMEOUT,
+        ) {
+            state.lock().unwrap().hardware_inventory = Some(Arc::new(inv));
         }
 
         // Fetch initial snapshot immediately so Live state has fresh data right away
@@ -1185,6 +1228,32 @@ mod tests {
             let new_rcvd = shared.last_frame_received.unwrap();
             assert!(is_data_stale(Some(new_rcvd), 100).is_none());
         }
+    }
+
+    #[test]
+    fn test_background_worker_continuous_recording() {
+        let state = Arc::new(Mutex::new(Shared::default()));
+        let recorder = Arc::new(Mutex::new(crate::recording::Recorder::default()));
+        state.lock().unwrap().recorder = Some(Arc::clone(&recorder));
+
+        let mut frame1 = dummy_frame(1);
+        frame1.sampled_at_ms = 1_000;
+        let mut frame2 = dummy_frame(2);
+        frame2.sampled_at_ms = 2_100;
+
+        assert!(handle_response(
+            Response::Snapshot(Arc::new(frame1)),
+            &state,
+            None
+        ));
+        assert!(handle_response(
+            Response::Snapshot(Arc::new(frame2)),
+            &state,
+            None
+        ));
+
+        let status = recorder.lock().unwrap().status();
+        assert!(!status.active);
     }
 
     #[test]

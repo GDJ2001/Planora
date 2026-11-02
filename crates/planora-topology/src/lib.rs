@@ -7,6 +7,26 @@ use planora_core::{CoreDescriptor, Topology};
 #[cfg(target_os = "linux")]
 use std::collections::BTreeMap;
 
+pub mod inventory;
+pub use inventory::discover_inventory;
+
+#[cfg(windows)]
+pub fn trusted_system_dll(name: &str) -> Option<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    if name.is_empty() || name.contains(['/', '\\', ':']) {
+        return None;
+    }
+    unsafe extern "system" {
+        fn GetSystemDirectoryW(buffer: *mut u16, size: u32) -> u32;
+    }
+    let mut buffer = [0u16; 32768];
+    let len = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+    if len == 0 || len >= buffer.len() {
+        return None;
+    }
+    Some(std::path::PathBuf::from(std::ffi::OsString::from_wide(&buffer[..len])).join(name))
+}
+
 pub fn discover() -> Topology {
     let _count = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -417,7 +437,20 @@ fn discover_windows_gpus(t: &mut Topology) {
         let name = String::from_utf16_lossy(&dd.DeviceString[..len])
             .trim()
             .to_string();
-        if !name.is_empty() && seen.insert(name.clone()) {
+        let id_len = dd
+            .DeviceID
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(dd.DeviceID.len());
+        let device_id = String::from_utf16_lossy(&dd.DeviceID[..id_len])
+            .trim()
+            .to_string();
+        let key = if !device_id.is_empty() {
+            device_id
+        } else {
+            name.clone()
+        };
+        if !name.is_empty() && seen.insert(key) {
             let id = t.gpus.len() as u16;
             t.gpus.push(planora_core::GpuDescriptor {
                 id,
@@ -602,5 +635,71 @@ mod tests {
         let topo = discover();
         assert!(!topo.architecture.is_empty());
         assert!(!topo.cores.is_empty());
+    }
+
+    #[test]
+    fn discover_returns_valid_hardware_inventory() {
+        let inv = discover_inventory();
+        assert!(!inv.cpu.architecture.is_empty());
+        assert!(inv.cpu.physical_cores > 0);
+        assert!(inv.cpu.logical_cpus >= inv.cpu.physical_cores);
+        println!(
+            "Discovered CPU: {} ({}) with {} cores / {} threads, features: {:?}",
+            inv.cpu.brand,
+            inv.cpu.vendor,
+            inv.cpu.physical_cores,
+            inv.cpu.logical_cpus,
+            inv.cpu.features
+        );
+        println!(
+            "Discovered Motherboard: {} - {} (BIOS: {} {})",
+            inv.motherboard.manufacturer,
+            inv.motherboard.product_name,
+            inv.motherboard.bios_vendor,
+            inv.motherboard.bios_version
+        );
+        println!(
+            "Discovered Memory: Total {} GB across {} DIMMs",
+            inv.memory.total_physical_bytes / (1024 * 1024 * 1024),
+            inv.memory.modules.len()
+        );
+        for m in &inv.memory.modules {
+            println!(
+                "  DIMM {}: {} MB {} @ {} MT/s ({})",
+                m.slot_locator,
+                m.capacity_bytes / (1024 * 1024),
+                m.memory_type,
+                m.speed_mts,
+                m.part_number
+            );
+        }
+        println!("Discovered {} GPUs:", inv.gpus.len());
+        for g in &inv.gpus {
+            println!(
+                "  GPU {}: {} (VRAM {} MB, discrete = {})",
+                g.device_id,
+                g.name,
+                g.dedicated_vram_bytes / (1024 * 1024),
+                g.is_discrete
+            );
+        }
+        println!("Discovered {} Storage devices:", inv.storage.len());
+        for s in &inv.storage {
+            println!(
+                "  Drive {}: {} ({} GB, {}, {})",
+                s.device_id,
+                s.model,
+                s.capacity_bytes / (1024 * 1024 * 1024),
+                s.bus_type,
+                s.media_type
+            );
+        }
+        println!("Discovered {} Network devices:", inv.network.len());
+        for n in &inv.network {
+            println!(
+                "  Net {}: {} (hw = {}, speed = {:?})",
+                n.device_id, n.name, n.is_hardware, n.link_speed_bps
+            );
+        }
     }
 }

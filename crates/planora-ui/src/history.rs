@@ -831,6 +831,27 @@ impl ResourceHistories {
         if points <= max_detail_points {
             return 0;
         }
+
+        // Pass 1: Downsample/trim older points from long series before evicting
+        let excess = points.saturating_sub(max_detail_points);
+        if excess > 0 {
+            for series in self.details.values_mut() {
+                let len = series.samples.len();
+                if len > 30 {
+                    let trim = (len - 30).min(points.saturating_sub(max_detail_points));
+                    if trim > 0 {
+                        let samples = Arc::make_mut(&mut series.samples);
+                        for _ in 0..trim {
+                            samples.pop_front();
+                        }
+                        points = points.saturating_sub(trim);
+                        if points <= max_detail_points {
+                            return 0;
+                        }
+                    }
+                }
+            }
+        }
         let mut oldest: Vec<_> = self
             .details
             .iter()
@@ -936,6 +957,20 @@ pub fn normalize_sensor_device_name(name: &str) -> String {
     cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn extract_device_index(device_id: &str, scope: &str) -> u32 {
+    for part in device_id.rsplit(|c: char| !c.is_ascii_alphanumeric()) {
+        if let Ok(idx) = part.parse::<u32>() {
+            return idx;
+        }
+    }
+    for part in scope.split_whitespace() {
+        if let Ok(idx) = part.parse::<u32>() {
+            return idx;
+        }
+    }
+    0
+}
+
 pub fn merge_sensor_readings(
     helper_sensors: &[SensorReading],
     vendor_sensors: &[SensorReading],
@@ -943,11 +978,17 @@ pub fn merge_sensor_readings(
     let mut result = Vec::with_capacity(vendor_sensors.len() + helper_sensors.len());
     let mut seen_ids = HashSet::new();
     let mut vendor_keys = HashSet::new();
+    let mut vendor_device_id_keys = HashSet::new();
 
     for s in vendor_sensors {
         if seen_ids.insert(s.id.clone()) {
             let device_norm = normalize_sensor_device_name(&s.device_name);
-            vendor_keys.insert((device_norm, s.sensor_type, s.name.trim().to_lowercase()));
+            let name_norm = s.name.trim().to_lowercase();
+            let idx = extract_device_index(&s.device_id, &s.scope);
+            vendor_keys.insert((device_norm, idx, s.sensor_type, name_norm.clone()));
+            if !s.device_id.is_empty() {
+                vendor_device_id_keys.insert((s.device_id.clone(), s.sensor_type, name_norm));
+            }
             result.push(s.clone());
         }
     }
@@ -957,7 +998,18 @@ pub fn merge_sensor_readings(
             continue;
         }
         let device_norm = normalize_sensor_device_name(&s.device_name);
-        if vendor_keys.contains(&(device_norm, s.sensor_type, s.name.trim().to_lowercase())) {
+        let name_norm = s.name.trim().to_lowercase();
+        let idx = extract_device_index(&s.device_id, &s.scope);
+        if !s.device_id.is_empty()
+            && vendor_device_id_keys.contains(&(
+                s.device_id.clone(),
+                s.sensor_type,
+                name_norm.clone(),
+            ))
+        {
+            continue;
+        }
+        if vendor_keys.contains(&(device_norm, idx, s.sensor_type, name_norm)) {
             continue;
         }
         seen_ids.insert(s.id.clone());

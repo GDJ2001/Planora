@@ -28,6 +28,8 @@ pub struct SettingsViewState {
     pub reset_window_requested: bool,
     pub show_confirm_modal: bool,
     pub export_perf_report_requested: bool,
+    pub rescan_hardware_requested: bool,
+    pub export_compat_report_requested: bool,
     preview_files: Vec<(PathBuf, u64)>,
     pub status_message: Option<(bool, String)>,
     local_data_task: Option<Receiver<LocalDataResult>>,
@@ -435,6 +437,17 @@ pub fn render_settings_view(
             if ui.button("Export Performance Report (JSON)").clicked() {
                 state.export_perf_report_requested = true;
             }
+            ui.add_space(8.0);
+            ui.strong("Hardware Recognition & Compatibility");
+            ui.label("Rescan all CPU, GPU, motherboard, memory, and storage devices. Export a sanitized compatibility report for troubleshooting.");
+            ui.horizontal(|ui| {
+                if ui.button("Rescan Hardware").clicked() {
+                    state.rescan_hardware_requested = true;
+                }
+                if ui.button("Export Compatibility Report (JSON)").clicked() {
+                    state.export_compat_report_requested = true;
+                }
+            });
         });
         ui.add_space(14.0);
 

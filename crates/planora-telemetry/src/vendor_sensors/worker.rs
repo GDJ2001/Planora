@@ -127,13 +127,26 @@ pub fn run_worker(expected_build_id: Option<&str>) {
                 }
 
                 match &amd {
-                    Ok(_) => caps.push(make(
-                        "AMD ADLX telemetry",
-                        "AMD ADLX (Experimental)",
-                        CapabilityState::NotImplemented,
-                        Some("ADLX runtime initialized, but metric interface sampling is not implemented in this build".into()),
-                        None,
-                    )),
+                    Ok(provider) => {
+                        let has_reading = provider
+                            .sample(crate::unix_ms())
+                            .iter()
+                            .any(|s| s.value.is_available());
+                        caps.push(make(
+                            "AMD graphics telemetry",
+                            "AMD ADLX / ADL",
+                            if has_reading {
+                                CapabilityState::Available
+                            } else {
+                                CapabilityState::Unsupported
+                            },
+                            (!has_reading).then_some(
+                                "Runtime initialized but no supported AMD sensor returned a value"
+                                    .into(),
+                            ),
+                            None,
+                        ));
+                    }
                     Err((state, reason)) => {
                         let recovery = if *state == CapabilityState::NotApplicable {
                             None
@@ -141,8 +154,8 @@ pub fn run_worker(expected_build_id: Option<&str>) {
                             Some("Install AMD Software: Adrenalin Edition".into())
                         };
                         caps.push(make(
-                            "AMD ADLX telemetry",
-                            "AMD ADLX (Experimental)",
+                            "AMD graphics telemetry",
+                            "AMD ADLX / ADL",
                             *state,
                             Some(reason.clone()),
                             recovery,

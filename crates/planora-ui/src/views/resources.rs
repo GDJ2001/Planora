@@ -529,6 +529,10 @@ fn sensor_family(sensor: &SensorReading) -> &'static str {
         T::FanRpm => "Cooling",
         T::VoltageVolts | T::CurrentAmperes => "Electrical",
         T::LoadPercent => "Load",
+        T::StorageHealthPercent => "Health",
+        T::DataGigabytes | T::ThroughputBytesPerSec => "Data & IO",
+        T::TimeHours => "Lifetime",
+        T::GenericNumeric => "Generic",
     }
 }
 
