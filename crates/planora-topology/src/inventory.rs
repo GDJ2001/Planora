@@ -1,8 +1,10 @@
 //! Comprehensive hardware inventory discovery for CPU, GPU, Motherboard, Memory, Storage, Network, and Cooling.
 
+#[cfg(windows)]
+use planora_core::MemoryModuleDescriptor;
 use planora_core::{
     CoolingInventoryDevice, CpuInventory, GpuInventoryDevice, HardwareInventory, MemoryInventory,
-    MemoryModuleDescriptor, MotherboardInventory, NetworkInventoryDevice, StorageInventoryDevice,
+    MotherboardInventory, NetworkInventoryDevice, StorageInventoryDevice,
 };
 
 #[cfg(windows)]
@@ -451,7 +453,10 @@ fn discover_gpus() -> Vec<GpuInventoryDevice> {
 
 #[cfg(not(windows))]
 fn discover_gpus() -> Vec<GpuInventoryDevice> {
+    #[cfg(target_os = "linux")]
     let mut gpus = Vec::new();
+    #[cfg(not(target_os = "linux"))]
+    let gpus = Vec::new();
     #[cfg(target_os = "linux")]
     {
         if let Ok(entries) = std::fs::read_dir("/sys/class/drm") {
@@ -557,7 +562,10 @@ fn discover_motherboard() -> MotherboardInventory {
 
 #[cfg(not(windows))]
 fn discover_motherboard() -> MotherboardInventory {
+    #[cfg(target_os = "linux")]
     let mut mobo = MotherboardInventory::default();
+    #[cfg(not(target_os = "linux"))]
+    let mobo = MotherboardInventory::default();
     #[cfg(target_os = "linux")]
     {
         let read = |path: &str| -> String {
@@ -739,7 +747,10 @@ fn discover_memory() -> MemoryInventory {
 
 #[cfg(not(windows))]
 fn discover_memory() -> MemoryInventory {
+    #[cfg(target_os = "linux")]
     let mut mem = MemoryInventory::default();
+    #[cfg(not(target_os = "linux"))]
+    let mem = MemoryInventory::default();
     #[cfg(target_os = "linux")]
     {
         if let Ok(content) = std::fs::read_to_string("/proc/meminfo") {
@@ -970,7 +981,10 @@ fn discover_storage() -> Vec<StorageInventoryDevice> {
 
 #[cfg(not(windows))]
 fn discover_storage() -> Vec<StorageInventoryDevice> {
+    #[cfg(target_os = "linux")]
     let mut drives = Vec::new();
+    #[cfg(not(target_os = "linux"))]
+    let drives = Vec::new();
     #[cfg(target_os = "linux")]
     {
         if let Ok(entries) = std::fs::read_dir("/sys/block") {
@@ -1081,7 +1095,10 @@ fn discover_network() -> Vec<NetworkInventoryDevice> {
 
 #[cfg(not(windows))]
 fn discover_network() -> Vec<NetworkInventoryDevice> {
+    #[cfg(target_os = "linux")]
     let mut ifaces = Vec::new();
+    #[cfg(not(target_os = "linux"))]
+    let ifaces = Vec::new();
     #[cfg(target_os = "linux")]
     {
         if let Ok(entries) = std::fs::read_dir("/sys/class/net") {

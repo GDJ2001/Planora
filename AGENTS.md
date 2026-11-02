@@ -6,12 +6,12 @@ Planora is a high-performance cross-platform desktop hardware visualizer and sys
 
 ## 1. Architectural Boundaries
 
-- **`crates/planora-core`**: Portable types, IPC protocol contracts (Protocol v6, 64 KiB request / 8 MiB response limits), physical plausibility validation, and explicit metric availability states (`Metric<T>`).
+- **`crates/planora-core`**: Portable types, IPC protocol contracts (Protocol v7, 64 KiB request / 8 MiB response limits), physical plausibility validation, and explicit metric availability states (`Metric<T>`).
 - **`crates/planora-topology`**: Hardware and CPU/cache topology discovery via CPUID and OS APIs.
 - **`crates/planora-telemetry`**: Cross-platform system sampling (`sysinfo`, Windows PDH/`GetIfTable2`/`GlobalMemoryStatusEx`, Linux sysfs/block/eBPF, and vendor sensor integrations).
 - **`crates/planora-bench`**: Bounded, cancellable micro-architectural probes (64 MiB working set cap, 72 MiB total budget, strict timeouts).
 - **`crates/planora-helper`**: Privileged daemon/service enforcing local IPC authorization (Windows SID ACLs / Linux polkit and UID checks), process sampling worker, and safe process affinity mutation.
-- **`crates/planora-ui`**: Unelevated native GUI (`eframe`/`egui` 0.37 with `wgpu`), user settings (Schema v7), background history ingestion, and recording format v4.
+- **`crates/planora-ui`**: Unelevated native GUI (`eframe`/`egui` 0.37 with `wgpu`), user settings (Schema v8), background history ingestion, and recording format v5.
 - **`crates/planora-sensor-broker`**: Windows C#/.NET worker managing LibreHardwareMonitor and optional signed PawnIO driver in an isolated user-mode child.
 
 ---
@@ -64,8 +64,8 @@ On Windows (when packaging with WiX Toolset v5):
 
 ## 4. Key Conventions
 
-- **Protocol Version**: Current protocol is `PROTOCOL_VERSION = 6`. Handshake requires `Command::Hello { version: 6 }`.
-- **Settings Version**: Settings schema is `schema_version: 7`. Stored at `%APPDATA%\Planora\settings.json` (Windows) or `~/.config/Planora/settings.json` (Linux).
-- **Recording Format**: Current recording format is `v4` JSON Lines (`.planora.jsonl`). Max file size 256 MiB; max duration 2 hours.
+- **Protocol Version**: Current protocol is `PROTOCOL_VERSION = 7`. Handshake requires `Command::Hello { version: 7 }`.
+- **Settings Version**: Settings schema is `schema_version: 8`. Stored at `%APPDATA%\Planora\settings.json` (Windows) or `~/.config/Planora/settings.json` (Linux).
+- **Recording Format**: Current recording format is `v5` JSON Lines (`.planora.jsonl`). Max file size 256 MiB; max duration 2 hours.
 - **PE Subsystem**: Windows `planora.exe` is a GUI subsystem executable (subsystem 2) built with `#![cfg_attr(windows, windows_subsystem = "windows")]`.
 - **Search Before Create**: Before adding any UI component, card, chart, metric, or IPC command, inspect existing patterns in `crates/planora-core/src/lib.rs` and `crates/planora-ui/src/components/`.

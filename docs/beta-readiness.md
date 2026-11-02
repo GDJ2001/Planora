@@ -1,4 +1,8 @@
-# Windows Adaptive Sampling Hotfix: 0.3.0-beta.47
+# Current source after beta.47 installation
+
+The installed Windows and Ubuntu beta.47 packages remain the protocol-v6 builds identified in the [stability evidence](release-evidence-stability-beta47.md). The later hardware-inventory source commit `251954d` changes the helper contract to protocol v7, settings to schema v8, and recordings to format v5. It has not been packaged or installed in this evidence set. UI and helper binaries from different protocol versions must not be mixed. The post-merge CI corrections are source-only; a future package needs a new beta version and fresh native acceptance.
+
+# Historical Windows Adaptive Sampling Hotfix: 0.3.0-beta.47
 
 The installed beta.46 helper met its 100 ms collection target at **5.432 ms p95** over 100 live snapshots, but minimizing its UI did not slow the requested interval. Beta.47 moves the Windows attention decision into the existing client worker and is documented in [beta.47 package evidence](release-evidence-windows-beta47.md). Installed beta.47 Windows binary hashes matched the manifest; native focus checks observed effective **100/500/1,000 ms** focused/unfocused/minimized rates and return to 100 ms. The [Windows and Ubuntu WSL stability report](release-evidence-stability-beta47.md) records 60.1-minute helper freshness passes, Windows UI frame **3.656 ms p95**, a machine-specific **87.8%** combined CPU reduction in the focused/minimized comparison, a 10,000-process fixture below its frame target, and Ubuntu DEB repair/revoke/remove/reinstall checks. A Windows recording had a **190.935-second unmarked gap** while minimized, so recording continuity is an open correctness defect. Ubuntu WSL is supplemental; physical Linux, broader Windows acceptance, and signing remain open. Later source-only commit `a443d0a` fixes Linux strict Clippy and adds test scripts; it is not in the installed beta.47 packages. Unsigned packages remain internal.
 
