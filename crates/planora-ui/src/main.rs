@@ -147,7 +147,6 @@ fn current_process_memory() -> (Option<u64>, Option<u64>) {
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
     fn planora_register_daemon() -> i32;
-    fn planora_unregister_daemon() -> i32;
 }
 
 pub struct App {
