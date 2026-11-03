@@ -79,6 +79,7 @@ jobs:
       - run: curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain 1.99.1 -c clippy,rustfmt
       - run: |
           . "$HOME/.cargo/env"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           cargo fmt --all -- --check
           cargo test --workspace --locked
           cargo clippy --workspace --all-targets --locked -- -D warnings
