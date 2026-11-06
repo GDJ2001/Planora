@@ -305,6 +305,72 @@ mod history_selection_tests {
     }
 
     #[test]
+    fn test_sensor_matches_gpu_adapter_isolates_multi_gpu() {
+        use planora_core::GpuAdapterSample;
+
+        let amd_adapter = GpuAdapterSample {
+            adapter_luid: 0x1001,
+            physical_adapter: Some(0),
+            name: "AMD Radeon R7 260X".into(),
+            busiest_engine_percent: Metric::available(25.0, "%", "test", 1_000),
+            aggregate_busy_percent: None,
+            dedicated_used_bytes: Metric::available(256 * 1024 * 1024, "bytes", "test", 1_000),
+            dedicated_total_bytes: Metric::available(2048 * 1024 * 1024, "bytes", "test", 1_000),
+            shared_used_bytes: Metric::available(0, "bytes", "test", 1_000),
+            shared_total_bytes: Metric::available(0, "bytes", "test", 1_000),
+            budget_bytes: None,
+        };
+
+        let intel_adapter = GpuAdapterSample {
+            adapter_luid: 0x1002,
+            physical_adapter: Some(0),
+            name: "Intel(R) HD Graphics 4600".into(),
+            busiest_engine_percent: Metric::available(10.0, "%", "test", 1_000),
+            aggregate_busy_percent: None,
+            dedicated_used_bytes: Metric::available(0, "bytes", "test", 1_000),
+            dedicated_total_bytes: Metric::available(0, "bytes", "test", 1_000),
+            shared_used_bytes: Metric::available(128 * 1024 * 1024, "bytes", "test", 1_000),
+            shared_total_bytes: Metric::available(2048 * 1024 * 1024, "bytes", "test", 1_000),
+            budget_bytes: None,
+        };
+
+        let amd_temp = SensorReading {
+            id: "amd_temp".into(),
+            device_id: "gpu:pci:1002:6658".into(),
+            device_name: "AMD Radeon R7 200 Series".into(),
+            name: "GPU Temperature".into(),
+            hardware_category: planora_core::HardwareCategory::Gpu,
+            sensor_type: SensorType::GpuTemperatureCelsius,
+            scope: "GPU 0 Core".into(),
+            provider: "AMD ADL".into(),
+            value: Metric::available(58.0, "°C", "AMD ADL", 1_000),
+        };
+
+        let intel_temp = SensorReading {
+            id: "intel_temp".into(),
+            device_id: "gpu:pci:8086:0412".into(),
+            device_name: "Intel(R) HD Graphics 4600".into(),
+            name: "GPU Temperature".into(),
+            hardware_category: planora_core::HardwareCategory::Gpu,
+            sensor_type: SensorType::GpuTemperatureCelsius,
+            scope: "GPU 1 Core".into(),
+            provider: "IGCL".into(),
+            value: Metric::available(45.0, "°C", "IGCL", 1_000),
+        };
+
+        assert!(sensor_matches_gpu_adapter(&amd_temp, &amd_adapter, 0, 2));
+        assert!(!sensor_matches_gpu_adapter(&amd_temp, &intel_adapter, 1, 2));
+
+        assert!(sensor_matches_gpu_adapter(
+            &intel_temp,
+            &intel_adapter,
+            1,
+            2
+        ));
+        assert!(!sensor_matches_gpu_adapter(&intel_temp, &amd_adapter, 0, 2));
+    }
+
+    #[test]
     fn network_prominence_requires_physical_interface_and_known_connected_state() {
         let fixture = crate::smoke_test::create_native_fixture_app(
             crate::theme::Theme::Dark,
@@ -659,6 +725,61 @@ pub struct Choice {
     pub unavailable_reason: Option<String>,
 }
 
+pub fn sensor_matches_gpu_adapter(
+    sensor: &SensorReading,
+    adapter: &planora_core::GpuAdapterSample,
+    adapter_idx: usize,
+    total_adapters: usize,
+) -> bool {
+    if sensor.hardware_category != planora_core::HardwareCategory::Gpu {
+        return false;
+    }
+    if total_adapters <= 1 {
+        return true;
+    }
+    let s_dev = sensor.device_name.to_lowercase();
+    let a_dev = adapter.name.to_lowercase();
+
+    if s_dev.contains(&a_dev) || a_dev.contains(&s_dev) {
+        return true;
+    }
+
+    let s_vendor = if s_dev.contains("nvidia")
+        || s_dev.contains("geforce")
+        || sensor.device_id.contains("nvidia")
+    {
+        "nvidia"
+    } else if s_dev.contains("amd")
+        || s_dev.contains("radeon")
+        || sensor.device_id.contains("amd")
+        || sensor.device_id.contains("ati")
+    {
+        "amd"
+    } else if s_dev.contains("intel") || sensor.device_id.contains("intel") {
+        "intel"
+    } else {
+        ""
+    };
+
+    let a_vendor = if a_dev.contains("nvidia") || a_dev.contains("geforce") {
+        "nvidia"
+    } else if a_dev.contains("amd") || a_dev.contains("radeon") {
+        "amd"
+    } else if a_dev.contains("intel") {
+        "intel"
+    } else {
+        ""
+    };
+
+    if !s_vendor.is_empty() && s_vendor == a_vendor {
+        let s_idx = crate::history::extract_device_index(&sensor.device_id, &sensor.scope);
+        return s_idx == adapter_idx as u32 || s_idx == 0;
+    }
+
+    let s_idx = crate::history::extract_device_index(&sensor.device_id, &sensor.scope);
+    s_idx == adapter_idx as u32
+}
+
 pub fn choices(
     frame: &TelemetryFrame,
     histories: Option<&ResourceHistories>,
@@ -770,11 +891,12 @@ pub fn choices(
 
     let mut adapters: Vec<_> = frame.gpu_adapters.iter().collect();
     adapters.sort_by_key(|adapter| (adapter.adapter_luid, adapter.physical_adapter));
-    for adapter in adapters {
+    let total_adapters = adapters.len();
+    for (adapter_idx, adapter) in adapters.into_iter().enumerate() {
         let (activity, _, _) = adapter.activity_percent();
         let is_ok = activity.value.is_some();
         let gpu_temp = sensors.iter().find_map(|s| {
-            if s.hardware_category == planora_core::HardwareCategory::Gpu
+            if sensor_matches_gpu_adapter(s, adapter, adapter_idx, total_adapters)
                 && s.sensor_type == planora_core::SensorType::GpuTemperatureCelsius
             {
                 s.value.value
@@ -783,7 +905,7 @@ pub fn choices(
             }
         });
         let gpu_clock = sensors.iter().find_map(|s| {
-            if s.hardware_category == planora_core::HardwareCategory::Gpu
+            if sensor_matches_gpu_adapter(s, adapter, adapter_idx, total_adapters)
                 && s.sensor_type == planora_core::SensorType::ClockMhz
                 && (s.name.contains("Core") || s.scope.contains("Core"))
             {
@@ -793,7 +915,7 @@ pub fn choices(
             }
         });
         let gpu_watts = sensors.iter().find_map(|s| {
-            if s.hardware_category == planora_core::HardwareCategory::Gpu
+            if sensor_matches_gpu_adapter(s, adapter, adapter_idx, total_adapters)
                 && (s.sensor_type == planora_core::SensorType::GpuBoardPowerWatts
                     || s.sensor_type == planora_core::SensorType::GpuChipPowerWatts)
             {
@@ -2799,6 +2921,24 @@ fn render_selected(
         original_right
     );
     // 5. Detailed Tables (Prominently rendered in both modes)
+    let selected_gpu = if item.category == 2 {
+        frame.gpu_adapters.iter().find(|adapter| {
+            item.id
+                == format!(
+                    "gpu:{}:{:?}",
+                    adapter.adapter_luid, adapter.physical_adapter
+                )
+        })
+    } else {
+        None
+    };
+    let selected_gpu_idx = selected_gpu.and_then(|a| {
+        frame
+            .gpu_adapters
+            .iter()
+            .position(|x| x.adapter_luid == a.adapter_luid)
+    });
+
     egui::Frame::group(ui.style())
         .fill(p.surface)
         .stroke(Stroke::new(1.0, p.border))
@@ -2807,7 +2947,17 @@ fn render_selected(
         .show(ui, |ui| match item.category {
             0 => render_cpu_tab(ui, frame, topology, sensors, histories, state, now, p),
             1 => render_memory_tab(ui, frame, p),
-            2 => render_gpu_tab(ui, frame, sensors, histories, state, now, p),
+            2 => render_gpu_tab(
+                ui,
+                frame,
+                selected_gpu,
+                selected_gpu_idx,
+                sensors,
+                histories,
+                state,
+                now,
+                p,
+            ),
             3 => render_storage_tab(ui, frame, histories, p),
             4 => render_network_tab(ui, frame, histories, p),
             5 => render_sensors_tab(
@@ -3401,6 +3551,8 @@ fn render_memory_tab(ui: &mut egui::Ui, frame: &TelemetryFrame, p: Palette) {
 fn render_gpu_tab(
     ui: &mut egui::Ui,
     frame: &TelemetryFrame,
+    selected_adapter: Option<&planora_core::GpuAdapterSample>,
+    selected_adapter_idx: Option<usize>,
     sensors: &[SensorReading],
     histories: &ResourceHistories,
     state: &mut ResourcesViewState,
@@ -3421,9 +3573,19 @@ fn render_gpu_tab(
     );
     ui.add_space(8.0);
 
+    let total_adapters = frame.gpu_adapters.len();
+    let adapter_idx = selected_adapter_idx.unwrap_or(0);
+    let matches_adapter = |s: &SensorReading| {
+        if let Some(adapter) = selected_adapter {
+            sensor_matches_gpu_adapter(s, adapter, adapter_idx, total_adapters)
+        } else {
+            s.hardware_category == planora_core::HardwareCategory::Gpu
+        }
+    };
+
     // 1. Live GPU Telemetry Summary Strip
     let gpu_power_sensor = sensors.iter().find(|s| {
-        s.hardware_category == planora_core::HardwareCategory::Gpu
+        matches_adapter(s)
             && (s.sensor_type == planora_core::SensorType::GpuBoardPowerWatts
                 || s.sensor_type == planora_core::SensorType::GpuChipPowerWatts)
     });
@@ -3433,7 +3595,7 @@ fn render_gpu_tab(
     let gpu_temp_sensor = sensors
         .iter()
         .find(|s| {
-            s.hardware_category == planora_core::HardwareCategory::Gpu
+            matches_adapter(s)
                 && s.sensor_type == planora_core::SensorType::GpuTemperatureCelsius
                 && (s.name.contains("Core")
                     || s.name.contains("Edge")
@@ -3441,7 +3603,7 @@ fn render_gpu_tab(
         })
         .or_else(|| {
             sensors.iter().find(|s| {
-                s.hardware_category == planora_core::HardwareCategory::Gpu
+                matches_adapter(s)
                     && s.sensor_type == planora_core::SensorType::GpuTemperatureCelsius
             })
         });
@@ -3451,22 +3613,21 @@ fn render_gpu_tab(
     let gpu_core_clock_sensor = sensors
         .iter()
         .find(|s| {
-            s.hardware_category == planora_core::HardwareCategory::Gpu
+            matches_adapter(s)
                 && s.sensor_type == planora_core::SensorType::ClockMhz
                 && (s.name.contains("Core") || s.scope.contains("Core"))
         })
         .or_else(|| {
-            sensors.iter().find(|s| {
-                s.hardware_category == planora_core::HardwareCategory::Gpu
-                    && s.sensor_type == planora_core::SensorType::ClockMhz
-            })
+            sensors
+                .iter()
+                .find(|s| matches_adapter(s) && s.sensor_type == planora_core::SensorType::ClockMhz)
         });
     let gpu_core_clock_val = gpu_core_clock_sensor.and_then(|s| s.value.value);
     let gpu_core_clock_str =
         gpu_core_clock_val.map_or_else(|| "Unavailable".into(), |c| format!("{c:.0} MHz"));
 
     let gpu_mem_clock_sensor = sensors.iter().find(|s| {
-        s.hardware_category == planora_core::HardwareCategory::Gpu
+        matches_adapter(s)
             && s.sensor_type == planora_core::SensorType::ClockMhz
             && (s.name.contains("Memory") || s.scope.contains("Memory"))
     });
@@ -3474,16 +3635,15 @@ fn render_gpu_tab(
     let gpu_mem_clock_str =
         gpu_mem_clock_val.map_or_else(|| "Unavailable".into(), |m| format!("{m:.0} MHz"));
 
-    let gpu_voltage_sensor = sensors.iter().find(|s| {
-        s.hardware_category == planora_core::HardwareCategory::Gpu
-            && s.sensor_type == planora_core::SensorType::VoltageVolts
-    });
+    let gpu_voltage_sensor = sensors
+        .iter()
+        .find(|s| matches_adapter(s) && s.sensor_type == planora_core::SensorType::VoltageVolts);
     let gpu_voltage_val = gpu_voltage_sensor.and_then(|s| s.value.value);
     let gpu_voltage_str =
         gpu_voltage_val.map_or_else(|| "Unavailable".into(), |v| format!("{v:.3} V"));
 
     let gpu_fan_sensor = sensors.iter().find(|s| {
-        s.hardware_category == planora_core::HardwareCategory::Gpu
+        matches_adapter(s)
             && (s.sensor_type == planora_core::SensorType::FanRpm
                 || s.sensor_type == planora_core::SensorType::LoadPercent)
     });
@@ -3712,14 +3872,17 @@ fn render_gpu_tab(
             });
     }
 
-    let gpu_sensors: Vec<&SensorReading> = sensors
-        .iter()
-        .filter(|s| s.hardware_category == planora_core::HardwareCategory::Gpu)
-        .collect();
+    let gpu_sensors: Vec<&SensorReading> = sensors.iter().filter(|s| matches_adapter(s)).collect();
+
+    let table_title = if let Some(adapter) = selected_adapter {
+        format!("{} Measurements", adapter.name)
+    } else {
+        "GPU Device Measurements".to_string()
+    };
 
     render_embedded_sensors_table(
         ui,
-        "GPU Device Measurements",
+        &table_title,
         &gpu_sensors,
         histories,
         state,

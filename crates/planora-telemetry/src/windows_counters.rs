@@ -254,7 +254,8 @@ pub fn query_processor_power_information(cpu_count: usize) -> Vec<PROCESSOR_POWE
         windows_sys::Win32::System::SystemInformation::GetSystemInfo(&mut sys_info);
         sys_info.dwNumberOfProcessors as usize
     };
-    let count = cpu_count.max(sys_procs);
+    let group_procs = windows_processor_group_map().len();
+    let count = cpu_count.max(sys_procs).max(group_procs);
     if count == 0 {
         return Vec::new();
     }
@@ -429,6 +430,36 @@ mod tests {
                 );
             }
             prev = Some((group, cpu));
+        }
+    }
+
+    #[test]
+    fn test_query_processor_power_information() {
+        let info = query_processor_power_information(0);
+        println!("Processor power info count (0): {}", info.len());
+        for (i, p) in info.iter().enumerate() {
+            println!(
+                "  CPU {i}: current={} MHz, max={} MHz",
+                p.current_mhz, p.max_mhz
+            );
+        }
+        assert!(
+            !info.is_empty(),
+            "Must return at least 1 processor on Windows"
+        );
+        assert!(info[0].max_mhz > 0, "Max MHz must be > 0");
+
+        let oversized = query_processor_power_information(128);
+        println!("Processor power info count (128): {}", oversized.len());
+    }
+
+    #[test]
+    fn test_query_thermal_zones() {
+        let zones = query_thermal_zones();
+        println!("Thermal zones count: {}", zones.len());
+        for z in &zones {
+            println!("  Zone: {} = {} °C", z.name, z.temperature_c);
+            assert!(z.temperature_c >= 0.0 && z.temperature_c <= 125.0);
         }
     }
 }

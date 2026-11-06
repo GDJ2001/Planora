@@ -151,14 +151,18 @@ pub fn format_sensor_value(
             }
         }
         planora_core::SensorType::LoadPercent | planora_core::SensorType::StorageHealthPercent => {
-            if unit == "%" || unit.is_empty() {
+            if unit.is_empty() {
+                format!("{value:.1}")
+            } else if unit == "%" {
                 format!("{value:.1}%")
             } else {
                 format!("{value:.1} {unit}")
             }
         }
         planora_core::SensorType::DataGigabytes => {
-            if (0.0..1.0).contains(&value) {
+            if unit.is_empty() {
+                format!("{value:.2}")
+            } else if (0.0..1.0).contains(&value) {
                 format!("{:.0} MB", value * 1024.0)
             } else {
                 format!("{value:.2} GB")
@@ -250,6 +254,19 @@ mod tests {
         assert_eq!(
             format_sensor_value(2.5, "GB", SensorType::DataGigabytes),
             "2.50 GB"
+        );
+        // Empty unit handling
+        assert_eq!(
+            format_sensor_value(65.02, "", SensorType::LoadPercent),
+            "65.0"
+        );
+        assert_eq!(
+            format_sensor_value(2.5, "", SensorType::DataGigabytes),
+            "2.50"
+        );
+        assert_eq!(
+            format_sensor_value(277.0 / 1024.0, "", SensorType::DataGigabytes),
+            "0.27"
         );
     }
 }

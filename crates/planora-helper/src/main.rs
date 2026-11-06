@@ -1521,7 +1521,9 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
                 if frame.package_power_watts.value.is_none()
                     && let Some(pkg_reading) = frame.sensors.iter().find(|s| {
                         s.sensor_type == planora_core::SensorType::CpuPackagePowerWatts
-                            && s.scope.eq_ignore_ascii_case("Package")
+                            && (s.scope.eq_ignore_ascii_case("Package")
+                                || s.name.to_lowercase().contains("package")
+                                || s.name.to_lowercase().contains("total"))
                             && s.value.value.is_some()
                     })
                 {

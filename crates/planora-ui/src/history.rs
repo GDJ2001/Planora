@@ -957,7 +957,7 @@ pub fn normalize_sensor_device_name(name: &str) -> String {
     cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn extract_device_index(device_id: &str, scope: &str) -> u32 {
+pub fn extract_device_index(device_id: &str, scope: &str) -> u32 {
     let lower_scope = scope.to_lowercase();
     if let Some(pos) = lower_scope.find("gpu") {
         for token in lower_scope[pos + 3..].split_whitespace() {
@@ -1025,24 +1025,10 @@ pub fn merge_sensor_readings(
         if seen_ids.contains(&s.id) {
             continue;
         }
-        let device_norm = normalize_sensor_device_name(&s.device_name);
-        let name_norm = s.name.trim().to_lowercase();
-        let idx = extract_device_index(&s.device_id, &s.scope);
-        if !s.device_id.is_empty()
-            && vendor_device_id_keys.contains(&(
-                s.device_id.clone(),
-                s.sensor_type,
-                name_norm.clone(),
-            ))
-        {
-            continue;
-        }
-        if vendor_keys.contains(&(device_norm, idx, s.sensor_type, name_norm)) {
-            continue;
-        }
         let mut cloned = s.clone();
+        let raw_idx = extract_device_index(&cloned.device_id, &cloned.scope);
         if cloned.hardware_category == planora_core::HardwareCategory::Gpu {
-            if let Some((canon_id, canon_name)) = vendor_gpus.get(&idx) {
+            if let Some((canon_id, canon_name)) = vendor_gpus.get(&raw_idx) {
                 cloned.device_id.clone_from(canon_id);
                 cloned.device_name.clone_from(canon_name);
             } else if vendor_gpus.len() == 1
@@ -1051,6 +1037,21 @@ pub fn merge_sensor_readings(
                 cloned.device_id.clone_from(canon_id);
                 cloned.device_name.clone_from(canon_name);
             }
+        }
+        let device_norm = normalize_sensor_device_name(&cloned.device_name);
+        let name_norm = cloned.name.trim().to_lowercase();
+        let idx = extract_device_index(&cloned.device_id, &cloned.scope);
+        if !cloned.device_id.is_empty()
+            && vendor_device_id_keys.contains(&(
+                cloned.device_id.clone(),
+                cloned.sensor_type,
+                name_norm.clone(),
+            ))
+        {
+            continue;
+        }
+        if vendor_keys.contains(&(device_norm, idx, cloned.sensor_type, name_norm)) {
+            continue;
         }
         seen_ids.insert(cloned.id.clone());
         result.push(cloned);
@@ -1534,5 +1535,39 @@ mod tests {
         // The helper reading should have adopted the canonical vendor GPU device_id and device_name
         assert_eq!(pwr.device_id, "gpu:pci:1002:6658");
         assert_eq!(pwr.device_name, "AMD Radeon R7 200 Series");
+    }
+
+    #[test]
+    fn test_merge_sensor_readings_deduplicates_overlapping_sensors() {
+        let vendor = vec![SensorReading {
+            id: "gpu:pci:1002:6658/temp".into(),
+            provider: "AMD ADL".into(),
+            scope: "GPU 0 Core".into(),
+            device_id: "gpu:pci:1002:6658".into(),
+            device_name: "AMD Radeon R7 200 Series".into(),
+            name: "GPU Temperature".into(),
+            hardware_category: planora_core::HardwareCategory::Gpu,
+            sensor_type: planora_core::SensorType::GpuTemperatureCelsius,
+            value: planora_core::Metric::available(58.0, "°C", "AMD ADL", 1_000),
+        }];
+
+        // Helper has the same sensor with a different vendor name representation ("R7 260X")
+        let helper = vec![SensorReading {
+            id: "/atigpu/0/temp/0".into(),
+            provider: "LibreHardwareMonitor".into(),
+            scope: "GPU 0 Core".into(),
+            device_id: "/atigpu/0".into(),
+            device_name: "AMD Radeon R7 260X".into(),
+            name: "GPU Temperature".into(),
+            hardware_category: planora_core::HardwareCategory::Gpu,
+            sensor_type: planora_core::SensorType::GpuTemperatureCelsius,
+            value: planora_core::Metric::available(57.5, "°C", "LHM", 1_000),
+        }];
+
+        let merged = merge_sensor_readings(&helper, &vendor);
+        // Duplicate temperature reading from helper must be dropped in favor of vendor
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].provider, "AMD ADL");
+        assert_eq!(merged[0].value.value, Some(58.0));
     }
 }
