@@ -1,0 +1,2 @@
+# Udev rule allowing unprivileged planora-helper to read Linux RAPL energy counters
+SUBSYSTEM=="powercap", ACTION=="add", RUN+="/bin/chgrp -R planora-sensors /sys/class/powercap", RUN+="/bin/chmod -R g+rX /sys/class/powercap"

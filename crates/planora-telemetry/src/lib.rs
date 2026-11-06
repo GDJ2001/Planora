@@ -1293,6 +1293,58 @@ impl Sampler {
             ),
         );
 
+        #[cfg(windows)]
+        let power_info =
+            windows_counters::query_processor_power_information(self.system.cpus().len());
+
+        let get_cpu_freq = |idx: usize, cpu: &sysinfo::Cpu| -> Option<Metric<f32>> {
+            #[cfg(windows)]
+            {
+                if let Some(info) = power_info.get(idx)
+                    && info.current_mhz > 0
+                {
+                    return Some(Metric::available(
+                        info.current_mhz as f32,
+                        planora_core::UNIT_MHZ,
+                        "CallNtPowerInformation",
+                        stamp,
+                    ));
+                }
+            }
+            #[cfg(target_os = "linux")]
+            {
+                let path = format!("/sys/devices/system/cpu/cpu{idx}/cpufreq/scaling_cur_freq");
+                if let Ok(text) = std::fs::read_to_string(&path)
+                    && let Ok(khz) = text.trim().parse::<f32>()
+                {
+                    return Some(Metric::available(
+                        khz / 1000.0,
+                        planora_core::UNIT_MHZ,
+                        "cpufreq",
+                        stamp,
+                    ));
+                }
+            }
+            let sys_freq = cpu.frequency();
+            if sys_freq > 0 {
+                Some(Metric::available(
+                    sys_freq as f32,
+                    planora_core::UNIT_MHZ,
+                    "sysinfo cpu",
+                    stamp,
+                ))
+            } else {
+                Some(Metric::unavailable(
+                    planora_core::UNIT_MHZ,
+                    "cpu frequency provider",
+                    stamp,
+                    AvailabilityReason::Unsupported(
+                        "Current CPU frequency is not available".into(),
+                    ),
+                ))
+            }
+        };
+
         // 4. Logical CPUs: emit WarmingUp on first sample, cache on !cpu_due, and map groups accurately
         let logical_cpus: Vec<planora_core::LogicalCpuSample> = if first {
             #[cfg(windows)]
@@ -1301,7 +1353,7 @@ impl Sampler {
                 .cpus()
                 .iter()
                 .enumerate()
-                .map(|(idx, _)| {
+                .map(|(idx, cpu)| {
                     #[cfg(windows)]
                     let (group, cpu_index) = proc_map
                         .get(idx)
@@ -1319,6 +1371,7 @@ impl Sampler {
                             stamp,
                             AvailabilityReason::WarmingUp,
                         ),
+                        frequency_mhz: get_cpu_freq(idx, cpu),
                     }
                 })
                 .collect()
@@ -1348,6 +1401,7 @@ impl Sampler {
                             "sysinfo cpu",
                             stamp,
                         ),
+                        frequency_mhz: get_cpu_freq(idx, cpu),
                     }
                 })
                 .collect();
@@ -1524,7 +1578,33 @@ impl Sampler {
             }
             self.cached_sensors.clone()
         };
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(windows)]
+        let sensors = {
+            let mut s = Vec::new();
+            for (i, zone) in windows_counters::query_thermal_zones()
+                .into_iter()
+                .enumerate()
+            {
+                s.push(planora_core::SensorReading {
+                    id: format!("thermal_zone/{i}"),
+                    device_id: "acpi:thermal_zone".to_string(),
+                    device_name: "ACPI Thermal Zone".to_string(),
+                    hardware_category: planora_core::HardwareCategory::MotherboardCooling,
+                    name: zone.name,
+                    sensor_type: planora_core::SensorType::ThermalZoneCelsius,
+                    scope: "Motherboard".to_string(),
+                    provider: "PDH Thermal Zone".to_string(),
+                    value: Metric::available(
+                        zone.temperature_c,
+                        planora_core::UNIT_CELSIUS,
+                        "PDH Thermal Zone",
+                        stamp,
+                    ),
+                });
+            }
+            s
+        };
+        #[cfg(not(any(target_os = "linux", windows)))]
         let sensors = Vec::new();
 
         provider_durations_ms.insert(

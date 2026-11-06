@@ -762,6 +762,7 @@ mod tests {
                 cpu_index: 0,
                 group,
                 utilization_percent: Metric::available(40.0, "%", "fixture", 1000),
+                frequency_mhz: None,
             })
             .to_vec();
         let core = CoreDescriptor {

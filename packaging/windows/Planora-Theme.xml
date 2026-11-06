@@ -35,8 +35,8 @@
       <Label X="28" Y="170" Width="564" Height="39" FontId="0" DisablePrefix="yes">The app, local helper, and desktop and Start menu shortcuts will be installed for this PC.</Label>
       <Label X="28" Y="218" Width="564" Height="20" FontId="3" DisablePrefix="yes">INSTALL LOCATION</Label>
       <Label X="28" Y="242" Width="564" Height="24" FontId="0" DisablePrefix="yes">[PlanoraInstallLocation]</Label>
-      <Checkbox Name="PlanoraAdvancedSensors" X="28" Y="280" Width="564" Height="24" TabStop="yes" FontId="0">Advanced sensors (signed PawnIO driver)</Checkbox>
-      <Label X="28" Y="306" Width="564" Height="35" FontId="4" DisablePrefix="yes">Optional. Core monitoring works without it. Shared PawnIO remains installed after Planora is removed.</Label>
+      <Checkbox Name="PlanoraAdvancedSensors" X="28" Y="280" Width="564" Height="24" TabStop="yes" FontId="0">Advanced sensors (CPU power, voltages, fans via signed PawnIO)</Checkbox>
+      <Label X="28" Y="306" Width="564" Height="35" FontId="4" DisablePrefix="yes">Enables CPU wattage, core voltage, core temperatures, and motherboard fan RPMs via the signed PawnIO driver.</Label>
       <Hypertext Name="EulaHyperlink" X="28" Y="343" Width="564" Height="21" TabStop="yes" FontId="0" HideWhenDisabled="yes">#(loc.InstallLicenseLinkText)</Hypertext>
       <Checkbox Name="EulaAcceptCheckbox" X="28" Y="365" Width="564" Height="22" TabStop="yes" FontId="0" HideWhenDisabled="yes">#(loc.InstallAcceptCheckbox)</Checkbox>
       <Button Name="InstallUpdateButton" X="28" Y="-22" Width="215" Height="32" TabStop="yes" FontId="0" EnableCondition="WixStdBAUpdateAvailable" HideWhenDisabled="yes">#(loc.UpdateButton)</Button>

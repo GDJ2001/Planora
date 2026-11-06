@@ -100,6 +100,80 @@ pub fn format_duration(dur: Duration) -> String {
     }
 }
 
+/// Unit-aware sensor value formatting with correct precision per sensor category.
+pub fn format_sensor_value(
+    value: f32,
+    unit: &str,
+    sensor_type: planora_core::SensorType,
+) -> String {
+    if !value.is_finite() {
+        return "Unavailable".to_string();
+    }
+    match sensor_type {
+        planora_core::SensorType::VoltageVolts => {
+            if unit.is_empty() {
+                format!("{value:.3}")
+            } else {
+                format!("{value:.3} {unit}")
+            }
+        }
+        planora_core::SensorType::CurrentAmperes => {
+            if unit.is_empty() {
+                format!("{value:.2}")
+            } else {
+                format!("{value:.2} {unit}")
+            }
+        }
+        planora_core::SensorType::CpuPackagePowerWatts
+        | planora_core::SensorType::GpuBoardPowerWatts
+        | planora_core::SensorType::GpuChipPowerWatts => {
+            if unit.is_empty() {
+                format!("{value:.1}")
+            } else {
+                format!("{value:.1} {unit}")
+            }
+        }
+        planora_core::SensorType::CpuTemperatureCelsius
+        | planora_core::SensorType::GpuTemperatureCelsius
+        | planora_core::SensorType::ThermalZoneCelsius
+        | planora_core::SensorType::StorageTemperatureCelsius => {
+            if unit.is_empty() {
+                format!("{value:.1}")
+            } else {
+                format!("{value:.1} {unit}")
+            }
+        }
+        planora_core::SensorType::FanRpm | planora_core::SensorType::ClockMhz => {
+            if unit.is_empty() {
+                format!("{value:.0}")
+            } else {
+                format!("{value:.0} {unit}")
+            }
+        }
+        planora_core::SensorType::LoadPercent | planora_core::SensorType::StorageHealthPercent => {
+            if unit == "%" || unit.is_empty() {
+                format!("{value:.1}%")
+            } else {
+                format!("{value:.1} {unit}")
+            }
+        }
+        planora_core::SensorType::DataGigabytes => {
+            if (0.0..1.0).contains(&value) {
+                format!("{:.0} MB", value * 1024.0)
+            } else {
+                format!("{value:.2} GB")
+            }
+        }
+        _ => {
+            if unit.is_empty() {
+                format!("{value:.1}")
+            } else {
+                format!("{value:.1} {unit}")
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,5 +208,48 @@ mod tests {
     fn test_format_bytes() {
         assert_eq!(format_bytes(1024 * 1024 * 500), "500.0 MiB");
         assert_eq!(format_bytes(1024 * 1024 * 1024 * 2), "2.00 GiB");
+    }
+
+    #[test]
+    fn test_format_sensor_value() {
+        use planora_core::SensorType;
+        assert_eq!(
+            format_sensor_value(1.044, "V", SensorType::VoltageVolts),
+            "1.044 V"
+        );
+        assert_eq!(
+            format_sensor_value(18.452, "A", SensorType::CurrentAmperes),
+            "18.45 A"
+        );
+        assert_eq!(
+            format_sensor_value(25.12, "W", SensorType::CpuPackagePowerWatts),
+            "25.1 W"
+        );
+        assert_eq!(
+            format_sensor_value(58.03, "°C", SensorType::GpuTemperatureCelsius),
+            "58.0 °C"
+        );
+        assert_eq!(
+            format_sensor_value(1250.4, "RPM", SensorType::FanRpm),
+            "1250 RPM"
+        );
+        assert_eq!(
+            format_sensor_value(832.1, "MHz", SensorType::ClockMhz),
+            "832 MHz"
+        );
+        assert_eq!(
+            format_sensor_value(65.02, "%", SensorType::LoadPercent),
+            "65.0%"
+        );
+        // < 1.0 GB shows in MB
+        assert_eq!(
+            format_sensor_value(277.0 / 1024.0, "GB", SensorType::DataGigabytes),
+            "277 MB"
+        );
+        // >= 1.0 GB shows in GB
+        assert_eq!(
+            format_sensor_value(2.5, "GB", SensorType::DataGigabytes),
+            "2.50 GB"
+        );
     }
 }

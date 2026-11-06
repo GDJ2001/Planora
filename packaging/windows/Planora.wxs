@@ -72,6 +72,7 @@
       <ComponentRef Id="PlanoraApp" />
       <ComponentRef Id="PlanoraShortcut" />
       <ComponentRef Id="PlanoraHelper" />
+      <ComponentRef Id="PlanoraSensorBroker" />
       <ComponentRef Id="StartAuthorizedHelper" />
       <ComponentRef Id="AuthorizationScript" />
       <ComponentRef Id="RevocationScript" />
@@ -81,7 +82,7 @@
       <ComponentRef Id="NoticeFile" />
       <ComponentRef Id="PersistedAuthorization" />
     </Feature>
-    <Feature Id="AdvancedSensors" Title="Advanced sensors" Description="Advanced hardware sensor broker for CPU package power, core temperatures, and storage health" Level="2">
+    <Feature Id="AdvancedSensors" Title="Advanced sensors" Description="Advanced hardware sensor broker for CPU package power, core temperatures, and storage health" Level="1">
       <Level Value="1" Condition="PLANORA_ADVANCED_SENSORS=1" />
       <ComponentRef Id="PlanoraSensorBroker" />
     </Feature>

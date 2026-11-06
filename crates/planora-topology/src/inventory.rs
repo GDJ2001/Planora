@@ -453,10 +453,8 @@ fn discover_gpus() -> Vec<GpuInventoryDevice> {
 
 #[cfg(not(windows))]
 fn discover_gpus() -> Vec<GpuInventoryDevice> {
-    #[cfg(target_os = "linux")]
+    #[allow(unused_mut)]
     let mut gpus = Vec::new();
-    #[cfg(not(target_os = "linux"))]
-    let gpus = Vec::new();
     #[cfg(target_os = "linux")]
     {
         if let Ok(entries) = std::fs::read_dir("/sys/class/drm") {
@@ -491,23 +489,110 @@ fn discover_gpus() -> Vec<GpuInventoryDevice> {
                     }
                     .to_string();
 
+                    let sub_ven = read_hex("subsystem_vendor");
+                    let sub_dev = read_hex("subsystem_device");
+                    let pci_subsystem_id = if sub_ven > 0 && sub_dev > 0 {
+                        Some(((sub_ven as u32) << 16) | (sub_dev as u32))
+                    } else {
+                        None
+                    };
+
+                    let pci_bus_location = std::fs::read_link(&dev_dir)
+                        .ok()
+                        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
+
+                    let dedicated_vram_bytes =
+                        std::fs::read_to_string(dev_dir.join("mem_info_vram_total"))
+                            .ok()
+                            .and_then(|s| s.trim().parse::<u64>().ok())
+                            .or_else(|| {
+                                std::fs::read_to_string(dev_dir.join("resource"))
+                                    .ok()
+                                    .and_then(|res| {
+                                        for line in res.lines() {
+                                            let parts: Vec<&str> =
+                                                line.split_whitespace().collect();
+                                            if parts.len() >= 3 {
+                                                let start = u64::from_str_radix(
+                                                    parts[0].trim_start_matches("0x"),
+                                                    16,
+                                                )
+                                                .ok()?;
+                                                let end = u64::from_str_radix(
+                                                    parts[1].trim_start_matches("0x"),
+                                                    16,
+                                                )
+                                                .ok()?;
+                                                let flags = u64::from_str_radix(
+                                                    parts[2].trim_start_matches("0x"),
+                                                    16,
+                                                )
+                                                .ok()?;
+                                                if end > start && (flags & 0x200 != 0) {
+                                                    let size = end - start + 1;
+                                                    if size >= 64 * 1024 * 1024 {
+                                                        return Some(size);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        None
+                                    })
+                            })
+                            .unwrap_or(0);
+
+                    let driver_version = std::fs::read_link(dev_dir.join("driver"))
+                        .ok()
+                        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                        .and_then(|drv| {
+                            std::fs::read_to_string(format!("/sys/module/{drv}/version"))
+                                .or_else(|_| {
+                                    std::fs::read_to_string(dev_dir.join("driver/module/version"))
+                                })
+                                .ok()
+                                .map(|s| s.trim().to_string())
+                        });
+
+                    let device_id = if let Some(bus) = &pci_bus_location {
+                        format!("gpu:pci:{}", bus)
+                    } else {
+                        format!("gpu:pci:{:04x}:{:04x}", ven_id, dev_id)
+                    };
+
                     gpus.push(GpuInventoryDevice {
-                        device_id: format!("gpu:pci:{:04x}:{:04x}", ven_id, dev_id),
+                        device_id,
                         name: format!("{vendor_name} GPU ({name})"),
                         vendor_name,
                         pci_vendor_id: ven_id,
                         pci_device_id: dev_id,
-                        pci_subsystem_id: None,
-                        pci_bus_location: None,
+                        pci_subsystem_id,
+                        pci_bus_location,
                         adapter_luid: None,
-                        dedicated_vram_bytes: 0,
+                        dedicated_vram_bytes,
                         is_discrete: ven_id != 0x8086,
-                        driver_version: None,
+                        driver_version,
                         driver_date: None,
                     });
                 }
             }
         }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        gpus.push(GpuInventoryDevice {
+            device_id: "gpu:apple:integrated".into(),
+            name: "Apple Integrated GPU".into(),
+            vendor_name: "Apple".into(),
+            pci_vendor_id: 0x106B,
+            pci_device_id: 0,
+            pci_subsystem_id: None,
+            pci_bus_location: None,
+            adapter_luid: None,
+            dedicated_vram_bytes: 0,
+            is_discrete: false,
+            driver_version: None,
+            driver_date: None,
+        });
     }
     gpus
 }
@@ -1123,26 +1208,71 @@ fn discover_network() -> Vec<NetworkInventoryDevice> {
 }
 
 fn discover_cooling() -> Vec<CoolingInventoryDevice> {
-    vec![
-        CoolingInventoryDevice {
-            device_id: "cooling:cpu".into(),
-            name: "CPU Cooler".into(),
-            kind: "Fan/AIO".into(),
-            channel_count: 1,
-        },
-        CoolingInventoryDevice {
-            device_id: "cooling:chassis".into(),
-            name: "Chassis Cooling".into(),
-            kind: "Header".into(),
-            channel_count: 3,
-        },
-        CoolingInventoryDevice {
-            device_id: "cooling:gpu".into(),
-            name: "GPU Cooler".into(),
-            kind: "Active GPU Fans".into(),
-            channel_count: 2,
-        },
-    ]
+    #[allow(unused_mut)]
+    let mut devices = Vec::new();
+
+    #[cfg(target_os = "linux")]
+    {
+        // 1. Enumerate hwmon fan and pwm channels
+        if let Ok(entries) = std::fs::read_dir("/sys/class/hwmon") {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let hwmon_id = entry.file_name().to_string_lossy().into_owned();
+                let name = std::fs::read_to_string(path.join("name"))
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_else(|_| hwmon_id.clone());
+
+                let mut channel_count = 0u32;
+                if let Ok(files) = std::fs::read_dir(&path) {
+                    for f in files.flatten() {
+                        let fname = f.file_name().to_string_lossy().into_owned();
+                        if (fname.starts_with("fan") && fname.ends_with("_input"))
+                            || (fname.starts_with("pwm")
+                                && fname.chars().skip(3).all(|c| c.is_ascii_digit()))
+                        {
+                            channel_count += 1;
+                        }
+                    }
+                }
+
+                if channel_count > 0 {
+                    devices.push(CoolingInventoryDevice {
+                        device_id: format!("cooling:hwmon:{}", hwmon_id),
+                        name: format!("{} Hardware Monitor", name),
+                        kind: "Fan/PWM Controller".into(),
+                        channel_count,
+                    });
+                }
+            }
+        }
+
+        // 2. Enumerate thermal cooling devices
+        if let Ok(entries) = std::fs::read_dir("/sys/class/thermal") {
+            for entry in entries.flatten() {
+                let fname = entry.file_name().to_string_lossy().into_owned();
+                if fname.starts_with("cooling_device") {
+                    let dev_type = std::fs::read_to_string(entry.path().join("type"))
+                        .map(|s| s.trim().to_string())
+                        .unwrap_or_else(|_| "Cooling Device".into());
+                    devices.push(CoolingInventoryDevice {
+                        device_id: format!("cooling:thermal:{}", fname),
+                        name: format!("Thermal Cooling ({dev_type})"),
+                        kind: "Thermal Governor".into(),
+                        channel_count: 1,
+                    });
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        // On Windows and macOS without elevated drivers, non-privileged ACPI cooling controllers
+        // are not exposed via standard user-mode APIs. Privileged fan RPMs are dynamically
+        // populated via the sensor broker / SMC.
+    }
+
+    devices
 }
 
 #[cfg(test)]

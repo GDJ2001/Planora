@@ -568,7 +568,11 @@ impl Default for ResourcesViewState {
             selected_resource: None,
             summary_section: None,
             reveal_selected_resource: true,
-            expanded_sections: BTreeSet::new(),
+            expanded_sections: BTreeSet::from([
+                ResourceSection::CpuSensors,
+                ResourceSection::GpuSensors,
+                ResourceSection::MotherboardCooling,
+            ]),
             pinned_interfaces: BTreeSet::new(),
             range: HistoryRange::Sec60,
             selected_cpu: None,
@@ -661,12 +665,28 @@ pub fn choices(
     sensors: &[SensorReading],
     p: Palette,
 ) -> Vec<Choice> {
-    let mut rows = vec![
-        Choice {
-            id: "cpu".into(),
-            label: "CPU".into(),
-            value: format_percent(frame.cpu_percent.value),
-            status_text: if frame.cpu_percent.value.is_some() {
+    let cpu_watts = frame.package_power_watts.value.or_else(|| {
+        sensors.iter().find_map(|s| {
+            if s.sensor_type == planora_core::SensorType::CpuPackagePowerWatts {
+                s.value.value
+            } else {
+                None
+            }
+        })
+    });
+    let cpu_temp = sensors.iter().find_map(|s| {
+        if s.sensor_type == planora_core::SensorType::CpuTemperatureCelsius {
+            s.value.value
+        } else {
+            None
+        }
+    });
+    let cpu_status_text = match (cpu_watts, cpu_temp) {
+        (Some(w), Some(t)) => format!("{w:.1} W · {t:.0} °C"),
+        (Some(w), None) => format!("{w:.1} W"),
+        (None, Some(t)) => format!("{t:.0} °C"),
+        _ => {
+            if frame.cpu_percent.value.is_some() {
                 "Active".into()
             } else {
                 frame
@@ -674,7 +694,16 @@ pub fn choices(
                     .unavailable_reason
                     .as_ref()
                     .map_or_else(|| "Unavailable".into(), ToString::to_string)
-            },
+            }
+        }
+    };
+
+    let mut rows = vec![
+        Choice {
+            id: "cpu".into(),
+            label: "CPU".into(),
+            value: format_percent(frame.cpu_percent.value),
+            status_text: cpu_status_text,
             status_symbol: if frame.cpu_percent.value.is_some() {
                 "●"
             } else {
@@ -744,6 +773,49 @@ pub fn choices(
     for adapter in adapters {
         let (activity, _, _) = adapter.activity_percent();
         let is_ok = activity.value.is_some();
+        let gpu_temp = sensors.iter().find_map(|s| {
+            if s.hardware_category == planora_core::HardwareCategory::Gpu
+                && s.sensor_type == planora_core::SensorType::GpuTemperatureCelsius
+            {
+                s.value.value
+            } else {
+                None
+            }
+        });
+        let gpu_clock = sensors.iter().find_map(|s| {
+            if s.hardware_category == planora_core::HardwareCategory::Gpu
+                && s.sensor_type == planora_core::SensorType::ClockMhz
+                && (s.name.contains("Core") || s.scope.contains("Core"))
+            {
+                s.value.value
+            } else {
+                None
+            }
+        });
+        let gpu_watts = sensors.iter().find_map(|s| {
+            if s.hardware_category == planora_core::HardwareCategory::Gpu
+                && (s.sensor_type == planora_core::SensorType::GpuBoardPowerWatts
+                    || s.sensor_type == planora_core::SensorType::GpuChipPowerWatts)
+            {
+                s.value.value
+            } else {
+                None
+            }
+        });
+        let gpu_status_text = match (gpu_temp, gpu_clock, gpu_watts) {
+            (Some(t), Some(c), _) => format!("{t:.0} °C · {c:.0} MHz"),
+            (Some(t), None, Some(w)) => format!("{w:.1} W · {t:.0} °C"),
+            (Some(t), None, None) => format!("{t:.0} °C"),
+            (None, Some(c), _) => format!("{c:.0} MHz"),
+            (None, None, Some(w)) => format!("{w:.1} W"),
+            _ => {
+                if is_ok {
+                    "Active".into()
+                } else {
+                    "Unavailable".into()
+                }
+            }
+        };
         rows.push(Choice {
             id: format!(
                 "gpu:{}:{:?}",
@@ -751,11 +823,7 @@ pub fn choices(
             ),
             label: adapter.name.clone(),
             value: format_percent(activity.value),
-            status_text: if is_ok {
-                "Active".into()
-            } else {
-                "Unavailable".into()
-            },
+            status_text: gpu_status_text,
             status_symbol: if is_ok { "●" } else { "—" },
             status_color: if is_ok { p.success } else { p.warning },
             category: 2,
@@ -937,7 +1005,13 @@ pub fn choices(
             label,
             value: sensor.value.value.map_or_else(
                 || "Unavailable".into(),
-                |v| format!("{v:.1} {}", sensor.value.unit),
+                |v| {
+                    crate::formatting::format_sensor_value(
+                        v,
+                        &sensor.value.unit,
+                        sensor.sensor_type,
+                    )
+                },
             ),
             status_text,
             status_symbol,
@@ -2731,9 +2805,9 @@ fn render_selected(
         .corner_radius(CornerRadius::same(CORNER_RADIUS as u8))
         .inner_margin(egui::Margin::same(14))
         .show(ui, |ui| match item.category {
-            0 => render_cpu_tab(ui, frame, topology, histories, state.range, now, p),
+            0 => render_cpu_tab(ui, frame, topology, sensors, histories, state, now, p),
             1 => render_memory_tab(ui, frame, p),
-            2 => render_gpu_tab(ui, frame, p),
+            2 => render_gpu_tab(ui, frame, sensors, histories, state, now, p),
             3 => render_storage_tab(ui, frame, histories, p),
             4 => render_network_tab(ui, frame, histories, p),
             5 => render_sensors_tab(
@@ -2747,7 +2821,206 @@ fn render_selected(
                 now,
                 p,
             ),
-            _ => render_cpu_tab(ui, frame, topology, histories, state.range, now, p),
+            _ => render_cpu_tab(ui, frame, topology, sensors, histories, state, now, p),
+        });
+}
+
+fn live_telemetry_metric_card(
+    ui: &mut egui::Ui,
+    title: &str,
+    value_str: &str,
+    status_str: &str,
+    is_available: bool,
+    target_sensor_id: Option<String>,
+    state: &mut ResourcesViewState,
+    p: Palette,
+) {
+    let font_scale = crate::appearance::text_scale(ui.ctx());
+    let card_w = (145.0 * font_scale).max(125.0);
+    let card_h = (68.0 * font_scale).max(60.0);
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(card_w, card_h), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let is_hovered = response.hovered();
+        let bg = if is_hovered && target_sensor_id.is_some() {
+            p.surface_raised
+        } else {
+            p.surface
+        };
+        let border_stroke = if is_hovered && target_sensor_id.is_some() {
+            Stroke::new(1.0, p.focus)
+        } else {
+            Stroke::new(1.0, p.border)
+        };
+        ui.painter().rect_filled(rect, CornerRadius::same(6), bg);
+        ui.painter().rect_stroke(
+            rect,
+            CornerRadius::same(6),
+            border_stroke,
+            egui::StrokeKind::Inside,
+        );
+
+        let inner_rect = rect.shrink(8.0);
+        let mut child_ui = ui.new_child(egui::UiBuilder::new().max_rect(inner_rect));
+        child_ui.set_width(inner_rect.width());
+        child_ui.vertical(|ui| {
+            ui.label(
+                egui::RichText::new(title)
+                    .size(11.0 * font_scale)
+                    .color(p.secondary)
+                    .strong(),
+            );
+            ui.add_space(2.0);
+            let val_color = if is_available { p.text } else { p.secondary };
+            ui.label(
+                egui::RichText::new(value_str)
+                    .size(16.0 * font_scale)
+                    .monospace()
+                    .strong()
+                    .color(val_color),
+            );
+            ui.label(
+                egui::RichText::new(status_str)
+                    .size(10.0 * font_scale)
+                    .color(if is_available { p.success } else { p.warning }),
+            );
+        });
+    }
+
+    if let Some(sensor_id) = target_sensor_id {
+        if response.clicked() {
+            state.selected_resource = Some(sensor_id);
+            state.reveal_selected_resource = true;
+            state.summary_section = None;
+        }
+        let _ = response.on_hover_text(format!("Click to view {title} history chart"));
+    }
+}
+
+fn render_embedded_sensors_table(
+    ui: &mut egui::Ui,
+    title: &str,
+    sensors: &[&SensorReading],
+    histories: &ResourceHistories,
+    state: &mut ResourcesViewState,
+    now: Instant,
+    id_salt: &str,
+    p: Palette,
+) {
+    if sensors.is_empty() {
+        return;
+    }
+    ui.add_space(14.0);
+    ui.strong(format!("{title} ({})", sensors.len()));
+    ui.label(
+        egui::RichText::new(
+            "Live sensor telemetry from hardware monitors and drivers. Click 'Chart ↗' to open full history chart.",
+        )
+        .color(p.secondary)
+        .size(11.0 * crate::appearance::text_scale(ui.ctx())),
+    );
+    ui.add_space(4.0);
+
+    egui::ScrollArea::horizontal()
+        .id_salt(id_salt)
+        .show(ui, |ui| {
+            egui::Grid::new(format!("{id_salt}_grid"))
+                .striped(true)
+                .num_columns(8)
+                .spacing([18.0, 6.0])
+                .min_row_height(28.0)
+                .show(ui, |ui| {
+                    ui.strong("Sensor");
+                    ui.strong("Current");
+                    ui.strong("Min");
+                    ui.strong("Max");
+                    ui.strong("Avg");
+                    ui.strong("Source");
+                    ui.strong("Status");
+                    ui.strong("Action");
+                    ui.end_row();
+
+                    for sensor in sensors {
+                        ui.label(&sensor.name);
+
+                        let current_str = sensor.value.value.map_or_else(
+                            || "Unavailable".into(),
+                            |v| {
+                                crate::formatting::format_sensor_value(
+                                    v,
+                                    &sensor.value.unit,
+                                    sensor.sensor_type,
+                                )
+                            },
+                        );
+                        ui.monospace(current_str);
+
+                        let key = crate::history::sensor_series_key(sensor);
+                        let summary = histories
+                            .detail(&key)
+                            .and_then(|s| s.observed_summary(now, state.range));
+
+                        let min_str = summary.as_ref().map_or_else(
+                            || "—".into(),
+                            |s| {
+                                crate::formatting::format_sensor_value(
+                                    s.minimum,
+                                    &sensor.value.unit,
+                                    sensor.sensor_type,
+                                )
+                            },
+                        );
+                        ui.monospace(min_str);
+
+                        let max_str = summary.as_ref().map_or_else(
+                            || "—".into(),
+                            |s| {
+                                crate::formatting::format_sensor_value(
+                                    s.maximum,
+                                    &sensor.value.unit,
+                                    sensor.sensor_type,
+                                )
+                            },
+                        );
+                        ui.monospace(max_str);
+
+                        let avg_str = summary.as_ref().map_or_else(
+                            || "—".into(),
+                            |s| {
+                                crate::formatting::format_sensor_value(
+                                    s.average,
+                                    &sensor.value.unit,
+                                    sensor.sensor_type,
+                                )
+                            },
+                        );
+                        ui.monospace(avg_str);
+
+                        let src = if !sensor.provider.is_empty() {
+                            &sensor.provider
+                        } else {
+                            &sensor.value.source
+                        };
+                        ui.label(src);
+
+                        let is_ok = sensor.value.value.is_some();
+                        let status_color = if is_ok { p.success } else { p.warning };
+                        let status_text = if is_ok {
+                            "● Active"
+                        } else {
+                            "— Unavailable"
+                        };
+                        ui.colored_label(status_color, status_text);
+
+                        let key_clone = key.clone();
+                        if ui.small_button("Chart ↗").clicked() {
+                            state.selected_resource = Some(key_clone);
+                            state.reveal_selected_resource = true;
+                            state.summary_section = None;
+                        }
+
+                        ui.end_row();
+                    }
+                });
         });
 }
 
@@ -2755,13 +3028,14 @@ fn render_cpu_tab(
     ui: &mut egui::Ui,
     frame: &TelemetryFrame,
     topology: Option<&Topology>,
+    sensors: &[SensorReading],
     histories: &ResourceHistories,
-    range: HistoryRange,
+    state: &mut ResourcesViewState,
     now: Instant,
     p: Palette,
 ) {
     ui.horizontal_wrapped(|ui| {
-        ui.heading("Logical Processors");
+        ui.heading("CPU Performance & Telemetry");
         ui.label(
             egui::RichText::new(format!(
                 "Total System CPU: {}",
@@ -2774,12 +3048,179 @@ fn render_cpu_tab(
 
     ui.label(
         egui::RichText::new(
-            "Individual logical processor loads preserving Windows processor-group addressing.",
+            "Individual logical processor loads, live voltages, powers, temperatures, and cooling fans.",
         )
         .size(11.5 * crate::appearance::text_scale(ui.ctx()))
         .color(p.secondary),
     );
     ui.add_space(8.0);
+
+    // 1. Live CPU Telemetry Summary Strip
+    let pkg_power_sensor = sensors
+        .iter()
+        .find(|s| {
+            s.hardware_category == planora_core::HardwareCategory::Cpu
+                && s.sensor_type == planora_core::SensorType::CpuPackagePowerWatts
+                && s.scope.eq_ignore_ascii_case("Package")
+        })
+        .or_else(|| {
+            sensors.iter().find(|s| {
+                s.hardware_category == planora_core::HardwareCategory::Cpu
+                    && s.sensor_type == planora_core::SensorType::CpuPackagePowerWatts
+            })
+        });
+    let pkg_power_val = frame
+        .package_power_watts
+        .value
+        .or_else(|| pkg_power_sensor.and_then(|s| s.value.value));
+    let pkg_power_str = pkg_power_val.map_or_else(|| "Unavailable".into(), |w| format!("{w:.1} W"));
+
+    let vcore_sensor = sensors.iter().find(|s| {
+        let name_lower = s.name.to_lowercase();
+        let scope_lower = s.scope.to_lowercase();
+        s.sensor_type == planora_core::SensorType::VoltageVolts
+            && (name_lower.contains("vcore")
+                || name_lower.contains("core")
+                || name_lower.contains("cpu")
+                || name_lower.contains("vid")
+                || scope_lower.contains("cpu")
+                || scope_lower.contains("core"))
+    });
+    let vcore_val = vcore_sensor.and_then(|s| s.value.value);
+    let vcore_str = vcore_val.map_or_else(|| "Unavailable".into(), |v| format!("{v:.3} V"));
+
+    let cpu_temp_sensor = sensors
+        .iter()
+        .find(|s| {
+            s.hardware_category == planora_core::HardwareCategory::Cpu
+                && s.sensor_type == planora_core::SensorType::CpuTemperatureCelsius
+                && (s.name.contains("Package") || s.scope.contains("Package"))
+        })
+        .or_else(|| {
+            sensors.iter().find(|s| {
+                s.hardware_category == planora_core::HardwareCategory::Cpu
+                    && s.sensor_type == planora_core::SensorType::CpuTemperatureCelsius
+            })
+        });
+    let cpu_temp_val = cpu_temp_sensor.and_then(|s| s.value.value);
+    let cpu_temp_str = cpu_temp_val.map_or_else(|| "Unavailable".into(), |t| format!("{t:.1} °C"));
+
+    let max_core_freq = frame
+        .logical_cpus
+        .iter()
+        .filter_map(|c| c.frequency_mhz.as_ref().and_then(|f| f.value))
+        .fold(0.0f32, f32::max);
+    let clock_sensor = sensors.iter().find(|s| {
+        s.hardware_category == planora_core::HardwareCategory::Cpu
+            && s.sensor_type == planora_core::SensorType::ClockMhz
+    });
+    let clock_val = if max_core_freq > 0.0 {
+        Some(max_core_freq)
+    } else {
+        clock_sensor.and_then(|s| s.value.value)
+    };
+    let clock_str = clock_val.map_or_else(|| "Unavailable".into(), |c| format!("{c:.0} MHz"));
+
+    let cpu_fan_sensor = sensors.iter().find(|s| {
+        let name_lower = s.name.to_lowercase();
+        let scope_lower = s.scope.to_lowercase();
+        (s.sensor_type == planora_core::SensorType::FanRpm
+            || s.sensor_type == planora_core::SensorType::LoadPercent)
+            && (name_lower.contains("cpu")
+                || name_lower.contains("pump")
+                || scope_lower.contains("cpu")
+                || scope_lower.contains("pump"))
+    });
+    let cpu_fan_val = cpu_fan_sensor.and_then(|s| s.value.value);
+    let cpu_fan_str = if let Some(fan) = cpu_fan_sensor {
+        cpu_fan_val.map_or_else(
+            || "Unavailable".into(),
+            |v| {
+                if fan.sensor_type == planora_core::SensorType::FanRpm {
+                    format!("{v:.0} RPM")
+                } else {
+                    format!("{v:.1}%")
+                }
+            },
+        )
+    } else {
+        "Unavailable".into()
+    };
+
+    ui.horizontal_wrapped(|ui| {
+        live_telemetry_metric_card(
+            ui,
+            "Package Power",
+            &pkg_power_str,
+            if pkg_power_val.is_some() {
+                "● Measured"
+            } else {
+                "PawnIO / RAPL needed"
+            },
+            pkg_power_val.is_some(),
+            pkg_power_sensor.map(crate::history::sensor_series_key),
+            state,
+            p,
+        );
+        live_telemetry_metric_card(
+            ui,
+            "Core Voltage",
+            &vcore_str,
+            if vcore_val.is_some() {
+                "● Measured"
+            } else {
+                "Sensor unavailable"
+            },
+            vcore_val.is_some(),
+            vcore_sensor.map(crate::history::sensor_series_key),
+            state,
+            p,
+        );
+        live_telemetry_metric_card(
+            ui,
+            "CPU Temperature",
+            &cpu_temp_str,
+            if cpu_temp_val.is_some() {
+                "● Measured"
+            } else {
+                "Sensor unavailable"
+            },
+            cpu_temp_val.is_some(),
+            cpu_temp_sensor.map(crate::history::sensor_series_key),
+            state,
+            p,
+        );
+        live_telemetry_metric_card(
+            ui,
+            "Peak Core Clock",
+            &clock_str,
+            if clock_val.is_some() {
+                "● Measured"
+            } else {
+                "Clock unavailable"
+            },
+            clock_val.is_some(),
+            clock_sensor.map(crate::history::sensor_series_key),
+            state,
+            p,
+        );
+        live_telemetry_metric_card(
+            ui,
+            "CPU / Pump Fan",
+            &cpu_fan_str,
+            if cpu_fan_val.is_some() {
+                "● Measured"
+            } else {
+                "Header unexposed"
+            },
+            cpu_fan_val.is_some(),
+            cpu_fan_sensor.map(crate::history::sensor_series_key),
+            state,
+            p,
+        );
+    });
+
+    ui.add_space(10.0);
 
     if frame.logical_cpus.is_empty() {
         ui.label("No individual logical core metrics were reported in this frame.");
@@ -2791,13 +3232,14 @@ fn render_cpu_tab(
         .show(ui, |ui| {
             egui::Grid::new("resources_cpu_grid")
                 .striped(true)
-                .num_columns(7)
+                .num_columns(8)
                 .spacing([20.0, 8.0])
                 .min_row_height(32.0)
                 .show(ui, |ui| {
                     ui.strong("CPU #");
                     ui.strong("Group");
                     ui.strong("Core Type");
+                    ui.strong("Clock");
                     ui.strong("Utilization");
                     ui.strong("Observed Range");
                     ui.strong("Load Bar");
@@ -2817,11 +3259,18 @@ fn render_cpu_tab(
                         });
                         ui.label(class_str.unwrap_or("Standard"));
 
+                        let clock_str = core
+                            .frequency_mhz
+                            .as_ref()
+                            .and_then(|m| m.value)
+                            .map_or_else(|| "—".into(), |mhz| format!("{mhz:.0} MHz"));
+                        ui.monospace(clock_str);
+
                         ui.monospace(format_percent(core.utilization_percent.value));
 
                         let key = format!("cpu:{}:{}", core.group, core.cpu_index);
                         let range_str = if let Some(series) = histories.detail(&key)
-                            && let Some(summary) = series.observed_summary(now, range)
+                            && let Some(summary) = series.observed_summary(now, state.range)
                         {
                             format!(
                                 "{:.0}–{:.0}% (avg {:.0}%)",
@@ -2854,6 +3303,31 @@ fn render_cpu_tab(
                     }
                 });
         });
+
+    let cpu_sensors: Vec<&SensorReading> = sensors
+        .iter()
+        .filter(|s| {
+            let name_lower = s.name.to_lowercase();
+            let scope_lower = s.scope.to_lowercase();
+            s.hardware_category == planora_core::HardwareCategory::Cpu
+                || (s.hardware_category == planora_core::HardwareCategory::MotherboardCooling
+                    && (name_lower.contains("cpu")
+                        || name_lower.contains("pump")
+                        || name_lower.contains("vcore")
+                        || scope_lower.contains("cpu")))
+        })
+        .collect();
+
+    render_embedded_sensors_table(
+        ui,
+        "CPU & Motherboard Cooling Measurements",
+        &cpu_sensors,
+        histories,
+        state,
+        now,
+        "performance_cpu_sensors_table",
+        p,
+    );
 }
 
 fn render_memory_tab(ui: &mut egui::Ui, frame: &TelemetryFrame, p: Palette) {
@@ -2924,7 +3398,15 @@ fn render_memory_tab(ui: &mut egui::Ui, frame: &TelemetryFrame, p: Palette) {
         });
 }
 
-fn render_gpu_tab(ui: &mut egui::Ui, frame: &TelemetryFrame, p: Palette) {
+fn render_gpu_tab(
+    ui: &mut egui::Ui,
+    frame: &TelemetryFrame,
+    sensors: &[SensorReading],
+    histories: &ResourceHistories,
+    state: &mut ResourcesViewState,
+    now: Instant,
+    p: Palette,
+) {
     ui.heading("GPU Adapters & Engines");
     ui.label(
         egui::RichText::new(
@@ -2938,6 +3420,177 @@ fn render_gpu_tab(ui: &mut egui::Ui, frame: &TelemetryFrame, p: Palette) {
         .color(p.secondary),
     );
     ui.add_space(8.0);
+
+    // 1. Live GPU Telemetry Summary Strip
+    let gpu_power_sensor = sensors.iter().find(|s| {
+        s.hardware_category == planora_core::HardwareCategory::Gpu
+            && (s.sensor_type == planora_core::SensorType::GpuBoardPowerWatts
+                || s.sensor_type == planora_core::SensorType::GpuChipPowerWatts)
+    });
+    let gpu_power_val = gpu_power_sensor.and_then(|s| s.value.value);
+    let gpu_power_str = gpu_power_val.map_or_else(|| "Unavailable".into(), |w| format!("{w:.1} W"));
+
+    let gpu_temp_sensor = sensors
+        .iter()
+        .find(|s| {
+            s.hardware_category == planora_core::HardwareCategory::Gpu
+                && s.sensor_type == planora_core::SensorType::GpuTemperatureCelsius
+                && (s.name.contains("Core")
+                    || s.name.contains("Edge")
+                    || s.name.contains("Temperature"))
+        })
+        .or_else(|| {
+            sensors.iter().find(|s| {
+                s.hardware_category == planora_core::HardwareCategory::Gpu
+                    && s.sensor_type == planora_core::SensorType::GpuTemperatureCelsius
+            })
+        });
+    let gpu_temp_val = gpu_temp_sensor.and_then(|s| s.value.value);
+    let gpu_temp_str = gpu_temp_val.map_or_else(|| "Unavailable".into(), |t| format!("{t:.1} °C"));
+
+    let gpu_core_clock_sensor = sensors
+        .iter()
+        .find(|s| {
+            s.hardware_category == planora_core::HardwareCategory::Gpu
+                && s.sensor_type == planora_core::SensorType::ClockMhz
+                && (s.name.contains("Core") || s.scope.contains("Core"))
+        })
+        .or_else(|| {
+            sensors.iter().find(|s| {
+                s.hardware_category == planora_core::HardwareCategory::Gpu
+                    && s.sensor_type == planora_core::SensorType::ClockMhz
+            })
+        });
+    let gpu_core_clock_val = gpu_core_clock_sensor.and_then(|s| s.value.value);
+    let gpu_core_clock_str =
+        gpu_core_clock_val.map_or_else(|| "Unavailable".into(), |c| format!("{c:.0} MHz"));
+
+    let gpu_mem_clock_sensor = sensors.iter().find(|s| {
+        s.hardware_category == planora_core::HardwareCategory::Gpu
+            && s.sensor_type == planora_core::SensorType::ClockMhz
+            && (s.name.contains("Memory") || s.scope.contains("Memory"))
+    });
+    let gpu_mem_clock_val = gpu_mem_clock_sensor.and_then(|s| s.value.value);
+    let gpu_mem_clock_str =
+        gpu_mem_clock_val.map_or_else(|| "Unavailable".into(), |m| format!("{m:.0} MHz"));
+
+    let gpu_voltage_sensor = sensors.iter().find(|s| {
+        s.hardware_category == planora_core::HardwareCategory::Gpu
+            && s.sensor_type == planora_core::SensorType::VoltageVolts
+    });
+    let gpu_voltage_val = gpu_voltage_sensor.and_then(|s| s.value.value);
+    let gpu_voltage_str =
+        gpu_voltage_val.map_or_else(|| "Unavailable".into(), |v| format!("{v:.3} V"));
+
+    let gpu_fan_sensor = sensors.iter().find(|s| {
+        s.hardware_category == planora_core::HardwareCategory::Gpu
+            && (s.sensor_type == planora_core::SensorType::FanRpm
+                || s.sensor_type == planora_core::SensorType::LoadPercent)
+    });
+    let gpu_fan_val = gpu_fan_sensor.and_then(|s| s.value.value);
+    let gpu_fan_str = if let Some(fan) = gpu_fan_sensor {
+        gpu_fan_val.map_or_else(
+            || "Unavailable".into(),
+            |v| {
+                if fan.sensor_type == planora_core::SensorType::FanRpm {
+                    format!("{v:.0} RPM")
+                } else {
+                    format!("{v:.1}%")
+                }
+            },
+        )
+    } else {
+        "Unavailable".into()
+    };
+
+    ui.horizontal_wrapped(|ui| {
+        live_telemetry_metric_card(
+            ui,
+            "GPU Power",
+            &gpu_power_str,
+            if gpu_power_val.is_some() {
+                "● Measured"
+            } else {
+                "Overdrive6 / NVML"
+            },
+            gpu_power_val.is_some(),
+            gpu_power_sensor.map(crate::history::sensor_series_key),
+            state,
+            p,
+        );
+        live_telemetry_metric_card(
+            ui,
+            "GPU Temperature",
+            &gpu_temp_str,
+            if gpu_temp_val.is_some() {
+                "● Measured"
+            } else {
+                "Sensor unavailable"
+            },
+            gpu_temp_val.is_some(),
+            gpu_temp_sensor.map(crate::history::sensor_series_key),
+            state,
+            p,
+        );
+        live_telemetry_metric_card(
+            ui,
+            "Core Clock",
+            &gpu_core_clock_str,
+            if gpu_core_clock_val.is_some() {
+                "● Measured"
+            } else {
+                "Clock unavailable"
+            },
+            gpu_core_clock_val.is_some(),
+            gpu_core_clock_sensor.map(crate::history::sensor_series_key),
+            state,
+            p,
+        );
+        live_telemetry_metric_card(
+            ui,
+            "Memory Clock",
+            &gpu_mem_clock_str,
+            if gpu_mem_clock_val.is_some() {
+                "● Measured"
+            } else {
+                "Clock unavailable"
+            },
+            gpu_mem_clock_val.is_some(),
+            gpu_mem_clock_sensor.map(crate::history::sensor_series_key),
+            state,
+            p,
+        );
+        live_telemetry_metric_card(
+            ui,
+            "Core Voltage",
+            &gpu_voltage_str,
+            if gpu_voltage_val.is_some() {
+                "● Measured"
+            } else {
+                "Sensor unavailable"
+            },
+            gpu_voltage_val.is_some(),
+            gpu_voltage_sensor.map(crate::history::sensor_series_key),
+            state,
+            p,
+        );
+        live_telemetry_metric_card(
+            ui,
+            "GPU Fan Speed",
+            &gpu_fan_str,
+            if gpu_fan_val.is_some() {
+                "● Measured"
+            } else {
+                "RPM unexposed"
+            },
+            gpu_fan_val.is_some(),
+            gpu_fan_sensor.map(crate::history::sensor_series_key),
+            state,
+            p,
+        );
+    });
+
+    ui.add_space(10.0);
 
     if frame.gpu_adapters.is_empty() {
         ui.label("No discrete or integrated GPU adapters discovered.");
@@ -3058,6 +3711,22 @@ fn render_gpu_tab(ui: &mut egui::Ui, frame: &TelemetryFrame, p: Palette) {
                     });
             });
     }
+
+    let gpu_sensors: Vec<&SensorReading> = sensors
+        .iter()
+        .filter(|s| s.hardware_category == planora_core::HardwareCategory::Gpu)
+        .collect();
+
+    render_embedded_sensors_table(
+        ui,
+        "GPU Device Measurements",
+        &gpu_sensors,
+        histories,
+        state,
+        now,
+        "performance_gpu_sensors_table",
+        p,
+    );
 }
 
 fn render_storage_tab(
@@ -3510,26 +4179,29 @@ fn render_sensors_tab(
                             // 2. Current
                             let current_str = sensor.value.value.map_or_else(
                                 || "—".into(),
-                                |v| format!("{v:.1}"),
+                                |v| crate::formatting::format_sensor_value(v, "", sensor.sensor_type),
                             );
                             ui.monospace(current_str);
 
                             // 3. Minimum
-                            let min_str = summary
-                                .as_ref()
-                                .map_or_else(|| "—".into(), |s| format!("{:.1}", s.minimum));
+                            let min_str = summary.as_ref().map_or_else(
+                                || "—".into(),
+                                |s| crate::formatting::format_sensor_value(s.minimum, "", sensor.sensor_type),
+                            );
                             ui.monospace(min_str);
 
                             // 4. Maximum
-                            let max_str = summary
-                                .as_ref()
-                                .map_or_else(|| "—".into(), |s| format!("{:.1}", s.maximum));
+                            let max_str = summary.as_ref().map_or_else(
+                                || "—".into(),
+                                |s| crate::formatting::format_sensor_value(s.maximum, "", sensor.sensor_type),
+                            );
                             ui.monospace(max_str);
 
                             // 5. Average
-                            let avg_str = summary
-                                .as_ref()
-                                .map_or_else(|| "—".into(), |s| format!("{:.1}", s.average));
+                            let avg_str = summary.as_ref().map_or_else(
+                                || "—".into(),
+                                |s| crate::formatting::format_sensor_value(s.average, "", sensor.sensor_type),
+                            );
                             ui.monospace(avg_str);
 
                             // 6. Unit

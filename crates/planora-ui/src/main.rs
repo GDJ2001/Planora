@@ -376,11 +376,13 @@ impl App {
         resources_state.selected_resource = settings.performance_resource.clone();
         resources_state.range = settings.performance_range;
         resources_state.selected_engines = settings.performance_engines.iter().cloned().collect();
-        resources_state.expanded_sections = settings
-            .expanded_resource_sections
-            .iter()
-            .copied()
-            .collect();
+        if !settings.expanded_resource_sections.is_empty() {
+            resources_state.expanded_sections = settings
+                .expanded_resource_sections
+                .iter()
+                .copied()
+                .collect();
+        }
         resources_state.pinned_interfaces =
             settings.pinned_network_interfaces.iter().cloned().collect();
         let poll_ms = Arc::new(AtomicU64::new(settings.poll_interval_ms));

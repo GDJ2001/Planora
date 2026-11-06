@@ -20,6 +20,8 @@ install -Dm644 "$root/packaging/linux/planora-helper.service" "$stage/usr/lib/sy
 install -Dm644 "$root/packaging/linux/planora-profiler.service" "$stage/usr/lib/systemd/system/planora-profiler.service"
 install -Dm644 "$root/packaging/linux/planora-pmu.service" "$stage/usr/lib/systemd/system/planora-pmu.service"
 install -Dm644 "$root/packaging/linux/planora.sysusers" "$stage/usr/lib/sysusers.d/planora.conf"
+install -Dm644 "$root/packaging/linux/planora-rapl.conf" "$stage/usr/lib/tmpfiles.d/planora-rapl.conf"
+install -Dm644 "$root/packaging/linux/60-planora-rapl.rules" "$stage/usr/lib/udev/rules.d/60-planora-rapl.rules"
 install -Dm644 "$root/packaging/linux/org.planora.authorize.policy" "$stage/usr/share/polkit-1/actions/org.planora.authorize.policy"
 install -Dm644 "$root/packaging/linux/org.planora.revoke.policy" "$stage/usr/share/polkit-1/actions/org.planora.revoke.policy"
 install -Dm644 "$root/packaging/linux/planora.desktop" "$stage/usr/share/applications/planora.desktop"

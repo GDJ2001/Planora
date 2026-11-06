@@ -6,6 +6,7 @@ After=local-fs.target
 Type=simple
 User=planora
 Group=planora-users
+SupplementaryGroups=planora-sensors
 ExecStart=/usr/libexec/planora/planora-helper
 Restart=on-failure
 RuntimeDirectory=planora

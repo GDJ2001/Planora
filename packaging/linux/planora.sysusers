@@ -1,2 +1,3 @@
 g planora-users -
+g planora-sensors -
 u planora - "Planora local helper" /nonexistent /usr/sbin/nologin

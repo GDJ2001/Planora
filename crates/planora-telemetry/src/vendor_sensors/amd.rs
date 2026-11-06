@@ -356,6 +356,12 @@ impl AmdAdlxProvider {
                     c"ADL_Overdrive5_FanSpeed_Get".as_ptr() as *const u8,
                 )
             };
+            let power_od6_ptr = unsafe {
+                windows_sys::Win32::System::LibraryLoader::GetProcAddress(
+                    h_module,
+                    c"ADL_Overdrive6_CurrentPower_Get".as_ptr() as *const u8,
+                )
+            };
 
             for (idx, adapter) in adapters.iter().enumerate() {
                 let scope = format!("GPU {} ({})", idx, adapter.device_name);
@@ -429,7 +435,38 @@ impl AmdAdlxProvider {
                     }
                 }
 
-                // 2. Temperature
+                // 2. Overdrive 6 Current Power (Q8.8 Watts for GCN/Polaris GPUs including R7 260X)
+                if let Some(pwr_fn_ptr) = power_od6_ptr {
+                    type PwrFn = unsafe extern "C" fn(i32, i32, *mut i32) -> i32;
+                    let get_pwr: PwrFn = unsafe { std::mem::transmute(pwr_fn_ptr) };
+                    for pwr_type in [0, 1, 2, 3] {
+                        let mut raw_power = 0i32;
+                        if unsafe { get_pwr(adapter.adapter_index, pwr_type, &mut raw_power) } == 0
+                            && raw_power > 0
+                            && let Some(watts) = decode_q8_8_watts(raw_power)
+                        {
+                            let (sensor_type, name_suffix) = if pwr_type == 3 {
+                                (SensorType::GpuChipPowerWatts, "Chip Power")
+                            } else {
+                                (SensorType::GpuBoardPowerWatts, "Power")
+                            };
+                            readings.push(SensorReading {
+                                id: format!("{}/power/{pwr_type}", adapter.device_id),
+                                device_id: adapter.device_id.clone(),
+                                device_name: adapter.device_name.clone(),
+                                name: format!("GPU {name_suffix}"),
+                                hardware_category: planora_core::HardwareCategory::Gpu,
+                                sensor_type,
+                                scope: format!("{scope} Board"),
+                                provider: "AMD ADL".into(),
+                                value: Metric::available(watts, "W", "AMD ADL", stamp),
+                            });
+                            break;
+                        }
+                    }
+                }
+
+                // 3. Temperature
                 if let Some(temp_fn_ptr) = temp_ptr {
                     type TempFn = unsafe extern "C" fn(i32, i32, *mut ADLTemperature) -> i32;
                     let get_temp: TempFn = unsafe { std::mem::transmute(temp_fn_ptr) };
@@ -453,10 +490,11 @@ impl AmdAdlxProvider {
                     }
                 }
 
-                // 3. Fan Speed RPM
+                // 4. Fan Speed RPM and Duty %
                 if let Some(fan_fn_ptr) = fan_ptr {
                     type FanFn = unsafe extern "C" fn(i32, i32, *mut ADLFanSpeedValue) -> i32;
                     let get_fan: FanFn = unsafe { std::mem::transmute(fan_fn_ptr) };
+
                     let mut fan: ADLFanSpeedValue = unsafe { std::mem::zeroed() };
                     fan.size = std::mem::size_of::<ADLFanSpeedValue>() as i32;
                     fan.speed_type = 2; // RPM
@@ -476,11 +514,43 @@ impl AmdAdlxProvider {
                             });
                         }
                     }
+
+                    let mut fan_pct: ADLFanSpeedValue = unsafe { std::mem::zeroed() };
+                    fan_pct.size = std::mem::size_of::<ADLFanSpeedValue>() as i32;
+                    fan_pct.speed_type = 1; // PERCENT
+                    if unsafe { get_fan(adapter.adapter_index, 0, &mut fan_pct) } == 0 {
+                        let pct = fan_pct.fan_speed as f32;
+                        if SensorType::LoadPercent.is_plausible_value(pct) {
+                            readings.push(SensorReading {
+                                id: format!("{}/fan/duty", adapter.device_id),
+                                device_id: adapter.device_id.clone(),
+                                device_name: adapter.device_name.clone(),
+                                name: "GPU Fan Duty".into(),
+                                hardware_category: planora_core::HardwareCategory::Gpu,
+                                sensor_type: SensorType::LoadPercent,
+                                scope: format!("{scope} Cooling"),
+                                provider: "AMD ADL".into(),
+                                value: Metric::available(pct, "%", "AMD ADL", stamp),
+                            });
+                        }
+                    }
                 }
             }
         }
 
         readings
+    }
+}
+
+pub fn decode_q8_8_watts(raw: i32) -> Option<f32> {
+    if raw <= 0 {
+        return None;
+    }
+    let watts = (raw as f32) / 256.0;
+    if SensorType::GpuBoardPowerWatts.is_plausible_value(watts) {
+        Some(watts)
+    } else {
+        None
     }
 }
 
@@ -528,6 +598,19 @@ impl Drop for AmdAdlxProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_decode_q8_8_watts() {
+        // Typical R7 260X / Polaris power values
+        assert_eq!(decode_q8_8_watts(0), None);
+        assert_eq!(decode_q8_8_watts(-256), None);
+        // 55.0 W * 256 = 14080
+        assert_eq!(decode_q8_8_watts(14080), Some(55.0));
+        // 21.5 W * 256 = 5504
+        assert_eq!(decode_q8_8_watts(5504), Some(21.5));
+        // Out of bounds (> 2500W)
+        assert_eq!(decode_q8_8_watts(2501 * 256), None);
+    }
 
     #[test]
     fn probe_amd_runtime_and_sampling() {

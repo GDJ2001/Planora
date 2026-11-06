@@ -19,7 +19,7 @@
     </BootstrapperApplication>
     <Variable Name="PlanoraInstallLocation" Type="formatted" Value="[ProgramFiles64Folder]Planora" />
     <Variable Name="PlanoraDisplayVersion" Type="string" Value="$(var.AppVersion)" />
-    <Variable Name="PlanoraAdvancedSensors" Type="numeric" Value="0" Persisted="yes" />
+    <Variable Name="PlanoraAdvancedSensors" Type="numeric" Value="1" Persisted="yes" />
     <util:RegistrySearch Id="FindPawnIOService" Variable="PawnIOInstalled" Root="HKLM"
                          Key="SYSTEM\CurrentControlSet\Services\PawnIO" Result="exists" />
     <Chain>

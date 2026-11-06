@@ -1,7 +1,7 @@
 use planora_core::{AvailabilityReason, ProcessIdentity, SensorReading, TelemetryFrame};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -958,13 +958,35 @@ pub fn normalize_sensor_device_name(name: &str) -> String {
 }
 
 fn extract_device_index(device_id: &str, scope: &str) -> u32 {
+    let lower_scope = scope.to_lowercase();
+    if let Some(pos) = lower_scope.find("gpu") {
+        for token in lower_scope[pos + 3..].split_whitespace() {
+            let digits: String = token.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(idx) = digits.parse::<u32>() {
+                return idx;
+            }
+        }
+    }
+    // Check for trailing /<digit> (e.g. /atigpu/0, /nvme/0)
+    if let Some(slash_idx) = device_id.rfind('/') {
+        let seg = &device_id[slash_idx + 1..];
+        let digits: String = seg.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(idx) = digits.parse::<u32>() {
+            return idx;
+        }
+    }
     for part in device_id.rsplit(|c: char| !c.is_ascii_alphanumeric()) {
-        if let Ok(idx) = part.parse::<u32>() {
+        if let Ok(idx) = part.parse::<u32>()
+            && idx < 256
+        {
+            // Avoid parsing 4-digit PCI vendor/device IDs (e.g. 1002, 6658) as device indices
             return idx;
         }
     }
     for part in scope.split_whitespace() {
-        if let Ok(idx) = part.parse::<u32>() {
+        if let Ok(idx) = part.parse::<u32>()
+            && idx < 256
+        {
             return idx;
         }
     }
@@ -979,6 +1001,7 @@ pub fn merge_sensor_readings(
     let mut seen_ids = HashSet::new();
     let mut vendor_keys = HashSet::new();
     let mut vendor_device_id_keys = HashSet::new();
+    let mut vendor_gpus: HashMap<u32, (String, String)> = HashMap::new();
 
     for s in vendor_sensors {
         if seen_ids.insert(s.id.clone()) {
@@ -988,6 +1011,11 @@ pub fn merge_sensor_readings(
             vendor_keys.insert((device_norm, idx, s.sensor_type, name_norm.clone()));
             if !s.device_id.is_empty() {
                 vendor_device_id_keys.insert((s.device_id.clone(), s.sensor_type, name_norm));
+            }
+            if s.hardware_category == planora_core::HardwareCategory::Gpu {
+                vendor_gpus
+                    .entry(idx)
+                    .or_insert_with(|| (s.device_id.clone(), s.device_name.clone()));
             }
             result.push(s.clone());
         }
@@ -1012,8 +1040,20 @@ pub fn merge_sensor_readings(
         if vendor_keys.contains(&(device_norm, idx, s.sensor_type, name_norm)) {
             continue;
         }
-        seen_ids.insert(s.id.clone());
-        result.push(s.clone());
+        let mut cloned = s.clone();
+        if cloned.hardware_category == planora_core::HardwareCategory::Gpu {
+            if let Some((canon_id, canon_name)) = vendor_gpus.get(&idx) {
+                cloned.device_id.clone_from(canon_id);
+                cloned.device_name.clone_from(canon_name);
+            } else if vendor_gpus.len() == 1
+                && let Some((canon_id, canon_name)) = vendor_gpus.values().next()
+            {
+                cloned.device_id.clone_from(canon_id);
+                cloned.device_name.clone_from(canon_name);
+            }
+        }
+        seen_ids.insert(cloned.id.clone());
+        result.push(cloned);
     }
 
     result
@@ -1457,5 +1497,42 @@ mod tests {
             ..drive0.clone()
         };
         assert_ne!(sensor_series_key(&drive0), sensor_series_key(&drive1));
+    }
+
+    #[test]
+    fn test_merge_sensor_readings_canonicalizes_gpu_device() {
+        let vendor = vec![SensorReading {
+            id: "gpu:pci:1002:6658/temp".into(),
+            provider: "AMD ADL".into(),
+            scope: "GPU 0 Core".into(),
+            device_id: "gpu:pci:1002:6658".into(),
+            device_name: "AMD Radeon R7 200 Series".into(),
+            name: "GPU Temperature".into(),
+            hardware_category: planora_core::HardwareCategory::Gpu,
+            sensor_type: planora_core::SensorType::GpuTemperatureCelsius,
+            value: planora_core::Metric::available(58.0, "°C", "AMD ADL", 1_000),
+        }];
+
+        let helper = vec![SensorReading {
+            id: "/atigpu/0/power/0".into(),
+            provider: "LibreHardwareMonitor".into(),
+            scope: "GPU 0 Board".into(),
+            device_id: "/atigpu/0".into(),
+            device_name: "AMD Radeon R7 260X".into(),
+            name: "GPU Package Power".into(),
+            hardware_category: planora_core::HardwareCategory::Gpu,
+            sensor_type: planora_core::SensorType::GpuBoardPowerWatts,
+            value: planora_core::Metric::available(54.2, "W", "LHM", 1_000),
+        }];
+
+        let merged = merge_sensor_readings(&helper, &vendor);
+        assert_eq!(merged.len(), 2);
+        let pwr = merged
+            .iter()
+            .find(|s| s.sensor_type == planora_core::SensorType::GpuBoardPowerWatts)
+            .unwrap();
+        // The helper reading should have adopted the canonical vendor GPU device_id and device_name
+        assert_eq!(pwr.device_id, "gpu:pci:1002:6658");
+        assert_eq!(pwr.device_name, "AMD Radeon R7 200 Series");
     }
 }

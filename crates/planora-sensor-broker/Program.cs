@@ -254,10 +254,19 @@ public static class Program
         }
     }
 
-    private static void CollectHardwareSensors(IHardware hardware, List<BrokerReading> readings, ulong nowMs)
+    private static void CollectHardwareSensors(IHardware hardware, List<BrokerReading> readings, ulong nowMs, string? parentName = null)
     {
         string deviceId = hardware.Identifier.ToString().TrimStart('/');
         string deviceName = hardware.Name;
+
+        if (!string.IsNullOrEmpty(parentName) && !deviceName.Contains(parentName, StringComparison.OrdinalIgnoreCase))
+        {
+            deviceName = $"{parentName} ({hardware.Name})";
+        }
+        else if (hardware.Parent != null && !deviceName.Contains(hardware.Parent.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            deviceName = $"{hardware.Parent.Name} ({hardware.Name})";
+        }
 
         foreach (var sensor in hardware.Sensors)
         {
@@ -297,7 +306,17 @@ public static class Program
                     unitStr = "RPM";
                     defaultScope = hardware.HardwareType is HardwareType.GpuIntel or HardwareType.GpuNvidia or HardwareType.GpuAmd ? "GPU" : "Chassis";
                     break;
+                case SensorType.Control:
+                    typeStr = "Control";
+                    unitStr = "%";
+                    defaultScope = "Cooling";
+                    break;
                 case SensorType.Clock:
+                    typeStr = "Clock";
+                    unitStr = "MHz";
+                    defaultScope = sensor.Name.Contains("Core", StringComparison.OrdinalIgnoreCase) ? "Core" : "Device";
+                    break;
+                case SensorType.Frequency:
                     typeStr = "Clock";
                     unitStr = "MHz";
                     defaultScope = sensor.Name.Contains("Core", StringComparison.OrdinalIgnoreCase) ? "Core" : "Device";
@@ -375,6 +394,15 @@ public static class Program
                         case SensorType.Power:
                             if (v < 0.0f || v > 2500.0f) value = null;
                             break;
+                        case SensorType.Control:
+                            if (v < 0.0f || v > 100.5f) value = null;
+                            else if (v > 100.0f) value = 100.0f;
+                            break;
+                        case SensorType.Frequency:
+                            if (v > 100000.0f) v /= 1000000.0f;
+                            if (v < 0.0f || v > 15000.0f) value = null;
+                            else value = v;
+                            break;
                         case SensorType.Temperature:
                             // SuperIO disconnected thermistors or uninitialized readings
                             if (v <= -40.0f || (int)Math.Round(v) == 127 || (int)Math.Round(v) == 128 || (int)Math.Round(v) == 255 || v > 150.0f) value = null;
@@ -433,7 +461,8 @@ public static class Program
 
         foreach (var sub in hardware.SubHardware)
         {
-            CollectHardwareSensors(sub, readings, nowMs);
+            sub.Update();
+            CollectHardwareSensors(sub, readings, nowMs, deviceName);
         }
     }
 }

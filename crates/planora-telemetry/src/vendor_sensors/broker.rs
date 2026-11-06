@@ -57,7 +57,7 @@ struct BrokerReadingRaw {
     device_name: String,
     hardware_type: String,
     name: String,
-    #[serde(rename = "type")]
+    #[serde(rename = "type", alias = "sensor_type")]
     sensor_type: String,
     scope: String,
     provider: String,
@@ -129,11 +129,33 @@ impl SensorBrokerSupervisor {
     }
 
     pub fn locate_broker_binary() -> Option<PathBuf> {
-        // The helper may run as LocalSystem. Never execute a broker next to a
-        // development binary or from a caller-controlled working directory.
+        if let Ok(pf) = std::env::var("ProgramFiles") {
+            let p = PathBuf::from(pf)
+                .join("Planora")
+                .join("planora-sensor-broker.exe");
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+        if let Ok(pf64) = std::env::var("ProgramW6432") {
+            let p = PathBuf::from(pf64)
+                .join("Planora")
+                .join("planora-sensor-broker.exe");
+            if p.is_file() {
+                return Some(p);
+            }
+        }
         let installed = PathBuf::from(r"C:\Program Files\Planora\planora-sensor-broker.exe");
         if installed.is_file() {
             return Some(installed);
+        }
+        if let Ok(current_exe) = std::env::current_exe()
+            && let Some(dir) = current_exe.parent()
+        {
+            let candidate = dir.join("planora-sensor-broker.exe");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
         }
         None
     }
@@ -323,10 +345,32 @@ impl SensorBrokerSupervisor {
                         let is_cpu = r.hardware_type == "Cpu";
                         let is_gpu = r.hardware_type.starts_with("Gpu");
                         let is_storage = r.hardware_type == "Storage";
+
+                        let mut raw_val = r.value;
+                        let mut raw_unit = r.unit;
+                        let mut scope = r.scope;
+
                         let st = match r.sensor_type.as_str() {
-                            "Power" if is_cpu => SensorType::CpuPackagePowerWatts,
+                            "Power" if is_cpu => {
+                                if r.name.contains("Package") {
+                                    scope = "Package".into();
+                                } else if r.name.contains("Core") {
+                                    scope = "Cores".into();
+                                } else if r.name.contains("Graphics") {
+                                    scope = "Graphics".into();
+                                } else if r.name.contains("DRAM") || r.name.contains("Memory") {
+                                    scope = "DRAM".into();
+                                } else if r.name.contains("Uncore") {
+                                    scope = "Uncore".into();
+                                }
+                                SensorType::CpuPackagePowerWatts
+                            }
                             "Power"
-                                if is_gpu && (r.scope == "Board" || r.name.contains("Board")) =>
+                                if is_gpu
+                                    && (scope == "Board"
+                                        || r.name.contains("Board")
+                                        || r.name.contains("Total")
+                                        || r.name.contains("PPT")) =>
                             {
                                 SensorType::GpuBoardPowerWatts
                             }
@@ -343,7 +387,16 @@ impl SensorBrokerSupervisor {
                                     SensorType::ThermalZoneCelsius
                                 }
                             }
-                            "Fan" => SensorType::FanRpm,
+                            "Fan" => {
+                                if r.name.contains("CPU") || r.name.contains("Pump") {
+                                    scope = "CPU".into();
+                                }
+                                SensorType::FanRpm
+                            }
+                            "Control" => {
+                                scope = "Cooling".into();
+                                SensorType::LoadPercent
+                            }
                             "Clock" => SensorType::ClockMhz,
                             "Voltage" => SensorType::VoltageVolts,
                             "Current" => SensorType::CurrentAmperes,
@@ -352,13 +405,24 @@ impl SensorBrokerSupervisor {
                             "Level" if is_storage => SensorType::StorageHealthPercent,
                             "Level" => SensorType::LoadPercent,
                             "Data" => SensorType::DataGigabytes,
+                            "SmallData" => {
+                                if raw_unit.eq_ignore_ascii_case("MB") {
+                                    if let Some(v) = raw_val {
+                                        raw_val = Some(v / 1024.0);
+                                    }
+                                    raw_unit = "GB".into();
+                                    SensorType::DataGigabytes
+                                } else {
+                                    SensorType::GenericNumeric
+                                }
+                            }
                             "Throughput" => SensorType::ThroughputBytesPerSec,
                             "TimeSpan" => SensorType::TimeHours,
                             _ => SensorType::GenericNumeric,
                         };
 
-                        let canonical_unit = planora_core::canonicalize_unit(&r.unit);
-                        let metric = if let Some(val) = r.value {
+                        let canonical_unit = planora_core::canonicalize_unit(&raw_unit);
+                        let metric = if let Some(val) = raw_val {
                             if st.is_plausible_value(val)
                                 && (st == SensorType::GenericNumeric
                                     || planora_core::canonicalize_unit(canonical_unit)
@@ -409,7 +473,7 @@ impl SensorBrokerSupervisor {
                                 _ => planora_core::HardwareCategory::Unknown,
                             },
                             sensor_type: st,
-                            scope: r.scope,
+                            scope,
                             provider: r.provider,
                             value: metric,
                         });
@@ -632,5 +696,134 @@ mod tests {
             polled[0].value.unavailable_reason,
             Some(AvailabilityReason::Stale(ms)) if ms > 5000
         ));
+    }
+
+    #[test]
+    fn test_broker_sensor_type_and_scope_mapping() {
+        let json_template = r#"{
+            "status": "ok",
+            "version": "VERSION_PLACEHOLDER",
+            "build_commit": "test",
+            "timestamp_ms": 1000,
+            "sensors": [
+                {
+                    "id": "cpu/power/0",
+                    "device_id": "cpu:0",
+                    "device_name": "Intel Core i7-4770K",
+                    "hardware_type": "Cpu",
+                    "name": "CPU Package",
+                    "sensor_type": "Power",
+                    "scope": "Package",
+                    "provider": "LibreHardwareMonitor",
+                    "unit": "W",
+                    "value": 25.1,
+                    "sampled_at_ms": 1000
+                },
+                {
+                    "id": "fan/control/0",
+                    "device_id": "motherboard:0",
+                    "device_name": "Motherboard",
+                    "hardware_type": "SuperIO",
+                    "name": "CPU Fan Duty",
+                    "sensor_type": "Control",
+                    "scope": "Cooling",
+                    "provider": "LibreHardwareMonitor",
+                    "unit": "%",
+                    "value": 65.0,
+                    "sampled_at_ms": 1000
+                },
+                {
+                    "id": "gpu/smalldata/0",
+                    "device_id": "gpu:pci:1002:6658",
+                    "device_name": "AMD Radeon R7 260X",
+                    "hardware_type": "GpuAmd",
+                    "name": "GPU Memory Used",
+                    "sensor_type": "SmallData",
+                    "scope": "GPU",
+                    "provider": "LibreHardwareMonitor",
+                    "unit": "MB",
+                    "value": 512.0,
+                    "sampled_at_ms": 1000
+                },
+                {
+                    "id": "mb/fan/0",
+                    "device_id": "motherboard:0",
+                    "device_name": "ASUS Z87-PRO (NCT6791D)",
+                    "hardware_type": "SuperIO",
+                    "name": "CPU Fan",
+                    "sensor_type": "Fan",
+                    "scope": "Chassis",
+                    "provider": "LibreHardwareMonitor",
+                    "unit": "RPM",
+                    "value": 1250.0,
+                    "sampled_at_ms": 1000
+                }
+            ]
+        }"#
+        .replace("VERSION_PLACEHOLDER", env!("CARGO_PKG_VERSION"));
+
+        let resp: BrokerSampleResponse = serde_json::from_str(&json_template).unwrap();
+        assert_eq!(resp.sensors.len(), 4);
+
+        // Verify conversion logic
+        for r in resp.sensors {
+            let is_cpu = r.hardware_type == "Cpu";
+            let _is_gpu = r.hardware_type.starts_with("Gpu");
+            let _is_storage = r.hardware_type == "Storage";
+
+            let mut raw_val = r.value;
+            let mut raw_unit = r.unit;
+            let mut scope = r.scope;
+
+            let st = match r.sensor_type.as_str() {
+                "Power" if is_cpu => {
+                    if r.name.contains("Package") {
+                        scope = "Package".into();
+                    }
+                    SensorType::CpuPackagePowerWatts
+                }
+                "Fan" => {
+                    if r.name.contains("CPU") || r.name.contains("Pump") {
+                        scope = "CPU".into();
+                    }
+                    SensorType::FanRpm
+                }
+                "Control" => {
+                    scope = "Cooling".into();
+                    SensorType::LoadPercent
+                }
+                "SmallData" => {
+                    if raw_unit.eq_ignore_ascii_case("MB") {
+                        if let Some(v) = raw_val {
+                            raw_val = Some(v / 1024.0);
+                        }
+                        raw_unit = "GB".into();
+                        SensorType::DataGigabytes
+                    } else {
+                        SensorType::GenericNumeric
+                    }
+                }
+                _ => SensorType::GenericNumeric,
+            };
+
+            if r.id == "cpu/power/0" {
+                assert_eq!(st, SensorType::CpuPackagePowerWatts);
+                assert_eq!(scope, "Package");
+                assert_eq!(raw_val, Some(25.1));
+            } else if r.id == "fan/control/0" {
+                assert_eq!(st, SensorType::LoadPercent);
+                assert_eq!(scope, "Cooling");
+                assert_eq!(raw_unit, "%");
+                assert_eq!(raw_val, Some(65.0));
+            } else if r.id == "gpu/smalldata/0" {
+                assert_eq!(st, SensorType::DataGigabytes);
+                assert_eq!(raw_unit, "GB");
+                assert_eq!(raw_val, Some(0.5));
+            } else if r.id == "mb/fan/0" {
+                assert_eq!(st, SensorType::FanRpm);
+                assert_eq!(scope, "CPU");
+                assert_eq!(raw_val, Some(1250.0));
+            }
+        }
     }
 }

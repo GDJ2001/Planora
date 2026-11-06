@@ -382,6 +382,12 @@ pub fn create_native_fixture_app(theme: Theme, page: Page) -> App {
                 "Fixture data",
                 timestamp,
             ),
+            frequency_mhz: Some(Metric::available(
+                3200.0 + index as f32 * 100.0,
+                "MHz",
+                "Fixture data",
+                timestamp,
+            )),
         })
         .collect();
     frame.gpu_adapters = vec![GpuAdapterSample {

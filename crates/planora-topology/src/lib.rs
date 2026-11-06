@@ -298,6 +298,7 @@ fn discover_windows(t: &mut Topology) {
     }
     let mut packages: Vec<Vec<u16>> = Vec::new();
     let mut numas: Vec<(u16, Vec<u16>)> = Vec::new();
+    let mut core_classes: Vec<u8> = Vec::new();
     let mut offset = 0usize;
     while offset + 8 <= bytes as usize {
         let size =
@@ -333,8 +334,9 @@ fn discover_windows(t: &mut Topology) {
                             package_id: None,
                             numa_node: None,
                             logical_cpus: logical,
-                            class: Some(format!("efficiency class {}", item.EfficiencyClass)),
+                            class: None,
                         });
+                        core_classes.push(item.EfficiencyClass);
                     } else {
                         packages.push(logical);
                     }
@@ -392,7 +394,12 @@ fn discover_windows(t: &mut Topology) {
         }
         offset += size;
     }
-    for core in &mut t.cores {
+    let distinct_classes: std::collections::BTreeSet<u8> = core_classes.iter().copied().collect();
+    let has_hybrid = distinct_classes.len() > 1;
+    let max_class = distinct_classes.iter().copied().max().unwrap_or(0);
+    let min_class = distinct_classes.iter().copied().min().unwrap_or(0);
+
+    for (core, raw_class) in t.cores.iter_mut().zip(core_classes.iter().copied()) {
         core.package_id = packages
             .iter()
             .position(|members| core.logical_cpus.iter().all(|cpu| members.contains(cpu)))
@@ -401,6 +408,15 @@ fn discover_windows(t: &mut Topology) {
             .iter()
             .find(|(_, members)| core.logical_cpus.iter().all(|cpu| members.contains(cpu)))
             .map(|(id, _)| *id);
+        if has_hybrid {
+            if raw_class == max_class {
+                core.class = Some("Performance".to_string());
+            } else if raw_class == min_class {
+                core.class = Some("Efficiency".to_string());
+            } else {
+                core.class = Some(format!("Class {}", raw_class));
+            }
+        }
     }
     if t.cores.is_empty() {
         t.notes
@@ -514,18 +530,34 @@ fn discover_macos(t: &mut Topology) {
         )
     }
     t.vendor = "Apple".into();
-    t.model = string("hw.model").unwrap_or_else(|| "Apple Silicon".into());
+    t.model = string("machdep.cpu.brand_string")
+        .or_else(|| string("hw.model"))
+        .unwrap_or_else(|| "Apple Silicon".into());
     let logical = number("hw.logicalcpu_max")
         .unwrap_or(1)
         .min(u16::MAX as u64) as u16;
     let packages = number("hw.packages");
+    let nperflevels = number("hw.nperflevels").unwrap_or(1);
+    let p_cores = number("hw.perflevel0.logicalcpu")
+        .or_else(|| number("hw.perflevel0.physicalcpu"))
+        .unwrap_or(0) as u16;
+
     for id in 0..logical {
+        let class = if nperflevels > 1 && p_cores > 0 {
+            if id < p_cores {
+                Some("Performance".into())
+            } else {
+                Some("Efficiency".into())
+            }
+        } else {
+            None
+        };
         t.cores.push(CoreDescriptor {
             id,
             package_id: if packages == Some(1) { Some(0) } else { None },
             numa_node: None,
             logical_cpus: vec![id],
-            class: None,
+            class,
         });
     }
     if let Some(physical) = number("hw.physicalcpu_max") {
@@ -567,6 +599,18 @@ fn discover_macos(t: &mut Topology) {
             line_bytes,
             shared_by: Vec::new(),
             source: "macOS sysctl hw.l2cachesize".into(),
+        });
+    }
+    if let Some(l3) = number("hw.l3cachesize") {
+        let id = t.caches.len() as u32;
+        t.caches.push(planora_core::CacheDescriptor {
+            id,
+            level: 3,
+            cache_type: planora_core::CacheType::Unified,
+            size_bytes: l3,
+            line_bytes,
+            shared_by: Vec::new(),
+            source: "macOS sysctl hw.l3cachesize".into(),
         });
     }
     t.gpus.push(planora_core::GpuDescriptor {
@@ -635,6 +679,14 @@ mod tests {
         let topo = discover();
         assert!(!topo.architecture.is_empty());
         assert!(!topo.cores.is_empty());
+        for core in &topo.cores {
+            if let Some(cls) = &core.class {
+                assert_ne!(
+                    cls, "efficiency class 0",
+                    "Symmetric cores must have class: None, not 'efficiency class 0'"
+                );
+            }
+        }
     }
 
     #[test]

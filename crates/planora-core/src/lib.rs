@@ -468,6 +468,8 @@ pub struct LogicalCpuSample {
     pub cpu_index: u16,
     pub group: u16,
     pub utilization_percent: Metric<f32>,
+    #[serde(default)]
+    pub frequency_mhz: Option<Metric<f32>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -858,6 +860,26 @@ impl TelemetryFrame {
         validate_pct(&self.cpu_percent, "cpu_percent")?;
         for cpu in &self.logical_cpus {
             validate_pct(&cpu.utilization_percent, "logical_cpu.utilization_percent")?;
+            if let Some(freq) = &cpu.frequency_mhz {
+                validate_metric(freq, "logical_cpu.frequency_mhz")?;
+                if let Some(val) = freq.value {
+                    if !val.is_finite() || !(0.0..=15_000.0).contains(&val) {
+                        return Err(FrameValidationError::OutOfPhysicalBounds {
+                            field: "logical_cpu.frequency_mhz",
+                            value: val,
+                            min: 0.0,
+                            max: 15_000.0,
+                        });
+                    }
+                    if canonicalize_unit(&freq.unit) != canonicalize_unit(UNIT_MHZ) {
+                        return Err(FrameValidationError::UnitMismatch {
+                            field: "logical_cpu.frequency_mhz",
+                            expected: UNIT_MHZ,
+                            actual: freq.unit.clone(),
+                        });
+                    }
+                }
+            }
         }
         validate_pct(&self.gpu_percent, "gpu_percent")?;
         for adapter in &self.gpu_adapters {
@@ -1108,6 +1130,20 @@ impl TelemetryFrame {
         sanitize_pct_metric(&mut self.gpu_percent, "GPU");
         for cpu in &mut self.logical_cpus {
             sanitize_pct_metric(&mut cpu.utilization_percent, "Logical CPU");
+            if let Some(freq) = &mut cpu.frequency_mhz {
+                canonicalize_metric_unit(freq);
+                if let Some(val) = freq.value
+                    && (!val.is_finite()
+                        || !(0.0..=15_000.0).contains(&val)
+                        || canonicalize_unit(&freq.unit) != canonicalize_unit(UNIT_MHZ))
+                {
+                    freq.unit = UNIT_MHZ.to_string();
+                    freq.value = None;
+                    freq.unavailable_reason = Some(AvailabilityReason::TemporarilyFailed(format!(
+                        "Filtered implausible CPU frequency: {val:.1} MHz"
+                    )));
+                }
+            }
         }
         for m in [
             &mut self.memory_used_bytes,
@@ -2299,5 +2335,87 @@ mod tests {
         assert!(SensorType::FanRpm.is_plausible_value(0.0));
         // Valid 0°C temperature is plausible
         assert!(SensorType::CpuTemperatureCelsius.is_plausible_value(0.0));
+    }
+
+    #[test]
+    fn test_logical_cpu_frequency_validation_and_sanitization() {
+        let mut frame = TelemetryFrame {
+            protocol_version: PROTOCOL_VERSION,
+            session_id: 1,
+            topology_generation: 1,
+            sequence: 1,
+            sampled_at_ms: 1000,
+            collection_duration_ms: 10.0,
+            cpu_percent: Metric::available(10.0, "%", "sys", 1000),
+            logical_cpus: vec![
+                LogicalCpuSample {
+                    cpu_index: 0,
+                    group: 0,
+                    utilization_percent: Metric::available(25.0, "%", "sys", 1000),
+                    frequency_mhz: Some(Metric::available(3800.0, "MHz", "sys", 1000)),
+                },
+                LogicalCpuSample {
+                    cpu_index: 1,
+                    group: 0,
+                    utilization_percent: Metric::available(20.0, "%", "sys", 1000),
+                    frequency_mhz: Some(Metric::available(25_000.0, "MHz", "sys", 1000)), // out of bounds
+                },
+            ],
+            memory_used_bytes: Metric::available(1000, "bytes", "sys", 1000),
+            memory_available_bytes: Metric::available(2000, "bytes", "sys", 1000),
+            memory_total_bytes: Metric::available(3000, "bytes", "sys", 1000),
+            commit_used_bytes: Metric::available(1000, "bytes", "sys", 1000),
+            commit_total_bytes: Metric::available(3000, "bytes", "sys", 1000),
+            disk_read_bytes_per_sec: Metric::available(0, "B/s", "sys", 1000),
+            disk_write_bytes_per_sec: Metric::available(0, "B/s", "sys", 1000),
+            network_rx_bytes_per_sec: Metric::available(0, "B/s", "sys", 1000),
+            network_tx_bytes_per_sec: Metric::available(0, "B/s", "sys", 1000),
+            gpu_percent: Metric::unavailable(
+                "%",
+                "sys",
+                1000,
+                AvailabilityReason::Unsupported("none".into()),
+            ),
+            gpu_adapters: Vec::new(),
+            gpu_engines: Vec::new(),
+            gpu_engine_unavailable_reason: None,
+            disks: Vec::new(),
+            network_interfaces: Vec::new(),
+            package_power_watts: Metric::available(65.0, "W", "sys", 1000),
+            sensors: Vec::new(),
+            processes: Vec::new(),
+            provider_durations_ms: std::collections::BTreeMap::new(),
+        };
+
+        // Frame validation should reject out-of-bounds frequency (25_000 MHz)
+        assert!(matches!(
+            frame.validate(),
+            Err(FrameValidationError::OutOfPhysicalBounds {
+                field: "logical_cpu.frequency_mhz",
+                ..
+            })
+        ));
+
+        // Sanitization should convert out-of-bounds frequency to unavailable metric
+        frame.sanitize_provider_anomalies();
+        assert_eq!(
+            frame.logical_cpus[0].frequency_mhz.as_ref().unwrap().value,
+            Some(3800.0)
+        );
+        assert_eq!(
+            frame.logical_cpus[1].frequency_mhz.as_ref().unwrap().value,
+            None
+        );
+        assert!(
+            frame.logical_cpus[1]
+                .frequency_mhz
+                .as_ref()
+                .unwrap()
+                .unavailable_reason
+                .is_some()
+        );
+
+        // Sanitized frame should now validate successfully
+        assert!(frame.validate().is_ok());
     }
 }

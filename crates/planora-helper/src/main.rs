@@ -909,7 +909,8 @@ fn generate_compatibility_report(
         report_version: 1,
         generated_at_ms: inventory.timestamp_ms,
         application_version: env!("CARGO_PKG_VERSION").to_string(),
-        git_commit: option_env!("PLANORA_COMMIT_HASH")
+        git_commit: option_env!("PLANORA_GIT_COMMIT")
+            .or(option_env!("PLANORA_COMMIT_HASH"))
             .unwrap_or("release")
             .to_string(),
         target: std::env::consts::OS.to_string(),
@@ -1513,7 +1514,10 @@ fn run_server(on_ready: impl FnOnce()) -> io::Result<()> {
             let mut frame = sampler.sample();
             #[cfg(windows)]
             {
-                frame.sensors = sensor_source.read().unwrap().clone();
+                let broker_sensors = sensor_source.read().unwrap().clone();
+                if !broker_sensors.is_empty() {
+                    frame.sensors.extend(broker_sensors);
+                }
                 if frame.package_power_watts.value.is_none()
                     && let Some(pkg_reading) = frame.sensors.iter().find(|s| {
                         s.sensor_type == planora_core::SensorType::CpuPackagePowerWatts
