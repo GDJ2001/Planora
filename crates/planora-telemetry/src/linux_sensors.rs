@@ -165,12 +165,10 @@ pub fn sample_at(root: &Path, stamp: u64) -> Vec<SensorReading> {
             };
 
             let lower_label = label.to_ascii_lowercase();
-            let hardware_category = if kind == SensorType::FanRpm
-                && (lower_label.contains("cpu") || lower_label.contains("pump"))
-            {
-                HardwareCategory::Cpu
-            } else if kind == SensorType::VoltageVolts
-                && (lower_label.contains("vcore") || lower_label.contains("cpu"))
+            let hardware_category = if (kind == SensorType::FanRpm
+                && (lower_label.contains("cpu") || lower_label.contains("pump")))
+                || (kind == SensorType::VoltageVolts
+                    && (lower_label.contains("vcore") || lower_label.contains("cpu")))
             {
                 HardwareCategory::Cpu
             } else {

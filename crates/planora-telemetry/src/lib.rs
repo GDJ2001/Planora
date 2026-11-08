@@ -1297,10 +1297,10 @@ impl Sampler {
         let power_info =
             windows_counters::query_processor_power_information(self.system.cpus().len());
 
-        let get_cpu_freq = |idx: usize, cpu: &sysinfo::Cpu| -> Option<Metric<f32>> {
+        let get_cpu_freq = |_idx: usize, cpu: &sysinfo::Cpu| -> Option<Metric<f32>> {
             #[cfg(windows)]
             {
-                if let Some(info) = power_info.get(idx)
+                if let Some(info) = power_info.get(_idx)
                     && info.current_mhz > 0
                 {
                     return Some(Metric::available(
@@ -1313,7 +1313,7 @@ impl Sampler {
             }
             #[cfg(target_os = "linux")]
             {
-                let path = format!("/sys/devices/system/cpu/cpu{idx}/cpufreq/scaling_cur_freq");
+                let path = format!("/sys/devices/system/cpu/cpu{_idx}/cpufreq/scaling_cur_freq");
                 if let Ok(text) = std::fs::read_to_string(&path)
                     && let Ok(khz) = text.trim().parse::<f32>()
                 {
