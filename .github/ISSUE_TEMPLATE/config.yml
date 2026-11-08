@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Planora Security Advisory
+    url: https://github.com/GDJ2001/Planora/security/advisories/new
+    about: Please report security vulnerabilities privately here or via email to security@planora.org.
+  - name: Planora Discussions & Questions
+    url: https://github.com/GDJ2001/Planora/discussions
+    about: Ask questions, share ideas, or discuss hardware visualization with the community.

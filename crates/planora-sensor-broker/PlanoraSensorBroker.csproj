@@ -11,7 +11,7 @@
     <PublishSingleFile>true</PublishSingleFile>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <EnableCompressionInSingleFile Condition="'$(SelfContained)' == 'true'">true</EnableCompressionInSingleFile>
-    <PlanoraVersion Condition="'$(PlanoraVersion)' == ''">0.3.0-beta.47</PlanoraVersion>
+    <PlanoraVersion Condition="'$(PlanoraVersion)' == ''">1.0.0</PlanoraVersion>
     <PlanoraGitCommit Condition="'$(PlanoraGitCommit)' == ''">unknown</PlanoraGitCommit>
   </PropertyGroup>
 

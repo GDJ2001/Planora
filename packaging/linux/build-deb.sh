@@ -26,7 +26,7 @@ install -Dm644 "$root/packaging/linux/org.planora.authorize.policy" "$stage/usr/
 install -Dm644 "$root/packaging/linux/org.planora.revoke.policy" "$stage/usr/share/polkit-1/actions/org.planora.revoke.policy"
 install -Dm644 "$root/packaging/linux/planora.desktop" "$stage/usr/share/applications/planora.desktop"
 install -Dm644 "$root/packaging/linux/org.planora.Planora.metainfo.xml" "$stage/usr/share/metainfo/org.planora.planora.metainfo.xml"
-for license_file in LICENSE-MIT LICENSE-APACHE LICENSE-GPL-2.0 NOTICE; do
+for license_file in LICENSE LICENSE-MIT LICENSE-APACHE LICENSE-GPL-2.0 NOTICE; do
   install -Dm644 "$root/$license_file" "$stage/usr/share/doc/planora/$license_file"
 done
 install -Dm644 "$root/packaging/linux/planora-disk-profile.bpf.c" "$stage/usr/share/doc/planora/source/planora-disk-profile.bpf.c"

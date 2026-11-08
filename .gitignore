@@ -1,8 +1,53 @@
-node_modules/
-__pycache__/
-state/
-target/
-dist/
-.wix/
+# Build and package outputs
+/target/
+/dist/
+/build/
 bin/
 obj/
+/.wix/
+*.wixpdb
+
+# Node dependencies
+/node_modules/
+
+# Python and virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+
+# State, caches and logs
+/state/
+*.log
+*.tmp
+
+# Operating system and editor artifacts
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Fuzzing artifacts
+/fuzz/artifacts/
+/fuzz/corpus/
+
+# Security and credential guards
+*.pem
+*.key
+*.pfx
+*.p12
+*.keystore
+.env
+.env.*
+!.env.example
+
+# Preserve essential build wrappers
+!gradle/wrapper/gradle-wrapper.jar
+!gradlew
+!gradlew.bat

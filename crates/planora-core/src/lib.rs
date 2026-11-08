@@ -2242,7 +2242,7 @@ mod tests {
         let report = CompatibilityReport {
             report_version: 1,
             generated_at_ms: 123456789,
-            application_version: "0.3.0-beta.47".into(),
+            application_version: "1.0.0".into(),
             git_commit: "abcd123".into(),
             target: "x86_64-pc-windows-msvc".into(),
             inventory: inv.clone(),

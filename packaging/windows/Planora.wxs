@@ -48,6 +48,9 @@
         <Component Id="UninstallScript" Guid="*" Bitness="always64">
           <File Id="UninstallFile" Source="$(var.ProjectDir)\packaging\windows\Uninstall-Planora.ps1" KeyPath="yes" />
         </Component>
+        <Component Id="LicenseFile" Guid="*" Bitness="always64">
+          <File Id="LicenseRoot" Source="$(var.ProjectDir)\LICENSE" />
+        </Component>
         <Component Id="LicenseMitFile" Guid="*" Bitness="always64">
           <File Id="LicenseMit" Source="$(var.ProjectDir)\LICENSE-MIT" KeyPath="yes" />
         </Component>
@@ -77,6 +80,7 @@
       <ComponentRef Id="AuthorizationScript" />
       <ComponentRef Id="RevocationScript" />
       <ComponentRef Id="UninstallScript" />
+      <ComponentRef Id="LicenseFile" />
       <ComponentRef Id="LicenseMitFile" />
       <ComponentRef Id="LicenseApacheFile" />
       <ComponentRef Id="NoticeFile" />

@@ -28,7 +28,7 @@ install -Dm644 %{planora_root}/packaging/linux/org.planora.authorize.policy %{bu
 install -Dm644 %{planora_root}/packaging/linux/org.planora.revoke.policy %{buildroot}/usr/share/polkit-1/actions/org.planora.revoke.policy
 install -Dm644 %{planora_root}/packaging/linux/planora.desktop %{buildroot}/usr/share/applications/planora.desktop
 install -Dm644 %{planora_root}/packaging/linux/org.planora.Planora.metainfo.xml %{buildroot}/usr/share/metainfo/org.planora.planora.metainfo.xml
-for license_file in LICENSE-MIT LICENSE-APACHE LICENSE-GPL-2.0 NOTICE; do
+for license_file in LICENSE LICENSE-MIT LICENSE-APACHE LICENSE-GPL-2.0 NOTICE; do
   install -Dm644 %{planora_root}/$license_file %{buildroot}/usr/share/licenses/planora/$license_file
 done
 install -Dm644 %{planora_root}/packaging/linux/planora-disk-profile.bpf.c %{buildroot}/usr/share/doc/planora/source/planora-disk-profile.bpf.c
@@ -80,6 +80,7 @@ fi
 /usr/share/metainfo/org.planora.planora.metainfo.xml
 /usr/share/icons/hicolor/*/apps/planora.png
 /usr/share/icons/hicolor/scalable/apps/planora.svg
+%license /usr/share/licenses/planora/LICENSE
 %license /usr/share/licenses/planora/LICENSE-MIT
 %license /usr/share/licenses/planora/LICENSE-APACHE
 %license /usr/share/licenses/planora/LICENSE-GPL-2.0
@@ -88,5 +89,8 @@ fi
 %doc /usr/share/doc/planora/source/planora-disk-profile.c
 
 %changelog
+* Sun Nov 08 2026 Planora Maintainers <maintainers@invalid.example> - 1.0.0-1
+- Official v1.0.0 production release of Planora.
+
 * Tue Nov 03 2026 Planora Maintainers <maintainers@invalid.example> - 0.3.0-0.beta.47
 - Internal beta package for native Fedora testing.

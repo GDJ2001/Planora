@@ -16,7 +16,7 @@ cp "$target_dir/$target/release/planora-helper" "$app/Contents/MacOS/planora-hel
 cp "$root/packaging/macos/Info.plist" "$app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $bundle_version" "$app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $bundle_version" "$app/Contents/Info.plist"
-for license_file in LICENSE-MIT LICENSE-APACHE NOTICE; do
+for license_file in LICENSE LICENSE-MIT LICENSE-APACHE NOTICE; do
   cp "$root/$license_file" "$app/Contents/Resources/$license_file"
 done
 cp "$root/packaging/macos/org.planora.helper.plist" "$app/Contents/Library/LaunchDaemons/org.planora.helper.plist"

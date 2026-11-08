@@ -1,0 +1,72 @@
+name: Bug Report
+description: Create a report to help us improve Planora
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting an issue! Please verify you are running the latest version of Planora before opening a report.
+  - type: input
+    id: version
+    attributes:
+      label: Planora Version
+      description: What version of Planora are you using? (e.g., 1.0.0)
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      description: What operating system are you running Planora on?
+      options:
+        - Windows 11 x64
+        - Windows 10 x64
+        - Ubuntu 24.04 / 26.04 x64
+        - Fedora 44 x86_64
+        - macOS Apple Silicon (macOS 13+)
+        - Other (specify in description)
+    validations:
+      required: true
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Hardware Configuration
+      description: Provide relevant CPU model, GPU model, RAM capacity, and motherboard if applicable.
+      placeholder: "AMD Ryzen 9 7950X, NVIDIA RTX 4090, 64GB DDR5"
+    validations:
+      required: false
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the Bug
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Steps to reproduce the behavior.
+      placeholder: |
+        1. Launch 'planora'
+        2. Click on 'Performance' -> 'CPU'
+        3. Observe...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs or Screenshots
+      description: Paste any error messages or diagnostic logs from Settings -> Diagnostics.
+      render: shell
+    validations:
+      required: false

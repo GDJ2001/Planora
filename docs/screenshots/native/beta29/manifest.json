@@ -6,7 +6,7 @@
     "target": "x86_64-pc-windows-msvc",
     "version": "0.3.0-beta.29"
   },
-  "binary": "C:\\Users\\GDJ\\.codex\\worktrees\\startup-auth-beta27\\Planora\\target\\release\\planora.exe",
+  "binary": "target\\release\\planora.exe",
   "sha256": "1A45E19E19295C4E992BEC9B2908A99F371887B141CF126E5C548A141FC650CF",
   "scaleNote": "Pixel-per-point overrides emulate UI scale in an isolated native fixture. They do not change Windows display settings or validate mixed-monitor transitions.",
   "captures": [

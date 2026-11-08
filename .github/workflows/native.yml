@@ -2,6 +2,7 @@ name: Native build and packages
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
   schedule:

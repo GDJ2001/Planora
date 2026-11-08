@@ -174,7 +174,7 @@ mod tests {
     fn performance_report_serialization_round_trip() {
         let report = PerformanceReport {
             format_version: 1,
-            application_version: "0.3.0-beta.43".into(),
+            application_version: "1.0.0".into(),
             source_commit: "aaa5fce".into(),
             target: "x86_64-pc-windows-msvc".into(),
             timestamp_ms: 1700000000000,
