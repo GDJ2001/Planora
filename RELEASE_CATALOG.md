@@ -2,7 +2,7 @@
 
 **Release Version**: 1.0.0  
 **Tag**: [`v1.0.0`](https://github.com/GDJ2001/Planora/releases/tag/v1.0.0)  
-**Source Commit**: `094c1f8275abbe20886e4f531d67f8f79bfe0159`  
+**Source Commit**: `7071db32dd65874015256ffe32d0518b34005bcc`  
 **Working Tree Clean**: Yes (`source_clean: true`)  
 **Publication Date**: November 8, 2026  
 
@@ -17,8 +17,12 @@ All release packages have been compiled with the pinned Rust 1.99.1 toolchain an
 | **`Planora-1.0.0-x64-Setup.exe`** | Windows 10/11 x86-64 | 43,089,751 | `e62927f575e65be5cb7c93c2782feef1c509d2bdf8b6f243f2892be9b3215b4b` | [Download](https://github.com/GDJ2001/Planora/releases/download/v1.0.0/Planora-1.0.0-x64-Setup.exe) |
 | **`Planora-1.0.0-x64.msi`** | Windows 10/11 x86-64 | 39,190,528 | `883e0360f3433b47f35339f3d51bf257eca49571ebcce79c7430f8da91dcb7e5` | [Download](https://github.com/GDJ2001/Planora/releases/download/v1.0.0/Planora-1.0.0-x64.msi) |
 | **`Planora-1.0.0-x64.manifest.json`** | Windows 10/11 x86-64 | 1,058 | `cad60fc431a0be809d0bae144ab72fdd90a15f4a89f0fa4c892ad2bc9c093927` | [Download](https://github.com/GDJ2001/Planora/releases/download/v1.0.0/Planora-1.0.0-x64.manifest.json) |
+| **`planora_1.0.0-1_amd64.deb`** | Linux (Ubuntu / Debian x86-64) | 7,437,760 | `e12db6bdeaa94b953ed9f4aa2a17b57032ed76607b251561d4fb84724187e18a` | [Download](https://github.com/GDJ2001/Planora/releases/download/v1.0.0/planora_1.0.0-1_amd64.deb) |
+| **`planora-1.0.0-1.fc44.x86_64.rpm`** | Linux (Fedora / RHEL x86-64) | 7,427,041 | `146907b257f41959f661363c4ea74d90835274763c3a02bab603b8d96cb911fa` | [Download](https://github.com/GDJ2001/Planora/releases/download/v1.0.0/planora-1.0.0-1.fc44.x86_64.rpm) |
+| **`Planora-1.0.0-arm64.pkg`** | macOS Apple Silicon (arm64) | 6,508,021 | `ecc10c30c6f2382ee44524cb5337c70f3987eca4226a85757037b0cf3ff67b4e` | [Download](https://github.com/GDJ2001/Planora/releases/download/v1.0.0/Planora-1.0.0-arm64.pkg) |
+| **`Planora-1.0.0-arm64-app.zip`** | macOS Apple Silicon (arm64) | 6,505,327 | `9d1013185a5fd1550d394f12128657c472247ac2401e047b540e7727fd8b9cfb` | [Download](https://github.com/GDJ2001/Planora/releases/download/v1.0.0/Planora-1.0.0-arm64-app.zip) |
 | **`dependency-inventory.json`** | Multi-Platform (413 crates) | 91,701 | `2e4a6f1b9ec2d2c7d4506f93d007ffbe822c4a53d56bd3eac537827c634aeb4c` | [Download](https://github.com/GDJ2001/Planora/releases/download/v1.0.0/dependency-inventory.json) |
-| **`SHA256SUMS.txt`** | Multi-Platform Manifest | 376 | (Self-referential manifest) | [Download](https://github.com/GDJ2001/Planora/releases/download/v1.0.0/SHA256SUMS.txt) |
+| **`SHA256SUMS.txt`** | Multi-Platform Manifest | 754 | (Cryptographic manifest of all 8 release packages) | [Download](https://github.com/GDJ2001/Planora/releases/download/v1.0.0/SHA256SUMS.txt) |
 
 ---
 

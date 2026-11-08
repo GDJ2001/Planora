@@ -30,7 +30,7 @@ Planora distributes production-ready native packages for desktop and mobile ecos
 | **Ubuntu / Debian** | x86-64 | [Debian Package (.deb)](https://github.com/GDJ2001/Planora/releases/download/v1.0.0/planora_1.0.0-1_amd64.deb) | GitHub Releases |
 | **Fedora / RHEL** | x86-64 | [RPM Package (.rpm)](https://github.com/GDJ2001/Planora/releases/download/v1.0.0/planora-1.0.0-1.fc44.x86_64.rpm) | GitHub Releases |
 | **macOS** | Apple Silicon (arm64) | [macOS Package (.pkg)](https://github.com/GDJ2001/Planora/releases/download/v1.0.0/Planora-1.0.0-arm64.pkg) | [App Bundle (.zip)](https://github.com/GDJ2001/Planora/releases/download/v1.0.0/Planora-1.0.0-arm64-app.zip) |
-| **Android Companion** | ARM64 / Universal | [Google Play Early Access](https://play.google.com/apps/testing/org.planora.android) | [Release APK (.apk)](https://github.com/GDJ2001/Planora/releases/download/v1.0.0/Planora-1.0.0-universal.apk) |
+| **Android Companion** | ARM64 / Universal | [Google Play Early Access](https://play.google.com/apps/testing/org.planora.android) | [Sideloading Guide](doc/release/GOOGLE_PLAY_PUBLISHING_GUIDE.md#4-direct-apk-sideloading-instructions-github-releases) |
 
 ### Windows Installation
 Download and run `Planora-1.0.0-x64-Setup.exe`. The branded Burn installer registers the application under Program Files, installs desktop shortcuts, and registers the helper daemon with Windows Service Control Manager. Advanced hardware sensor monitoring is an explicit opt-in that utilizes the signed PawnIO kernel driver.
@@ -49,7 +49,7 @@ Helper authorization is managed through polkit (`pkexec`) and standard systemd u
 
 ### Android Early Access & Sideloading
 - **Google Play Early Access**: Opt into our closed testing group via [Join Closed Testing on Google Play](https://play.google.com/apps/testing/org.planora.android) to receive automated companion updates. See the [Closed Testing Runbook](doc/release/CLOSED_TESTING_AND_PRODUCTION_ACCESS_GUIDE.md).
-- **Direct Sideloading**: Download `Planora-1.0.0-universal.apk` directly from [GitHub Releases](https://github.com/GDJ2001/Planora/releases/tag/v1.0.0) and verify the SHA-256 digest against `SHA256SUMS.txt`.
+- **Direct Sideloading**: Sideloading instructions and offline installation procedures are documented in the [Google Play Publishing Guide](doc/release/GOOGLE_PLAY_PUBLISHING_GUIDE.md#4-direct-apk-sideloading-instructions-github-releases).
 
 ---
 

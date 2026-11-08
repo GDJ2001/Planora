@@ -119,9 +119,15 @@ gh release create v1.0.0 \
   dist/Planora-1.0.0-x64-Setup.exe \
   dist/Planora-1.0.0-x64.msi \
   dist/Planora-1.0.0-x64.manifest.json \
+  dist/planora_1.0.0-1_amd64.deb \
+  dist/planora-1.0.0-1.fc44.x86_64.rpm \
+  dist/Planora-1.0.0-arm64.pkg \
+  dist/Planora-1.0.0-arm64-app.zip \
   dist/SHA256SUMS.txt \
   dist/dependency-inventory.json \
-  dist/provenance.json
+  dist/provenance.json \
+  dist/RELEASE_MANIFEST.json \
+  dist/RELEASE_CATALOG.md
 ```
 
 ---

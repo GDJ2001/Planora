@@ -51,7 +51,7 @@ All binary releases are compiled with the pinned Rust 1.99.1 toolchain and verif
   *Opt in to the official Google Play closed testing track to receive automatic updates and test the mobile telemetry companion:*  
   👉 **[Join Closed Testing on Google Play](https://play.google.com/apps/testing/org.planora.android)**  
   *(See the [Closed Testing Guide](https://github.com/GDJ2001/Planora/blob/main/doc/release/CLOSED_TESTING_AND_PRODUCTION_ACCESS_GUIDE.md) for full tester opt-in steps).*
-- **Direct APK Sideload (GitHub Releases)**: [Planora-1.0.0-universal.apk](https://github.com/GDJ2001/Planora/releases/download/v1.0.0/Planora-1.0.0-universal.apk)  
+- **Direct APK Sideload (Guide)**: Sideloading instructions and offline installation procedures are detailed in the [Google Play Publishing Guide](https://github.com/GDJ2001/Planora/blob/main/doc/release/GOOGLE_PLAY_PUBLISHING_GUIDE.md#4-direct-apk-sideloading-instructions-github-releases).  
   *(For de-Googled Android devices or regions without Google Play Services).*
 
 ---

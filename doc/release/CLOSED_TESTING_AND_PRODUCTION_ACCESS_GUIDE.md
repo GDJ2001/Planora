@@ -14,7 +14,7 @@ Google Play requires all personal developer accounts created after November 13, 
 A common issue in Google Play Console is seeing **`0 testers currently opted in`** even after adding dozens of emails to the email list:
 - **Reason**: Adding an email list in Play Console only grants permission to access the test track. It **does not opt the user in**.
 - **Requirement for Count to Increment**: Each invited user **MUST**:
-  1. Open the web opt-in link (`https://play.google.com/apps/testing/<package_name>`).
+  1. Open the web opt-in link (`https://play.google.com/apps/testing/org.planora.android`).
   2. Click the blue **"Become a tester"** button.
   3. Click **"Download it on Google Play"** and install the application on their Android device.
   4. Keep the app installed throughout the 14-day evaluation window.
@@ -28,7 +28,7 @@ Google automated systems evaluate whether testers actively launched and interact
 ### 2.1 Day 1: Onboarding & First Launch
 - **Message to Testers**:
   > "Hi! Please help test Planora v1.0.0 on Google Play:
-  > 1. Sign in with your invited Google account and open: `https://play.google.com/apps/testing/<package_name>`
+  > 1. Sign in with your invited Google account and open: `https://play.google.com/apps/testing/org.planora.android`
   > 2. Click 'Become a tester', then tap 'Download it on Google Play'.
   > 3. Open Planora, browse Overview and Performance tabs, and verify the UI displays smoothly."
 

@@ -1,10 +1,10 @@
 {
   "version": "1.0.0",
   "tag": "v1.0.0",
-  "source_commit": "094c1f8275abbe20886e4f531d67f8f79bfe0159",
+  "source_commit": "7071db32dd65874015256ffe32d0518b34005bcc",
   "source_clean": true,
   "protocol_version": 7,
-  "published_at": "2026-11-08T16:45:00Z",
+  "published_at": "2026-11-08T17:00:00Z",
   "release_artifacts": [
     {
       "file": "Planora-1.0.0-x64-Setup.exe",
@@ -29,6 +29,38 @@
       "format": "json",
       "bytes": 1058,
       "sha256": "cad60fc431a0be809d0bae144ab72fdd90a15f4a89f0fa4c892ad2bc9c093927"
+    },
+    {
+      "file": "planora_1.0.0-1_amd64.deb",
+      "platform": "linux",
+      "architecture": "x86_64",
+      "format": "deb",
+      "bytes": 7437760,
+      "sha256": "e12db6bdeaa94b953ed9f4aa2a17b57032ed76607b251561d4fb84724187e18a"
+    },
+    {
+      "file": "planora-1.0.0-1.fc44.x86_64.rpm",
+      "platform": "linux",
+      "architecture": "x86_64",
+      "format": "rpm",
+      "bytes": 7427041,
+      "sha256": "146907b257f41959f661363c4ea74d90835274763c3a02bab603b8d96cb911fa"
+    },
+    {
+      "file": "Planora-1.0.0-arm64.pkg",
+      "platform": "macos",
+      "architecture": "aarch64",
+      "format": "pkg",
+      "bytes": 6508021,
+      "sha256": "ecc10c30c6f2382ee44524cb5337c70f3987eca4226a85757037b0cf3ff67b4e"
+    },
+    {
+      "file": "Planora-1.0.0-arm64-app.zip",
+      "platform": "macos",
+      "architecture": "aarch64",
+      "format": "zip",
+      "bytes": 6505327,
+      "sha256": "9d1013185a5fd1550d394f12128657c472247ac2401e047b540e7727fd8b9cfb"
     },
     {
       "file": "dependency-inventory.json",

@@ -52,8 +52,8 @@ Under Google Play policies, new developer accounts and apps must complete a mand
 Testers cannot find the app via public Google Play search while in Closed Testing. They must explicitly opt-in:
 1. In the **Closed testing** dashboard, navigate to the **Testers** tab.
 2. Under **How testers join your test**, copy both links:
-   - **Join on the web**: `https://play.google.com/apps/testing/<package_name>`
-   - **Join on Android**: `https://play.google.com/store/apps/details?id=<package_name>`
+   - **Join on the web**: `https://play.google.com/apps/testing/org.planora.android`
+   - **Join on Android**: `https://play.google.com/store/apps/details?id=org.planora.android`
 3. **Important Tester Onboarding Rule**:
    - Simply adding an email to the list **does not count** towards Google Play's required active tester quota.
    - Testers **must open the web link**, sign in with their authorized Google account, click **"Become a tester"**, and then download the app from Google Play onto their physical device.
