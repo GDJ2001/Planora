@@ -1,26 +1,26 @@
 {
   "version": "1.0.0",
   "tag": "v1.0.0",
-  "source_commit": "d54306eeb9172aad8e8eaa30ce6e31dc61a9395e",
+  "source_commit": "094c1f8275abbe20886e4f531d67f8f79bfe0159",
   "source_clean": true,
   "protocol_version": 7,
-  "published_at": "2026-11-08T16:15:00Z",
+  "published_at": "2026-11-08T16:45:00Z",
   "release_artifacts": [
     {
       "file": "Planora-1.0.0-x64-Setup.exe",
       "platform": "windows",
       "architecture": "x86_64",
       "format": "exe",
-      "bytes": 43087047,
-      "sha256": "215c9319bf68db357360bbd35ec72e3fda267d1ce0732648ed76b2a0de191fdf"
+      "bytes": 43089751,
+      "sha256": "e62927f575e65be5cb7c93c2782feef1c509d2bdf8b6f243f2892be9b3215b4b"
     },
     {
       "file": "Planora-1.0.0-x64.msi",
       "platform": "windows",
       "architecture": "x86_64",
       "format": "msi",
-      "bytes": 39186432,
-      "sha256": "e807462c089c37e8d85f54177e345021e3bd6b48372a264b72c6064476e85e1d"
+      "bytes": 39190528,
+      "sha256": "883e0360f3433b47f35339f3d51bf257eca49571ebcce79c7430f8da91dcb7e5"
     },
     {
       "file": "Planora-1.0.0-x64.manifest.json",
@@ -28,7 +28,7 @@
       "architecture": "x86_64",
       "format": "json",
       "bytes": 1058,
-      "sha256": "35437829cc3832a46719f39a2c5173c39238e151352a84a779ebd34176e4d527"
+      "sha256": "cad60fc431a0be809d0bae144ab72fdd90a15f4a89f0fa4c892ad2bc9c093927"
     },
     {
       "file": "dependency-inventory.json",
@@ -43,17 +43,17 @@
     {
       "file": "planora.exe",
       "subsystem": "Windows GUI (Subsystem 2)",
-      "sha256": "ad4be8dbba98605a3f3f53e8efbf61129e1c0bd60dea514f8eb5e46f023459af"
+      "sha256": "005f68b00b306f4e956c70b510e667c60b5cad7758a7f20712856e73118ac223"
     },
     {
       "file": "planora-helper.exe",
       "subsystem": "Console / Windows Service",
-      "sha256": "ec41b115cec2d2d47b4eb9b565097998103a6d4aed5c57b5483b49ed3f7b5932"
+      "sha256": "089f8588ed3dc899031f97409df34813c60c8c319b1b43eaac67b3b3dcc87888"
     },
     {
       "file": "planora-sensor-broker.exe",
       "subsystem": "Console / Child Worker",
-      "sha256": "39e3ccdd7f5b09fdf38bac9213093117e54ce8aca18e7651563154355b61e31d"
+      "sha256": "23196e7c71fafd5f5e9998330035edd07db543839d994836c82242dca18a196f"
     },
     {
       "file": "PawnIO_setup.exe",

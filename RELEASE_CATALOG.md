@@ -2,7 +2,7 @@
 
 **Release Version**: 1.0.0  
 **Tag**: [`v1.0.0`](https://github.com/GDJ2001/Planora/releases/tag/v1.0.0)  
-**Source Commit**: `d54306eeb9172aad8e8eaa30ce6e31dc61a9395e`  
+**Source Commit**: `094c1f8275abbe20886e4f531d67f8f79bfe0159`  
 **Working Tree Clean**: Yes (`source_clean: true`)  
 **Publication Date**: November 8, 2026  
 
@@ -14,9 +14,9 @@ All release packages have been compiled with the pinned Rust 1.99.1 toolchain an
 
 | Artifact Name | Platform / Target | Size (Bytes) | SHA-256 Digest | Direct Download URL |
 | :--- | :--- | :---: | :--- | :--- |
-| **`Planora-1.0.0-x64-Setup.exe`** | Windows 10/11 x86-64 | 43,087,047 | `215c9319bf68db357360bbd35ec72e3fda267d1ce0732648ed76b2a0de191fdf` | [Download](https://github.com/GDJ2001/Planora/releases/download/v1.0.0/Planora-1.0.0-x64-Setup.exe) |
-| **`Planora-1.0.0-x64.msi`** | Windows 10/11 x86-64 | 39,186,432 | `e807462c089c37e8d85f54177e345021e3bd6b48372a264b72c6064476e85e1d` | [Download](https://github.com/GDJ2001/Planora/releases/download/v1.0.0/Planora-1.0.0-x64.msi) |
-| **`Planora-1.0.0-x64.manifest.json`** | Windows 10/11 x86-64 | 1,058 | `35437829cc3832a46719f39a2c5173c39238e151352a84a779ebd34176e4d527` | [Download](https://github.com/GDJ2001/Planora/releases/download/v1.0.0/Planora-1.0.0-x64.manifest.json) |
+| **`Planora-1.0.0-x64-Setup.exe`** | Windows 10/11 x86-64 | 43,089,751 | `e62927f575e65be5cb7c93c2782feef1c509d2bdf8b6f243f2892be9b3215b4b` | [Download](https://github.com/GDJ2001/Planora/releases/download/v1.0.0/Planora-1.0.0-x64-Setup.exe) |
+| **`Planora-1.0.0-x64.msi`** | Windows 10/11 x86-64 | 39,190,528 | `883e0360f3433b47f35339f3d51bf257eca49571ebcce79c7430f8da91dcb7e5` | [Download](https://github.com/GDJ2001/Planora/releases/download/v1.0.0/Planora-1.0.0-x64.msi) |
+| **`Planora-1.0.0-x64.manifest.json`** | Windows 10/11 x86-64 | 1,058 | `cad60fc431a0be809d0bae144ab72fdd90a15f4a89f0fa4c892ad2bc9c093927` | [Download](https://github.com/GDJ2001/Planora/releases/download/v1.0.0/Planora-1.0.0-x64.manifest.json) |
 | **`dependency-inventory.json`** | Multi-Platform (413 crates) | 91,701 | `2e4a6f1b9ec2d2c7d4506f93d007ffbe822c4a53d56bd3eac537827c634aeb4c` | [Download](https://github.com/GDJ2001/Planora/releases/download/v1.0.0/dependency-inventory.json) |
 | **`SHA256SUMS.txt`** | Multi-Platform Manifest | 376 | (Self-referential manifest) | [Download](https://github.com/GDJ2001/Planora/releases/download/v1.0.0/SHA256SUMS.txt) |
 
@@ -28,9 +28,9 @@ The Windows MSI image contains four internal binaries, validated directly agains
 
 | Binary | Subsystem | SHA-256 Digest |
 | :--- | :--- | :--- |
-| `planora.exe` | Windows GUI (Subsystem 2) | `ad4be8dbba98605a3f3f53e8efbf61129e1c0bd60dea514f8eb5e46f023459af` |
-| `planora-helper.exe` | Console / Service (Subsystem 3) | `ec41b115cec2d2d47b4eb9b565097998103a6d4aed5c57b5483b49ed3f7b5932` |
-| `planora-sensor-broker.exe` | Console / Worker (Subsystem 3) | `39e3ccdd7f5b09fdf38bac9213093117e54ce8aca18e7651563154355b61e31d` |
+| `planora.exe` | Windows GUI (Subsystem 2) | `005f68b00b306f4e956c70b510e667c60b5cad7758a7f20712856e73118ac223` |
+| `planora-helper.exe` | Console / Service (Subsystem 3) | `089f8588ed3dc899031f97409df34813c60c8c319b1b43eaac67b3b3dcc87888` |
+| `planora-sensor-broker.exe` | Console / Worker (Subsystem 3) | `23196e7c71fafd5f5e9998330035edd07db543839d994836c82242dca18a196f` |
 | `PawnIO_setup.exe` | Signed Driver Setup (namazso) | `1f519a22e47187f70a1379a48ca604981c4fcf694f4e65b734aaa74a9fba3032` |
 
 ---
