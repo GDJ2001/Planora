@@ -1,0 +1,64 @@
+{
+  "version": "1.0.0",
+  "tag": "v1.0.0",
+  "source_commit": "586f35e9e8f2372b604f170f0b6b82778b59615b",
+  "source_clean": true,
+  "protocol_version": 7,
+  "published_at": "2026-11-08T16:15:00Z",
+  "release_artifacts": [
+    {
+      "file": "Planora-1.0.0-x64-Setup.exe",
+      "platform": "windows",
+      "architecture": "x86_64",
+      "format": "exe",
+      "bytes": 43089955,
+      "sha256": "ed6852a044a59ed06cfe687fa1ed621fd82864f244087308e9e0b305a6345e81"
+    },
+    {
+      "file": "Planora-1.0.0-x64.msi",
+      "platform": "windows",
+      "architecture": "x86_64",
+      "format": "msi",
+      "bytes": 39190528,
+      "sha256": "8f5e2d2f3b1f7432308185873cd683d3c56adc2562668d768d63f75d8b54ad70"
+    },
+    {
+      "file": "Planora-1.0.0-x64.manifest.json",
+      "platform": "windows",
+      "architecture": "x86_64",
+      "format": "json",
+      "bytes": 1058,
+      "sha256": "b245b99a9d46390345300d7d766ee92e278fa877ad3c5a11e08158170a3ee32e"
+    },
+    {
+      "file": "dependency-inventory.json",
+      "platform": "all",
+      "architecture": "all",
+      "format": "json",
+      "bytes": 91701,
+      "sha256": "2e4a6f1b9ec2d2c7d4506f93d007ffbe822c4a53d56bd3eac537827c634aeb4c"
+    }
+  ],
+  "embedded_binaries": [
+    {
+      "file": "planora.exe",
+      "subsystem": "Windows GUI (Subsystem 2)",
+      "sha256": "06a2c78e4483280cfef870a57e682565dc2c104007d581a9117fc97a06d3a922"
+    },
+    {
+      "file": "planora-helper.exe",
+      "subsystem": "Console / Windows Service",
+      "sha256": "6b0e2edd70f3359014b0c7ec073b066e90403b8173c3a4636a7e0739a692a33a"
+    },
+    {
+      "file": "planora-sensor-broker.exe",
+      "subsystem": "Console / Child Worker",
+      "sha256": "ddfd60cf44aa662286ec558fc9f10f38d5fcbe8a711c6fb42fc43d29707d1ff5"
+    },
+    {
+      "file": "PawnIO_setup.exe",
+      "subsystem": "Signed Kernel Driver Installer",
+      "sha256": "1f519a22e47187f70a1379a48ca604981c4fcf694f4e65b734aaa74a9fba3032"
+    }
+  ]
+}
